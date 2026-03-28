@@ -470,3 +470,222 @@ input[type="range"] {
 }
 
 .model-info .vram { color: var(--warning); }
+
+/* Generate buttons row */
+.generate-buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: auto;
+}
+
+.generate-buttons .btn-generate { flex: 1; }
+
+.btn-compare {
+  padding: 14px 20px;
+  background: var(--surface-2);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+
+.btn-compare:hover { background: var(--accent-dim); }
+.btn-compare:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Compare grid */
+.compare-grid {
+  display: none;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+  width: 100%;
+}
+
+.compare-grid.active {
+  display: grid;
+}
+
+.compare-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.compare-card-header {
+  padding: 10px 14px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.compare-card-header .backend-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.compare-card-header .model-name {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.compare-card-header .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 6px;
+}
+
+.compare-card-body {
+  padding: 12px;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+  position: relative;
+}
+
+.compare-card-body img {
+  max-width: 100%;
+  border-radius: var(--radius-sm);
+}
+
+.compare-card-body .compare-loading {
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.compare-card-body .compare-progress {
+  width: 100%;
+}
+
+.compare-card-body .compare-progress .progress-bar {
+  margin-top: 8px;
+}
+
+.compare-card-body .compare-error {
+  color: var(--error);
+  font-size: 12px;
+  text-align: center;
+  padding: 8px;
+}
+
+.compare-card-footer {
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+}
+
+.compare-card-footer .btn { font-size: 11px; padding: 4px 10px; }
+
+/* Modal */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  z-index: 900;
+  align-items: center;
+  justify-content: center;
+}
+
+.modal-overlay.active { display: flex; }
+
+.modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 24px;
+  max-width: 520px;
+  width: 90%;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.modal-header h3 { font-size: 16px; }
+
+.modal-close {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 20px;
+  cursor: pointer;
+}
+
+.modal-desc {
+  font-size: 13px;
+  color: var(--text-dim);
+  margin-bottom: 16px;
+}
+
+.compare-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.compare-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.compare-option:hover { border-color: var(--accent); }
+.compare-option.selected { border-color: var(--accent); background: var(--accent-dim); }
+.compare-option.disabled { opacity: 0.4; cursor: not-allowed; }
+
+.compare-option input[type="checkbox"] { accent-color: var(--accent); }
+
+.compare-option .opt-label {
+  flex: 1;
+  font-size: 13px;
+}
+
+.compare-option .opt-model {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.compare-option .opt-type {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.opt-type.local { background: rgba(52, 211, 153, 0.15); color: var(--success); }
+.opt-type.free { background: rgba(245, 158, 11, 0.15); color: var(--warning); }
+.opt-type.paid { background: rgba(239, 68, 68, 0.15); color: var(--error); }
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}

@@ -116,7 +116,10 @@
         </div>
       </div>
 
-      <button class="btn-generate" id="btn-generate">Generate</button>
+      <div class="generate-buttons">
+        <button class="btn-generate" id="btn-generate">Generate</button>
+        <button class="btn-compare" id="btn-compare">Compare</button>
+      </div>
     </aside>
 
     <main class="main">
@@ -157,9 +160,28 @@
         </div>
       </div>
 
+      <!-- Comparison results (replaces single result when comparing) -->
+      <div class="compare-grid" id="compare-grid"></div>
+
       <!-- Gallery strip -->
       <div class="gallery-strip" id="gallery-strip"></div>
     </main>
+  </div>
+
+  <!-- Compare modal -->
+  <div class="modal-overlay" id="compare-modal">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Compare Backends</h3>
+        <button class="modal-close" id="compare-modal-close">&times;</button>
+      </div>
+      <p class="modal-desc">Select which backends/models to compare with the same prompt.</p>
+      <div class="compare-options" id="compare-options"></div>
+      <div class="modal-footer">
+        <button class="btn" id="compare-cancel">Cancel</button>
+        <button class="btn-generate" id="compare-start" style="width:auto;padding:10px 24px;">Compare Selected</button>
+      </div>
+    </div>
   </div>
 
   <div class="toast-container" id="toasts"></div>

@@ -9,6 +9,9 @@ const state = {
   currentRefSlot: null,
   currentJobId: null,
   ws: null,
+  pollTimer: null,
+  compareJobs: [],  // [{job_id, backend, model, status}]
+  comparePollTimer: null,
 };
 
 // --- Init ---
@@ -232,6 +235,12 @@ function bindEvents() {
   document.getElementById('btn-save').addEventListener('click', saveImage);
   document.getElementById('btn-copy-url').addEventListener('click', copyImageUrl);
   document.getElementById('btn-use-as-ref').addEventListener('click', useAsRef);
+
+  // Compare
+  document.getElementById('btn-compare').addEventListener('click', openCompareModal);
+  document.getElementById('compare-modal-close').addEventListener('click', closeCompareModal);
+  document.getElementById('compare-cancel').addEventListener('click', closeCompareModal);
+  document.getElementById('compare-start').addEventListener('click', startComparison);
 }
 
 function setRefImage(index, file) {
@@ -407,6 +416,203 @@ function useAsRef() {
       setRefImage(idx, file);
       toast(`Added to reference slot ${idx + 1}`, 'success');
     });
+}
+
+// --- Compare mode ---
+
+function openCompareModal() {
+  const prompt = document.getElementById('prompt').value.trim();
+  if (!prompt) {
+    toast('Enter a prompt first', 'error');
+    return;
+  }
+
+  const container = document.getElementById('compare-options');
+  container.innerHTML = '';
+
+  // Build list of all available backend+model combos
+  for (const [name, info] of Object.entries(state.backends)) {
+    if (!info.enabled) continue;
+    const models = info.models || [];
+    const availableModels = models.filter(m => typeof m === 'string' || m.available !== false);
+
+    if (availableModels.length === 0) {
+      // Backend with no specific models (e.g. pollinations default)
+      container.appendChild(makeCompareOption(name, '', name, info.type));
+    } else {
+      availableModels.forEach(m => {
+        const id = typeof m === 'string' ? m : m.id;
+        const label = typeof m === 'string' ? m : m.label;
+        container.appendChild(makeCompareOption(name, id, `${name} / ${label}`, info.type));
+      });
+    }
+  }
+
+  document.getElementById('compare-modal').classList.add('active');
+}
+
+function makeCompareOption(backend, model, label, type) {
+  const div = document.createElement('div');
+  div.className = 'compare-option';
+  div.dataset.backend = backend;
+  div.dataset.model = model;
+  div.innerHTML = `
+    <input type="checkbox" checked>
+    <span class="opt-label">${label}</span>
+    <span class="opt-type ${type}">${type}</span>
+  `;
+  div.addEventListener('click', (e) => {
+    if (e.target.type !== 'checkbox') {
+      const cb = div.querySelector('input');
+      cb.checked = !cb.checked;
+    }
+    div.classList.toggle('selected', div.querySelector('input').checked);
+  });
+  // Default to selected
+  div.classList.add('selected');
+  return div;
+}
+
+function closeCompareModal() {
+  document.getElementById('compare-modal').classList.remove('active');
+}
+
+async function startComparison() {
+  const prompt = document.getElementById('prompt').value.trim();
+  if (!prompt) return;
+
+  // Gather selected options
+  const options = [];
+  document.querySelectorAll('.compare-option').forEach(opt => {
+    if (opt.querySelector('input').checked) {
+      options.push({ backend: opt.dataset.backend, model: opt.dataset.model });
+    }
+  });
+
+  if (options.length < 2) {
+    toast('Select at least 2 backends to compare', 'error');
+    return;
+  }
+
+  closeCompareModal();
+
+  // Hide single result, show compare grid
+  document.getElementById('placeholder').style.display = 'none';
+  document.getElementById('result-container').classList.remove('visible');
+  const grid = document.getElementById('compare-grid');
+  grid.classList.add('active');
+  grid.innerHTML = '';
+
+  // Create cards
+  options.forEach(opt => {
+    const card = document.createElement('div');
+    card.className = 'compare-card';
+    card.id = `compare-card-${opt.backend}-${opt.model}`.replace(/[^a-z0-9-]/gi, '_');
+    const typeClass = (state.backends[opt.backend] || {}).type || 'local';
+    card.innerHTML = `
+      <div class="compare-card-header">
+        <span><span class="dot ${typeClass}"></span><span class="backend-name">${opt.backend}</span></span>
+        <span class="model-name">${opt.model || 'default'}</span>
+      </div>
+      <div class="compare-card-body">
+        <div class="compare-loading">
+          <div class="compare-progress">
+            <span class="progress-status">Queued...</span>
+            <div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div>
+          </div>
+        </div>
+      </div>
+      <div class="compare-card-footer" style="display:none">
+        <button class="btn btn-save-compare">Save</button>
+        <button class="btn btn-ref-compare">Use as Ref</button>
+      </div>
+    `;
+    grid.appendChild(card);
+  });
+
+  // Submit compare request
+  const formData = new FormData();
+  formData.append('prompt', prompt);
+  formData.append('negative_prompt', document.getElementById('negative-prompt').value);
+  formData.append('backends_json', JSON.stringify(options));
+  formData.append('width', document.getElementById('width').value);
+  formData.append('height', document.getElementById('height').value);
+  formData.append('steps', document.getElementById('steps').value);
+  formData.append('cfg_scale', document.getElementById('cfg-scale').value);
+  formData.append('seed', document.getElementById('seed').value);
+  state.refImages.forEach(file => { if (file) formData.append('reference_images', file); });
+
+  try {
+    const resp = await fetch('/api/compare', { method: 'POST', body: formData });
+    const data = await resp.json();
+    state.compareJobs = data.jobs.map((j, i) => ({
+      ...j, status: 'queued', cardId: `compare-card-${options[i].backend}-${options[i].model}`.replace(/[^a-z0-9-]/gi, '_'),
+    }));
+    startComparePoll();
+    toast(`Comparing ${options.length} backends...`, 'success');
+  } catch (e) {
+    toast(`Compare failed: ${e.message}`, 'error');
+  }
+}
+
+function startComparePoll() {
+  if (state.comparePollTimer) clearInterval(state.comparePollTimer);
+  state.comparePollTimer = setInterval(async () => {
+    let allDone = true;
+    for (const job of state.compareJobs) {
+      if (job.status === 'complete' || job.status === 'error') continue;
+      allDone = false;
+      try {
+        const resp = await fetch(`/api/job/${job.job_id}`);
+        const data = await resp.json();
+        job.status = data.status;
+        job.progress = data.progress || 0;
+        updateCompareCard(job, data);
+      } catch (e) { /* retry */ }
+    }
+    if (allDone) {
+      clearInterval(state.comparePollTimer);
+      state.comparePollTimer = null;
+      loadGallery();
+    }
+  }, 1000);
+}
+
+function updateCompareCard(job, data) {
+  const card = document.getElementById(job.cardId);
+  if (!card) return;
+  const body = card.querySelector('.compare-card-body');
+  const footer = card.querySelector('.compare-card-footer');
+
+  if (data.status === 'running') {
+    body.innerHTML = `
+      <div class="compare-loading">
+        <div class="compare-progress">
+          <span class="progress-status">${data.message || 'Generating...'} ${data.progress || 0}%</span>
+          <div class="progress-bar"><div class="progress-fill" style="width:${data.progress || 0}%"></div></div>
+        </div>
+      </div>`;
+  } else if (data.status === 'complete') {
+    body.innerHTML = `<img src="${data.output_url}?t=${Date.now()}" alt="Result">`;
+    footer.style.display = 'flex';
+    // Wire up card buttons
+    footer.querySelector('.btn-save-compare').onclick = () => {
+      const a = document.createElement('a');
+      a.href = data.output_url;
+      a.download = `compare-${job.backend}-${Date.now()}.png`;
+      a.click();
+    };
+    footer.querySelector('.btn-ref-compare').onclick = () => {
+      const idx = state.refImages.findIndex(r => r === null);
+      if (idx === -1) { toast('All ref slots full', 'error'); return; }
+      fetch(data.output_url).then(r => r.blob()).then(blob => {
+        setRefImage(idx, new File([blob], 'reference.png', { type: 'image/png' }));
+        toast(`Added to ref slot ${idx + 1}`, 'success');
+      });
+    };
+  } else if (data.status === 'error') {
+    body.innerHTML = `<div class="compare-error">${data.error || 'Generation failed'}</div>`;
+  }
 }
 
 // --- Toast ---

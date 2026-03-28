@@ -226,6 +226,60 @@ async def get_job(job_id: str):
     return jobs[job_id]
 
 
+@app.post("/api/compare")
+async def compare(
+    prompt: str = Form(...),
+    negative_prompt: str = Form(""),
+    backends_json: str = Form("[]"),
+    width: int = Form(1024),
+    height: int = Form(1024),
+    steps: int = Form(30),
+    cfg_scale: float = Form(7.0),
+    seed: int = Form(-1),
+    reference_images: list[UploadFile] = File(default=[]),
+):
+    """Launch same prompt across multiple backends for comparison."""
+    import json as _json
+    backend_list = _json.loads(backends_json)  # [{backend, model}, ...]
+
+    # Save uploaded reference images once
+    ref_paths = []
+    for i, ref in enumerate(reference_images):
+        if ref.filename and ref.size and ref.size > 0:
+            ext = Path(ref.filename).suffix or ".png"
+            cmp_id = str(uuid.uuid4())[:6]
+            path = Path("uploads") / f"cmp_{cmp_id}_ref{i}{ext}"
+            async with aiofiles.open(path, "wb") as f:
+                await f.write(await ref.read())
+            ref_paths.append(str(path))
+
+    comparison_id = str(uuid.uuid4())[:8]
+    job_ids = []
+
+    for entry in backend_list:
+        job_id = str(uuid.uuid4())[:8]
+        params = {
+            "prompt": prompt,
+            "negative_prompt": negative_prompt,
+            "backend": entry["backend"],
+            "model": entry.get("model", ""),
+            "width": width,
+            "height": height,
+            "steps": steps,
+            "cfg_scale": cfg_scale,
+            "seed": seed,
+            "ip_adapter_model": "",
+            "ip_adapter_strength": 0.6,
+            "upscaler": "",
+            "reference_images": ref_paths,
+        }
+        jobs[job_id] = {"status": "queued", "params": params, "progress": 0, "comparison_id": comparison_id}
+        asyncio.create_task(_run_job(job_id, params))
+        job_ids.append({"job_id": job_id, "backend": entry["backend"], "model": entry.get("model", "")})
+
+    return {"comparison_id": comparison_id, "jobs": job_ids}
+
+
 # --- WebSocket for live progress ---
 
 @app.websocket("/ws")

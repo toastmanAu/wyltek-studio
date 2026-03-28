@@ -17,7 +17,8 @@ class HuggingFaceBackend(BaseBackend):
         model = params.get("model", "stabilityai/stable-diffusion-xl-base-1.0")
         await on_progress(10, f"Sending to HuggingFace ({model.split('/')[-1]})...")
 
-        url = f"https://api-inference.huggingface.co/models/{model}"
+        # HuggingFace migrated to router.huggingface.co
+        url = f"https://router.huggingface.co/hf-inference/models/{model}"
         payload = {"inputs": params["prompt"]}
 
         await on_progress(30, "Generating (free tier may queue)...")
@@ -26,7 +27,6 @@ class HuggingFaceBackend(BaseBackend):
             async with session.post(url, json=payload, headers=headers,
                                     timeout=aiohttp.ClientTimeout(total=300)) as resp:
                 if resp.status == 503:
-                    # Model loading — retry
                     result = await resp.json()
                     wait = result.get("estimated_time", 30)
                     await on_progress(40, f"Model loading, ~{int(wait)}s wait...")
