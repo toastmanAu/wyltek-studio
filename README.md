@@ -26,6 +26,26 @@ Same prompt across different backends — all generated through Open Palette:
 |:---:|:---:|:---:|
 | ![SD 1.5](docs/screenshots/castle-sd15.png) | ![Juggernaut](docs/screenshots/castle-juggernaut.png) | ![Gemini](docs/screenshots/castle-gemini.png) |
 
+> *"a single boat upon a calm lake"*
+
+| SD 1.5 (local) | SDXL Q4 (local) | Juggernaut XL (local) |
+|:---:|:---:|:---:|
+| ![SD 1.5](docs/screenshots/boat-sd15.png) | ![SDXL](docs/screenshots/boat-sdxl.png) | ![Juggernaut](docs/screenshots/boat-juggernaut.png) |
+
+| RealVisXL V4 (local) | Nano Banana (cloud) | Nano Banana Pro (cloud) |
+|:---:|:---:|:---:|
+| ![RealVis](docs/screenshots/boat-realvis.png) | ![NanoBanana](docs/screenshots/boat-nanobanaana.png) | ![NanoBananaPro](docs/screenshots/boat-nanobananapro.png) |
+
+> *"lightning striking over water at night"*
+
+| SD 1.5 (local) | SDXL Q4 (local) | Juggernaut XL (local) |
+|:---:|:---:|:---:|
+| ![SD 1.5](docs/screenshots/lightning-sd15.png) | ![SDXL](docs/screenshots/lightning-sdxl.png) | ![Juggernaut](docs/screenshots/lightning-juggernaut.png) |
+
+| RealVisXL V4 (local) | Nano Banana Pro (cloud) |
+|:---:|:---:|
+| ![RealVis](docs/screenshots/lightning-realvis.png) | ![NanoBananaPro](docs/screenshots/lightning-nanobananapro.png) |
+
 All local images generated on an RTX 3060 Ti (8GB VRAM) using GGUF quantized models.
 
 ## Quick Start
