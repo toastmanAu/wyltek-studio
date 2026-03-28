@@ -1,0 +1,115 @@
+# Open Palette Configuration
+# Copy to config.yaml and edit to match your setup
+
+server:
+  host: "0.0.0.0"
+  port: 7860
+  output_dir: "./outputs"
+  max_upload_mb: 20
+
+# Default backend for each pipeline component
+defaults:
+  generator: "comfyui"        # Which backend generates images
+  ip_adapter: "comfyui"       # Which backend handles reference image conditioning
+  upscaler: "comfyui"         # Which backend upscales
+  refiner: null               # Optional refinement pass
+
+# Backend configurations — only configure what you have
+backends:
+  comfyui:
+    enabled: true
+    url: "http://127.0.0.1:8188"
+    # Models available in your ComfyUI install
+    models:
+      checkpoints:
+        - id: "sd_xl_base_1.0.safetensors"
+          label: "SDXL 1.0"
+          vram: "7GB"
+        - id: "flux1-dev-fp8.safetensors"
+          label: "Flux.1 Dev (FP8)"
+          vram: "12GB"
+        - id: "v1-5-pruned-emaonly.safetensors"
+          label: "SD 1.5"
+          vram: "4GB"
+      ip_adapters:
+        - id: "ip-adapter-plus_sdxl_vit-h.safetensors"
+          label: "IP-Adapter Plus SDXL"
+        - id: "ip-adapter-plus_sd15.safetensors"
+          label: "IP-Adapter Plus SD1.5"
+      upscalers:
+        - id: "RealESRGAN_x4plus.pth"
+          label: "RealESRGAN 4x"
+        - id: "4x-UltraSharp.pth"
+          label: "UltraSharp 4x"
+      loras: []
+      controlnets: []
+
+  fooocus:
+    enabled: false
+    url: "http://127.0.0.1:7865"
+
+  a1111:
+    enabled: false
+    url: "http://127.0.0.1:7861"
+
+  ollama:
+    enabled: true
+    url: "http://127.0.0.1:11434"
+    # Vision models for image analysis (not generation)
+    models:
+      - id: "llama3.2-vision:11b"
+        label: "Llama 3.2 Vision 11B"
+      - id: "qwen3-vl:8b"
+        label: "Qwen3 VL 8B"
+      - id: "minicpm-v"
+        label: "MiniCPM-V"
+
+  pollinations:
+    enabled: true
+    # No API key needed — free
+    models:
+      - id: "flux"
+        label: "Flux (via Pollinations)"
+      - id: "turbo"
+        label: "Turbo (via Pollinations)"
+
+  gemini:
+    enabled: false
+    api_key: ""  # or set GEMINI_API_KEY env var
+    models:
+      - id: "gemini-2.0-flash-exp-image-generation"
+        label: "Gemini 2.0 Flash Image Gen"
+
+  stability:
+    enabled: false
+    api_key: ""  # or set STABILITY_API_KEY env var
+    models:
+      - id: "stable-diffusion-xl-1024-v1-0"
+        label: "SDXL 1.0"
+      - id: "stable-image-core"
+        label: "Stable Image Core"
+
+  openai:
+    enabled: false
+    api_key: ""  # or set OPENAI_API_KEY env var
+    models:
+      - id: "dall-e-3"
+        label: "DALL-E 3"
+      - id: "gpt-image-1"
+        label: "GPT Image 1"
+
+  replicate:
+    enabled: false
+    api_key: ""  # or set REPLICATE_API_TOKEN env var
+    models:
+      - id: "black-forest-labs/flux-1.1-pro"
+        label: "Flux 1.1 Pro"
+      - id: "stability-ai/sdxl"
+        label: "SDXL"
+
+  huggingface:
+    enabled: false
+    api_key: ""  # or set HF_TOKEN env var
+    models:
+      - id: "stabilityai/stable-diffusion-xl-base-1.0"
+        label: "SDXL 1.0"

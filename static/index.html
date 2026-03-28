@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Open Palette</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1><span>Open</span> Palette</h1>
+      <div class="header-actions">
+        <button class="btn" id="btn-gallery-toggle">Gallery</button>
+      </div>
+    </header>
+
+    <aside class="sidebar">
+      <!-- Prompt -->
+      <div>
+        <div class="section-title">Prompt</div>
+        <div class="form-group">
+          <textarea id="prompt" placeholder="Describe the image you want to generate..."></textarea>
+        </div>
+        <div class="form-group">
+          <label>Negative prompt</label>
+          <input type="text" id="negative-prompt" placeholder="What to avoid...">
+        </div>
+      </div>
+
+      <!-- Reference Images -->
+      <div>
+        <div class="section-title">Reference Images (optional)</div>
+        <div class="ref-images" id="ref-images">
+          <div class="ref-slot" data-index="0"><span class="plus">+</span><button class="remove-ref">&times;</button></div>
+          <div class="ref-slot" data-index="1"><span class="plus">+</span><button class="remove-ref">&times;</button></div>
+          <div class="ref-slot" data-index="2"><span class="plus">+</span><button class="remove-ref">&times;</button></div>
+          <div class="ref-slot" data-index="3"><span class="plus">+</span><button class="remove-ref">&times;</button></div>
+        </div>
+        <input type="file" id="ref-file-input" accept="image/*" hidden>
+      </div>
+
+      <!-- Backend Selection -->
+      <div>
+        <div class="section-title">Backend</div>
+        <div class="backend-selector" id="backend-selector">
+          <!-- Populated by JS -->
+        </div>
+      </div>
+
+      <!-- Model Selection -->
+      <div>
+        <div class="section-title">Model</div>
+        <div class="form-group">
+          <select id="model-select">
+            <option value="">Loading...</option>
+          </select>
+          <div class="model-info" id="model-info"></div>
+        </div>
+      </div>
+
+      <!-- Advanced Settings -->
+      <div>
+        <div class="advanced-toggle" id="advanced-toggle">
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><path d="M4 5l2 2 2-2"/></svg>
+          Advanced Settings
+        </div>
+        <div class="advanced-content" id="advanced-content">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Width</label>
+              <input type="number" id="width" value="1024" step="64" min="256" max="2048">
+            </div>
+            <div class="form-group">
+              <label>Height</label>
+              <input type="number" id="height" value="1024" step="64" min="256" max="2048">
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Steps</label>
+            <div class="range-row">
+              <input type="range" id="steps" min="1" max="100" value="30">
+              <span class="range-value" id="steps-val">30</span>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>CFG Scale</label>
+            <div class="range-row">
+              <input type="range" id="cfg-scale" min="1" max="20" step="0.5" value="7">
+              <span class="range-value" id="cfg-val">7.0</span>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Seed (-1 = random)</label>
+            <input type="number" id="seed" value="-1">
+          </div>
+          <div class="form-group">
+            <label>IP-Adapter Model</label>
+            <select id="ip-adapter-select">
+              <option value="">None (text only)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>IP-Adapter Strength</label>
+            <div class="range-row">
+              <input type="range" id="ip-strength" min="0" max="1" step="0.05" value="0.6">
+              <span class="range-value" id="ip-val">0.6</span>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Upscaler</label>
+            <select id="upscaler-select">
+              <option value="">None</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <button class="btn-generate" id="btn-generate">Generate</button>
+    </aside>
+
+    <main class="main">
+      <!-- Progress -->
+      <div class="progress-container" id="progress">
+        <div class="progress-header">
+          <span class="progress-status" id="progress-status">Preparing...</span>
+          <span class="progress-pct" id="progress-pct">0%</span>
+        </div>
+        <div class="progress-bar">
+          <div class="progress-fill" id="progress-fill"></div>
+        </div>
+      </div>
+
+      <!-- Result -->
+      <div class="result-area">
+        <div class="result-placeholder" id="placeholder">
+          <svg viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="8" y="8" width="64" height="64" rx="8" stroke="currentColor" stroke-width="2"/>
+            <circle cx="28" cy="30" r="6" stroke="currentColor" stroke-width="2"/>
+            <path d="M8 56l16-16 12 12 8-8 28 28" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <p>Enter a prompt and hit Generate</p>
+        </div>
+        <div class="result-image-container" id="result-container">
+          <img id="result-image" alt="Generated image">
+          <div class="result-actions">
+            <button class="btn" id="btn-save">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M7 1v9M3 6l4 4 4-4"/><path d="M1 11v2h12v-2"/></svg>
+              Save
+            </button>
+            <button class="btn" id="btn-copy-url">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="4" width="9" height="9" rx="1"/><path d="M1 10V2a1 1 0 011-1h8"/></svg>
+              Copy URL
+            </button>
+            <button class="btn" id="btn-use-as-ref">Use as Reference</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Gallery strip -->
+      <div class="gallery-strip" id="gallery-strip"></div>
+    </main>
+  </div>
+
+  <div class="toast-container" id="toasts"></div>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
