@@ -6,6 +6,28 @@ Upload reference images, describe what you want, pick your model and backend, an
 
 ![Python](https://img.shields.io/badge/python-3.10+-blue) ![License](https://img.shields.io/badge/license-MIT-green)
 
+## Model Comparison
+
+Same prompt across different backends — all generated through Open Palette:
+
+> *"a golden retriever sitting in autumn leaves, warm sunlight, shallow depth of field, photorealistic"*
+
+| SD 1.5 (512x512, local) | SDXL Q4 GGUF (1024x1024, local) | Juggernaut XL Q4 (1024x1024, local) |
+|:---:|:---:|:---:|
+| ![SD 1.5](docs/screenshots/dog-sd15.png) | ![SDXL](docs/screenshots/dog-sdxl.png) | ![Juggernaut](docs/screenshots/dog-juggernaut.png) |
+
+| RealVisXL V4 Q4 (1024x1024, local) | Nano Banana / Gemini 2.5 Flash (cloud) |
+|:---:|:---:|
+| ![RealVis](docs/screenshots/dog-realvis.png) | ![Gemini](docs/screenshots/dog-gemini.png) |
+
+> *"a medieval castle on a cliff overlooking a stormy ocean, dramatic lighting, digital painting, fantasy art"*
+
+| SD 1.5 (local) | Juggernaut XL (local) | Nano Banana / Gemini (cloud) |
+|:---:|:---:|:---:|
+| ![SD 1.5](docs/screenshots/castle-sd15.png) | ![Juggernaut](docs/screenshots/castle-juggernaut.png) | ![Gemini](docs/screenshots/castle-gemini.png) |
+
+All local images generated on an RTX 3060 Ti (8GB VRAM) using GGUF quantized models.
+
 ## Quick Start
 
 ```bash
