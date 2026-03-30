@@ -599,6 +599,162 @@ Respond ONLY with valid JSON (no markdown, no code fences):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+# --- Model Catalog / Download API ---
+
+_download_status: dict[str, dict] = {}  # model_id -> {status, progress, error}
+
+
+@app.get("/api/models/catalog")
+async def get_model_catalog():
+    """Return model catalog with install status."""
+    from model_catalog import CATALOG, DEST_MAP
+    from pathlib import Path
+
+    comfyui_url = config.get("backends", {}).get("comfyui", {}).get("url", "")
+    comfyui_root = None
+    # Try to find ComfyUI root from known paths
+    for candidate in [Path("/home/phill/ComfyUI"), Path.home() / "ComfyUI"]:
+        if candidate.exists():
+            comfyui_root = candidate
+            break
+
+    # Check installed Ollama models
+    ollama_models = set()
+    try:
+        import httpx
+        ollama_url = config.get("prompt_optimizer", {}).get("ollama_url", "http://[::1]:11434")
+        resp = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: __import__('httpx').Client(timeout=5).get(f"{ollama_url}/api/tags"))
+        if resp.status_code == 200:
+            ollama_models = {m["name"] for m in resp.json().get("models", [])}
+    except Exception:
+        pass
+
+    result = []
+    for item in CATALOG:
+        entry = dict(item)
+        entry.pop("url", None)  # don't expose download URLs to frontend
+        entry.pop("meta_url", None)
+
+        # Check if installed
+        if item["type"] == "ollama":
+            entry["installed"] = any(item.get("ollama_model", "") in m for m in ollama_models)
+        elif item["type"] == "piper-voice":
+            voice_path = Path(__file__).parent / "engines" / "voices" / item["filename"]
+            entry["installed"] = voice_path.exists()
+        elif comfyui_root and item["type"] in DEST_MAP and DEST_MAP[item["type"]]:
+            dest = comfyui_root / DEST_MAP[item["type"]] / item["filename"]
+            entry["installed"] = dest.exists()
+        else:
+            entry["installed"] = False
+
+        # Add download status if active
+        if item["id"] in _download_status:
+            entry["download"] = _download_status[item["id"]]
+
+        result.append(entry)
+
+    return result
+
+
+@app.post("/api/models/download/{model_id}")
+async def download_model(model_id: str):
+    """Start downloading a model from the catalog."""
+    from model_catalog import CATALOG, DEST_MAP
+    from pathlib import Path
+
+    item = next((m for m in CATALOG if m["id"] == model_id), None)
+    if not item:
+        return JSONResponse({"error": "Model not found in catalog"}, status_code=404)
+
+    if model_id in _download_status and _download_status[model_id].get("status") == "downloading":
+        return JSONResponse({"error": "Already downloading"}, status_code=409)
+
+    _download_status[model_id] = {"status": "downloading", "progress": 0}
+
+    async def _do_download():
+        try:
+            if item["type"] == "ollama":
+                # Pull via Ollama API
+                ollama_url = config.get("prompt_optimizer", {}).get("ollama_url", "http://[::1]:11434")
+                import httpx
+                async with httpx.AsyncClient(timeout=600) as client:
+                    _download_status[model_id]["progress"] = 10
+                    resp = await client.post(
+                        f"{ollama_url}/api/pull",
+                        json={"name": item["ollama_model"], "stream": False},
+                        timeout=600,
+                    )
+                    if resp.status_code == 200:
+                        _download_status[model_id] = {"status": "complete", "progress": 100}
+                    else:
+                        _download_status[model_id] = {"status": "error", "error": f"Ollama error: {resp.status_code}"}
+                return
+
+            # File download (HuggingFace)
+            url = item.get("url", "")
+            if not url:
+                _download_status[model_id] = {"status": "error", "error": "No download URL"}
+                return
+
+            # Determine destination
+            if item["type"] == "piper-voice":
+                dest_dir = Path(__file__).parent / "engines" / "voices"
+            else:
+                comfyui_root = None
+                for candidate in [Path("/home/phill/ComfyUI"), Path.home() / "ComfyUI"]:
+                    if candidate.exists():
+                        comfyui_root = candidate
+                        break
+                if not comfyui_root:
+                    _download_status[model_id] = {"status": "error", "error": "ComfyUI not found"}
+                    return
+                dest_dir = comfyui_root / DEST_MAP[item["type"]]
+
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dest = dest_dir / item["filename"]
+
+            import httpx
+            async with httpx.AsyncClient(timeout=600, follow_redirects=True) as client:
+                async with client.stream("GET", url) as resp:
+                    if resp.status_code != 200:
+                        _download_status[model_id] = {"status": "error", "error": f"HTTP {resp.status_code}"}
+                        return
+                    total = int(resp.headers.get("content-length", 0))
+                    downloaded = 0
+                    with open(dest, "wb") as f:
+                        async for chunk in resp.aiter_bytes(chunk_size=1024 * 1024):
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if total > 0:
+                                _download_status[model_id]["progress"] = int(downloaded / total * 100)
+
+            # Download metadata file for Piper voices
+            if item["type"] == "piper-voice" and item.get("meta_url"):
+                async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+                    resp = await client.get(item["meta_url"])
+                    if resp.status_code == 200:
+                        meta_dest = dest_dir / (item["filename"] + ".json")
+                        with open(meta_dest, "wb") as f:
+                            f.write(resp.content)
+
+            _download_status[model_id] = {"status": "complete", "progress": 100}
+
+        except Exception as e:
+            _download_status[model_id] = {"status": "error", "error": str(e)}
+
+    job_queue.submit_background(_do_download(), lane="cpu", job_id=f"dl-{model_id}")
+    return {"ok": True, "model_id": model_id}
+
+
+@app.get("/api/models/download/{model_id}/status")
+async def download_status(model_id: str):
+    """Check download progress."""
+    if model_id in _download_status:
+        return _download_status[model_id]
+    return {"status": "idle"}
+
+
 # --- Storage / File Manager API ---
 
 @app.get("/api/projects")

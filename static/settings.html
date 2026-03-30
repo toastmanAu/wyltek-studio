@@ -205,6 +205,11 @@
       </div>
     </div>
 
+    <!-- Model Downloads -->
+    <h2>Model Downloads</h2>
+    <p class="backend-info" style="margin-bottom:16px">One-click download for image models, TTS voices, and LLMs. Models download in the background.</p>
+    <div id="model-catalog" style="margin-bottom:24px"></div>
+
     <h2>Backend Settings</h2>
     <p class="backend-info" style="margin-bottom:20px">Configure API keys and connection URLs for each backend. Keys are saved to the server config and persist across restarts.</p>
     <div id="backend-list"></div>
@@ -492,6 +497,107 @@
       }
     });
 
+    // --- Model Catalog ---
+    async function loadCatalog() {
+      try {
+        const resp = await fetch('/api/models/catalog');
+        const models = await resp.json();
+        const container = document.getElementById('model-catalog');
+        container.innerHTML = '';
+
+        // Group by category
+        const groups = {};
+        models.forEach(m => {
+          if (!groups[m.category]) groups[m.category] = [];
+          groups[m.category].push(m);
+        });
+
+        for (const [cat, items] of Object.entries(groups)) {
+          const section = document.createElement('div');
+          section.className = 'backend-section';
+          section.innerHTML = `
+            <div class="backend-header" onclick="this.parentElement.classList.toggle('open')" style="cursor:pointer">
+              <div class="left">
+                <span class="name">${cat}</span>
+                <span class="status" style="background:var(--surface-2);color:var(--text-dim);font-size:10px;padding:2px 6px;border-radius:8px">${items.filter(i=>i.installed).length}/${items.length} installed</span>
+              </div>
+              <span style="color:var(--text-dim)">&#9660;</span>
+            </div>
+            <div class="backend-body" style="display:none;padding:12px"></div>
+          `;
+
+          const body = section.querySelector('.backend-body');
+          section.querySelector('.backend-header').addEventListener('click', () => {
+            body.style.display = body.style.display === 'none' ? 'block' : 'none';
+          });
+
+          items.forEach(m => {
+            const row = document.createElement('div');
+            row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)';
+            row.id = `model-row-${m.id}`;
+
+            const sizeStr = m.size_mb >= 1000 ? `${(m.size_mb/1024).toFixed(1)} GB` : `${m.size_mb} MB`;
+
+            let actionHtml = '';
+            if (m.installed) {
+              actionHtml = '<span style="color:var(--success);font-size:12px">&#10003; Installed</span>';
+            } else if (m.download && m.download.status === 'downloading') {
+              actionHtml = `<span style="font-size:12px;color:var(--accent)">${m.download.progress}%</span>`;
+            } else {
+              actionHtml = `<button onclick="downloadModel('${m.id}')" style="padding:4px 12px;font-size:11px;background:var(--accent-dim);color:var(--accent);border:1px solid var(--accent);border-radius:4px;cursor:pointer">Download</button>`;
+            }
+
+            row.innerHTML = `
+              <div style="flex:1">
+                <div style="font-size:13px;font-weight:600">${m.name}</div>
+                <div style="font-size:11px;color:var(--text-dim)">${m.desc} (${sizeStr})</div>
+              </div>
+              <div class="model-action">${actionHtml}</div>
+            `;
+            body.appendChild(row);
+          });
+
+          container.appendChild(section);
+        }
+      } catch (e) {
+        document.getElementById('model-catalog').innerHTML = '<p style="color:var(--error)">Failed to load catalog</p>';
+      }
+    }
+
+    async function downloadModel(modelId) {
+      try {
+        const resp = await fetch(`/api/models/download/${modelId}`, { method: 'POST' });
+        const data = await resp.json();
+        if (data.error) { alert(data.error); return; }
+
+        // Poll progress
+        const row = document.getElementById(`model-row-${modelId}`);
+        const action = row.querySelector('.model-action');
+        action.innerHTML = '<span style="font-size:12px;color:var(--accent)">Starting...</span>';
+
+        const poll = setInterval(async () => {
+          const sr = await fetch(`/api/models/download/${modelId}/status`);
+          const st = await sr.json();
+          if (st.status === 'downloading') {
+            action.innerHTML = `<span style="font-size:12px;color:var(--accent)">${st.progress || 0}%</span>`;
+          } else if (st.status === 'complete') {
+            clearInterval(poll);
+            action.innerHTML = '<span style="color:var(--success);font-size:12px">&#10003; Installed</span>';
+            const msg = document.getElementById('saved-msg');
+            msg.textContent = 'Download complete!';
+            msg.classList.add('show');
+            setTimeout(() => msg.classList.remove('show'), 2000);
+          } else if (st.status === 'error') {
+            clearInterval(poll);
+            action.innerHTML = `<span style="color:var(--error);font-size:11px">Error: ${st.error}</span>`;
+          }
+        }, 2000);
+      } catch (e) {
+        alert('Download failed: ' + e.message);
+      }
+    }
+
+    loadCatalog();
     initOpSettings();
     init();
   </script>
