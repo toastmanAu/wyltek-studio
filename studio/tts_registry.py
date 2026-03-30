@@ -47,3 +47,12 @@ def init_engines(tts_config: dict):
     piper = PiperEngine(tts_config.get("piper", {}))
     if piper.available():
         register(piper)
+
+    # Kokoro — check if pip package installed
+    try:
+        from studio.tts_kokoro import KokoroEngine
+        kokoro = KokoroEngine(tts_config.get("kokoro", {}))
+        if kokoro.available():
+            register(kokoro)
+    except Exception:
+        pass
