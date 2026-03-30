@@ -118,6 +118,28 @@ Strategy: Install Piper first (instant, lightweight), add others as optional bac
 
 ---
 
+## Video Composition Engine Decision
+
+**Chosen: `ffmpeg-python`** (Python FFmpeg filter graph builder)
+
+Evaluated 2026-03-30. Alternatives considered:
+- MoviePy: active (v2.2.1) but 20x slower, no built-in transitions/Ken Burns
+- editly: feature-complete but unmaintained (3 years, Node.js)
+- FFCreator: Node.js, Chinese docs, decent but adds runtime dependency
+- Remotion: React-based, massive overkill for image→video composition
+- vidpy: alpha status, requires MLT framework
+
+**Why ffmpeg-python:**
+- Python-native (fits FastAPI stack, no Node.js needed)
+- Full FFmpeg filter graph access: xfade (30+ transitions), zoompan (Ken Burns), drawtext, amix
+- Thin wrapper = fast (no Python-layer overhead for rendering)
+- Active maintenance
+- FFmpeg 4.4.2 already installed with xfade + zoompan support confirmed
+
+**Integration:** `pip install ffmpeg-python`, build filter graphs in Python, execute via subprocess. Timeline JSON spec → ffmpeg-python filter graph → MP4/WebM output.
+
+**Fallback for text:** If FFmpeg's drawtext filter is insufficient for complex text layouts, add MoviePy's TextClip as a secondary dependency. Start with drawtext only.
+
 ## Technical Notes
 
 ### Timeline data model
