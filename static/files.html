@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Open Palette — File Manager</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+  <style>
+    .fm-page { max-width: 1100px; margin: 0 auto; padding: 24px; }
+    .fm-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 20px; flex-wrap: wrap; gap: 12px;
+    }
+    .fm-header h2 { margin: 0; }
+    .fm-nav { display: flex; gap: 8px; align-items: center; }
+    .fm-nav a, .fm-nav button {
+      padding: 6px 14px; font-size: 13px; border-radius: 6px;
+      text-decoration: none; cursor: pointer; border: 1px solid var(--border);
+      background: var(--surface); color: var(--text-dim);
+    }
+    .fm-nav a:hover, .fm-nav button:hover { border-color: var(--accent); color: var(--text); }
+    .fm-nav a.active, .fm-nav button.active {
+      background: var(--accent-dim); border-color: var(--accent); color: var(--accent);
+    }
+
+    /* Project cards */
+    .project-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+      gap: 12px; margin-bottom: 24px;
+    }
+    .project-card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 16px; cursor: pointer; transition: border-color 0.15s;
+    }
+    .project-card:hover { border-color: var(--accent); }
+    .project-card.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+    .project-card h4 { margin: 0 0 6px 0; font-size: 14px; }
+    .project-card .desc { font-size: 12px; color: var(--text-dim); margin-bottom: 8px; }
+    .project-card .counts {
+      display: flex; gap: 10px; font-size: 11px; color: var(--text-dim);
+    }
+    .project-card .counts span { display: flex; align-items: center; gap: 3px; }
+    .new-project-card {
+      border-style: dashed; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; min-height: 100px;
+      color: var(--text-dim); font-size: 13px; gap: 6px;
+    }
+    .new-project-card:hover { color: var(--accent); border-color: var(--accent); }
+
+    /* Asset grid */
+    .asset-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 10px;
+    }
+    .asset-card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+      overflow: hidden; position: relative; cursor: pointer;
+    }
+    .asset-card:hover { border-color: var(--accent); }
+    .asset-card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+    .asset-card img {
+      width: 100%; aspect-ratio: 1; object-fit: cover; display: block;
+    }
+    .asset-card .audio-thumb {
+      width: 100%; aspect-ratio: 1; display: flex; align-items: center;
+      justify-content: center; background: var(--surface-2); font-size: 32px;
+    }
+    .asset-card audio { width: 100%; }
+    .asset-card .asset-info {
+      padding: 6px 8px; font-size: 11px; color: var(--text-dim);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .asset-card .asset-type {
+      position: absolute; top: 4px; right: 4px; font-size: 9px;
+      padding: 2px 5px; border-radius: 3px;
+      background: rgba(0,0,0,0.7); color: var(--text);
+    }
+    .asset-card .select-check {
+      position: absolute; top: 4px; left: 4px; width: 20px; height: 20px;
+      border-radius: 50%; background: var(--accent); color: #fff;
+      display: none; align-items: center; justify-content: center;
+      font-size: 12px; font-weight: bold;
+    }
+    .asset-card.selected .select-check { display: flex; }
+
+    /* Actions bar */
+    .actions-bar {
+      display: flex; gap: 8px; margin: 16px 0; padding: 12px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; align-items: center; flex-wrap: wrap;
+    }
+    .actions-bar .sel-count { font-size: 13px; color: var(--text-dim); margin-right: auto; }
+    .actions-bar button {
+      padding: 6px 12px; font-size: 12px; border-radius: 6px; cursor: pointer;
+      border: 1px solid var(--border); background: var(--surface-2); color: var(--text);
+    }
+    .actions-bar button:hover { border-color: var(--accent); }
+    .actions-bar .btn-danger { color: var(--error); border-color: var(--error); }
+    .actions-bar .btn-danger:hover { background: rgba(239,68,68,0.15); }
+
+    /* Move modal */
+    .move-modal-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+      display: none; align-items: center; justify-content: center; z-index: 100;
+    }
+    .move-modal-overlay.active { display: flex; }
+    .move-modal {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 20px; min-width: 320px; max-width: 400px;
+    }
+    .move-modal h3 { margin: 0 0 12px 0; }
+    .move-target-list { max-height: 300px; overflow-y: auto; }
+    .move-target {
+      padding: 10px; border: 1px solid var(--border); border-radius: 6px;
+      margin-bottom: 6px; cursor: pointer; font-size: 13px;
+    }
+    .move-target:hover { border-color: var(--accent); background: var(--accent-dim); }
+    .move-modal .modal-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+
+    /* Section header */
+    .section-head {
+      display: flex; align-items: center; justify-content: space-between;
+      margin: 20px 0 12px 0;
+    }
+    .section-head h3 { margin: 0; font-size: 15px; }
+    .section-head .badge {
+      font-size: 11px; padding: 2px 8px; border-radius: 10px;
+      background: var(--surface-2); color: var(--text-dim);
+    }
+
+    .empty-state {
+      text-align: center; padding: 40px; color: var(--text-dim); font-size: 14px;
+    }
+
+    /* New project inline form */
+    .new-project-form {
+      display: none; padding: 16px; background: var(--surface);
+      border: 1px solid var(--accent); border-radius: var(--radius); margin-bottom: 16px;
+    }
+    .new-project-form.active { display: block; }
+    .new-project-form input, .new-project-form textarea {
+      width: 100%; padding: 8px; margin-bottom: 8px;
+      background: var(--surface-2); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text); font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <div class="fm-page">
+    <div class="fm-header">
+      <div>
+        <a href="/" style="color:var(--accent);text-decoration:none;font-size:13px">&larr; Back to studio</a>
+        <h2>File Manager</h2>
+      </div>
+      <div class="fm-nav">
+        <button class="active" id="tab-unsorted" onclick="showTab('unsorted')">Unsorted</button>
+        <button id="tab-projects" onclick="showTab('projects')">Projects</button>
+      </div>
+    </div>
+
+    <!-- Actions bar (shown when assets selected) -->
+    <div class="actions-bar" id="actions-bar" style="display:none">
+      <span class="sel-count" id="sel-count">0 selected</span>
+      <button onclick="moveSelected()">Move to Project</button>
+      <button class="btn-danger" onclick="deleteSelected()">Delete</button>
+      <button onclick="clearSelection()">Clear Selection</button>
+    </div>
+
+    <!-- Unsorted view -->
+    <div id="view-unsorted">
+      <div class="section-head">
+        <h3>Recent Generations</h3>
+        <span class="badge" id="unsorted-count">0</span>
+      </div>
+      <div class="asset-grid" id="unsorted-grid"></div>
+      <div class="empty-state" id="unsorted-empty" style="display:none">No unsorted files yet. Generate some images!</div>
+    </div>
+
+    <!-- Projects view -->
+    <div id="view-projects" style="display:none">
+      <div class="new-project-form" id="new-project-form">
+        <input type="text" id="np-name" placeholder="Project name">
+        <textarea id="np-desc" placeholder="Description (optional)" rows="2"></textarea>
+        <div style="display:flex;gap:8px">
+          <button class="btn" onclick="createProject()" style="padding:6px 16px;font-size:13px;background:var(--accent);color:#fff;border:none;border-radius:6px;cursor:pointer">Create</button>
+          <button class="btn" onclick="toggleNewProject(false)" style="padding:6px 16px;font-size:13px;background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:6px;cursor:pointer">Cancel</button>
+        </div>
+      </div>
+
+      <div class="project-grid" id="project-grid">
+        <div class="project-card new-project-card" onclick="toggleNewProject(true)">
+          <span style="font-size:24px">+</span>
+          <span>New Project</span>
+        </div>
+      </div>
+
+      <!-- Project detail (shown when project selected) -->
+      <div id="project-detail" style="display:none">
+        <div class="section-head">
+          <h3 id="project-detail-name"></h3>
+          <button onclick="closeProjectDetail()" style="padding:4px 10px;font-size:12px;background:var(--surface-2);color:var(--text-dim);border:1px solid var(--border);border-radius:6px;cursor:pointer">Close</button>
+        </div>
+        <p id="project-detail-desc" style="font-size:13px;color:var(--text-dim);margin-bottom:16px"></p>
+        <div class="asset-grid" id="project-assets-grid"></div>
+        <div class="empty-state" id="project-empty" style="display:none">No assets yet. Select files from Unsorted and move them here.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Move modal -->
+  <div class="move-modal-overlay" id="move-modal">
+    <div class="move-modal">
+      <h3>Move to Project</h3>
+      <div class="move-target-list" id="move-targets"></div>
+      <div class="modal-footer">
+        <button onclick="closeMoveModal()" style="padding:6px 16px;font-size:13px;background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:6px;cursor:pointer">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="saved-msg" id="toast-msg"></div>
+
+  <script>
+    let state = {
+      tab: 'unsorted',
+      unsorted: [],
+      projects: [],
+      selected: new Set(), // filenames
+      activeProject: null,
+    };
+
+    function toast(msg) {
+      const el = document.getElementById('toast-msg');
+      el.textContent = msg;
+      el.classList.add('show');
+      setTimeout(() => el.classList.remove('show'), 3000);
+    }
+
+    // --- Tabs ---
+    function showTab(tab) {
+      state.tab = tab;
+      document.getElementById('tab-unsorted').classList.toggle('active', tab === 'unsorted');
+      document.getElementById('tab-projects').classList.toggle('active', tab === 'projects');
+      document.getElementById('view-unsorted').style.display = tab === 'unsorted' ? 'block' : 'none';
+      document.getElementById('view-projects').style.display = tab === 'projects' ? 'block' : 'none';
+      if (tab === 'projects') loadProjects();
+      if (tab === 'unsorted') loadUnsorted();
+    }
+
+    // --- Unsorted ---
+    async function loadUnsorted() {
+      try {
+        const resp = await fetch('/api/unsorted');
+        state.unsorted = await resp.json();
+      } catch (e) { state.unsorted = []; }
+
+      const grid = document.getElementById('unsorted-grid');
+      grid.innerHTML = '';
+      document.getElementById('unsorted-count').textContent = state.unsorted.length;
+
+      if (state.unsorted.length === 0) {
+        document.getElementById('unsorted-empty').style.display = 'block';
+        return;
+      }
+      document.getElementById('unsorted-empty').style.display = 'none';
+
+      state.unsorted.forEach(item => {
+        grid.appendChild(makeAssetCard(item));
+      });
+    }
+
+    // --- Projects ---
+    async function loadProjects() {
+      try {
+        const resp = await fetch('/api/projects');
+        state.projects = await resp.json();
+      } catch (e) { state.projects = []; }
+
+      const grid = document.getElementById('project-grid');
+      // Keep the "new project" card, remove the rest
+      grid.innerHTML = '';
+      const newCard = document.createElement('div');
+      newCard.className = 'project-card new-project-card';
+      newCard.onclick = () => toggleNewProject(true);
+      newCard.innerHTML = '<span style="font-size:24px">+</span><span>New Project</span>';
+      grid.appendChild(newCard);
+
+      state.projects.forEach(p => {
+        const card = document.createElement('div');
+        card.className = 'project-card';
+        const counts = p.asset_counts || {};
+        const total = Object.values(counts).reduce((a, b) => a + b, 0);
+        card.innerHTML = `
+          <h4>${p.name}</h4>
+          <div class="desc">${p.description || 'No description'}</div>
+          <div class="counts">
+            ${counts.image ? `<span>${counts.image} images</span>` : ''}
+            ${counts.audio ? `<span>${counts.audio} audio</span>` : ''}
+            ${total === 0 ? '<span>Empty</span>' : ''}
+          </div>
+        `;
+        card.onclick = () => openProject(p.id);
+        grid.appendChild(card);
+      });
+    }
+
+    function toggleNewProject(show) {
+      document.getElementById('new-project-form').classList.toggle('active', show);
+      if (show) document.getElementById('np-name').focus();
+    }
+
+    async function createProject() {
+      const name = document.getElementById('np-name').value.trim();
+      if (!name) return;
+      const desc = document.getElementById('np-desc').value.trim();
+
+      try {
+        await fetch('/api/projects', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ name, description: desc }),
+        });
+        document.getElementById('np-name').value = '';
+        document.getElementById('np-desc').value = '';
+        toggleNewProject(false);
+        toast('Project created');
+        loadProjects();
+      } catch (e) {
+        toast('Failed to create project');
+      }
+    }
+
+    async function openProject(projectId) {
+      state.activeProject = projectId;
+      document.getElementById('project-detail').style.display = 'block';
+
+      try {
+        const meta = await (await fetch(`/api/projects/${projectId}`)).json();
+        document.getElementById('project-detail-name').textContent = meta.name;
+        document.getElementById('project-detail-desc').textContent = meta.description || '';
+
+        const assets = await (await fetch(`/api/projects/${projectId}/assets`)).json();
+        const grid = document.getElementById('project-assets-grid');
+        grid.innerHTML = '';
+
+        if (assets.length === 0) {
+          document.getElementById('project-empty').style.display = 'block';
+        } else {
+          document.getElementById('project-empty').style.display = 'none';
+          assets.forEach(item => {
+            grid.appendChild(makeAssetCard(item));
+          });
+        }
+      } catch (e) {
+        toast('Failed to load project');
+      }
+    }
+
+    function closeProjectDetail() {
+      state.activeProject = null;
+      document.getElementById('project-detail').style.display = 'none';
+    }
+
+    // --- Asset cards ---
+    function makeAssetCard(item) {
+      const card = document.createElement('div');
+      card.className = 'asset-card' + (state.selected.has(item.filename) ? ' selected' : '');
+      card.dataset.filename = item.filename;
+
+      let preview = '';
+      if (item.type === 'image') {
+        preview = `<img src="${item.url}" alt="" loading="lazy">`;
+      } else if (item.type === 'audio') {
+        preview = `<div class="audio-thumb">&#9835;</div><audio src="${item.url}" controls preload="none"></audio>`;
+      } else {
+        preview = `<div class="audio-thumb">&#128196;</div>`;
+      }
+
+      const prompt = item.meta?.prompt || '';
+      const infoText = prompt ? prompt.substring(0, 40) : item.filename;
+
+      card.innerHTML = `
+        <div class="select-check">&#10003;</div>
+        <span class="asset-type">${item.type}</span>
+        ${preview}
+        <div class="asset-info" title="${prompt}">${infoText}</div>
+      `;
+
+      card.addEventListener('click', (e) => {
+        // Don't toggle selection when clicking audio controls
+        if (e.target.closest('audio')) return;
+        toggleSelect(item.filename, card);
+      });
+
+      return card;
+    }
+
+    // --- Selection ---
+    function toggleSelect(filename, card) {
+      if (state.selected.has(filename)) {
+        state.selected.delete(filename);
+        card.classList.remove('selected');
+      } else {
+        state.selected.add(filename);
+        card.classList.add('selected');
+      }
+      updateActionsBar();
+    }
+
+    function clearSelection() {
+      state.selected.clear();
+      document.querySelectorAll('.asset-card.selected').forEach(c => c.classList.remove('selected'));
+      updateActionsBar();
+    }
+
+    function updateActionsBar() {
+      const bar = document.getElementById('actions-bar');
+      const count = state.selected.size;
+      if (count > 0) {
+        bar.style.display = 'flex';
+        document.getElementById('sel-count').textContent = `${count} selected`;
+      } else {
+        bar.style.display = 'none';
+      }
+    }
+
+    // --- Move ---
+    async function moveSelected() {
+      if (state.selected.size === 0) return;
+
+      // Load projects for the modal
+      try {
+        const resp = await fetch('/api/projects');
+        const projects = await resp.json();
+        const list = document.getElementById('move-targets');
+        list.innerHTML = '';
+
+        if (projects.length === 0) {
+          list.innerHTML = '<div style="padding:12px;color:var(--text-dim)">No projects yet. Create one first.</div>';
+        }
+
+        projects.forEach(p => {
+          const div = document.createElement('div');
+          div.className = 'move-target';
+          div.textContent = p.name;
+          div.onclick = () => doMove(p.id);
+          list.appendChild(div);
+        });
+
+        document.getElementById('move-modal').classList.add('active');
+      } catch (e) {
+        toast('Failed to load projects');
+      }
+    }
+
+    async function doMove(projectId) {
+      let moved = 0;
+      for (const filename of state.selected) {
+        try {
+          await fetch(`/api/projects/${projectId}/move`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ filename }),
+          });
+          moved++;
+        } catch (e) {}
+      }
+      closeMoveModal();
+      clearSelection();
+      toast(`Moved ${moved} files`);
+      if (state.tab === 'unsorted') loadUnsorted();
+      if (state.activeProject) openProject(state.activeProject);
+    }
+
+    function closeMoveModal() {
+      document.getElementById('move-modal').classList.remove('active');
+    }
+
+    // --- Delete ---
+    async function deleteSelected() {
+      if (!confirm(`Delete ${state.selected.size} files permanently?`)) return;
+      // TODO: implement server-side delete endpoint
+      toast('Delete not yet implemented — move to a project instead');
+    }
+
+    // --- Init ---
+    loadUnsorted();
+  </script>
+</body>
+</html>

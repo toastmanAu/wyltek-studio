@@ -76,6 +76,11 @@ async def settings_page():
     return FileResponse("static/settings.html")
 
 
+@app.get("/files")
+async def files_page():
+    return FileResponse("static/files.html")
+
+
 @app.get("/studio/tts")
 async def tts_page():
     return FileResponse("static/studio/tts.html")
