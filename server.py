@@ -48,6 +48,9 @@ async def lifespan(app):
     registry.init_backends(config.get("backends", {}))
     import scoring
     scoring.init_db()
+    from studio import tts_registry
+    tts_registry.init_engines(config.get("tts", {}))
+    os.makedirs("outputs/audio", exist_ok=True)
     yield
 
 
@@ -58,6 +61,7 @@ app = FastAPI(title="Open Palette", lifespan=lifespan)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 app.mount("/outputs", StaticFiles(directory="outputs"), name="outputs")
+app.mount("/audio", StaticFiles(directory="outputs/audio"), name="audio")
 
 
 @app.get("/")
@@ -68,6 +72,11 @@ async def index():
 @app.get("/settings")
 async def settings_page():
     return FileResponse("static/settings.html")
+
+
+@app.get("/studio/tts")
+async def tts_page():
+    return FileResponse("static/studio/tts.html")
 
 
 # --- Settings API ---
@@ -558,6 +567,104 @@ Respond ONLY with valid JSON (no markdown, no code fences):
         return JSONResponse({"error": "Ollama timed out (30s)"}, status_code=504)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# --- TTS API ---
+
+@app.get("/api/tts/engines")
+async def get_tts_engines():
+    """List installed TTS engines and their voices."""
+    from studio import tts_registry
+    return tts_registry.list_engines()
+
+
+@app.post("/api/tts/generate")
+async def tts_generate(request: Request):
+    """Generate speech from text. Returns audio file URL."""
+    data = await request.json()
+    text = data.get("text", "").strip()
+    engine_name = data.get("engine", "piper")
+    voice = data.get("voice", "")
+    speed = float(data.get("speed", 1.0))
+
+    if not text:
+        return JSONResponse({"error": "No text provided"}, status_code=400)
+
+    from studio import tts_registry
+    engine = tts_registry.get_engine(engine_name)
+    if not engine:
+        return JSONResponse({"error": f"Engine '{engine_name}' not available"}, status_code=400)
+
+    # Auto-select first voice if none specified
+    if not voice:
+        voices = engine.voices()
+        if not voices:
+            return JSONResponse({"error": "No voices installed"}, status_code=400)
+        voice = voices[0]["id"]
+
+    job_id = str(uuid.uuid4())[:8]
+    output_path = f"outputs/audio/{job_id}.wav"
+
+    async def _do_tts():
+        return await engine.generate(text, voice, output_path, speed)
+
+    try:
+        meta = await job_queue.submit(_do_tts(), lane="cpu", job_id=f"tts-{job_id}")
+        return {
+            "job_id": job_id,
+            "url": f"/audio/{job_id}.wav",
+            "engine": engine_name,
+            "voice": voice,
+            "text": text,
+            **meta,
+        }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/tts/compare")
+async def tts_compare(request: Request):
+    """Generate same text across multiple voices/engines for comparison."""
+    data = await request.json()
+    text = data.get("text", "").strip()
+    selections = data.get("selections", [])  # [{engine, voice}]
+
+    if not text:
+        return JSONResponse({"error": "No text provided"}, status_code=400)
+    if not selections:
+        return JSONResponse({"error": "No voices selected"}, status_code=400)
+
+    from studio import tts_registry
+    results = []
+
+    for sel in selections:
+        engine = tts_registry.get_engine(sel.get("engine", "piper"))
+        if not engine:
+            continue
+        voice = sel.get("voice", "")
+        job_id = str(uuid.uuid4())[:8]
+        output_path = f"outputs/audio/{job_id}.wav"
+
+        try:
+            meta = await job_queue.submit(
+                engine.generate(text, voice, output_path, float(data.get("speed", 1.0))),
+                lane="cpu", job_id=f"tts-{job_id}"
+            )
+            results.append({
+                "job_id": job_id,
+                "url": f"/audio/{job_id}.wav",
+                "engine": sel.get("engine"),
+                "voice": voice,
+                **meta,
+            })
+        except Exception as e:
+            results.append({
+                "engine": sel.get("engine"),
+                "voice": voice,
+                "error": str(e),
+            })
+
+    return {"text": text, "results": results}
 
 
 @app.post("/api/compare")

@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Open Palette — TTS Studio</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+  <style>
+    .studio-page {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 32px 24px;
+    }
+    .studio-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 24px;
+    }
+    .studio-header h2 { margin: 0; }
+    .back-link {
+      color: var(--accent);
+      text-decoration: none;
+      font-size: 13px;
+    }
+
+    /* Text input */
+    .tts-input {
+      width: 100%;
+      min-height: 120px;
+      padding: 14px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-size: 14px;
+      line-height: 1.5;
+      resize: vertical;
+    }
+    .tts-input:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    .char-count {
+      text-align: right;
+      font-size: 11px;
+      color: var(--text-dim);
+      margin-top: 4px;
+    }
+
+    /* Controls row */
+    .tts-controls {
+      display: flex;
+      gap: 12px;
+      margin: 16px 0;
+      flex-wrap: wrap;
+      align-items: end;
+    }
+    .control-group {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .control-group label {
+      font-size: 11px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .control-group select, .control-group input[type="range"] {
+      padding: 8px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      min-width: 180px;
+    }
+    .speed-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .speed-row input { min-width: 100px; }
+    .speed-val { font-size: 12px; color: var(--text-dim); font-family: monospace; }
+
+    /* Buttons */
+    .tts-actions {
+      display: flex;
+      gap: 8px;
+      margin: 16px 0;
+    }
+    .btn-speak {
+      padding: 10px 24px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .btn-speak:hover { background: var(--accent-hover); }
+    .btn-speak:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-compare-voices {
+      padding: 10px 24px;
+      background: var(--surface-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    .btn-compare-voices:hover { border-color: var(--accent); }
+
+    /* Single result */
+    .tts-result {
+      margin: 20px 0;
+      padding: 16px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      display: none;
+    }
+    .tts-result.active { display: block; }
+    .tts-result audio {
+      width: 100%;
+      margin-top: 8px;
+    }
+    .tts-meta {
+      display: flex;
+      gap: 16px;
+      font-size: 12px;
+      color: var(--text-dim);
+      margin-top: 8px;
+    }
+
+    /* Compare grid */
+    .tts-compare-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 12px;
+      margin: 20px 0;
+    }
+    .tts-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px;
+    }
+    .tts-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .tts-card-header .voice-name {
+      font-weight: 600;
+      font-size: 13px;
+    }
+    .tts-card-header .engine-badge {
+      font-size: 10px;
+      padding: 2px 6px;
+      background: var(--accent-dim);
+      color: var(--accent);
+      border-radius: 4px;
+    }
+    .tts-card audio {
+      width: 100%;
+      margin-top: 6px;
+    }
+    .tts-card .meta {
+      font-size: 11px;
+      color: var(--text-dim);
+      margin-top: 6px;
+    }
+    .tts-card.loading {
+      opacity: 0.6;
+    }
+    .tts-card.loading .voice-name::after {
+      content: ' — generating...';
+      color: var(--text-dim);
+      font-weight: normal;
+    }
+
+    /* Voice checkboxes for compare */
+    .voice-picker {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 6px;
+      margin: 12px 0;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+    .voice-option {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .voice-option:hover { border-color: var(--accent); }
+    .voice-option.selected { border-color: var(--accent); background: var(--accent-dim); }
+    .voice-option input { width: auto; }
+    .voice-option .vo-engine {
+      font-size: 10px;
+      color: var(--text-dim);
+      margin-left: auto;
+    }
+
+    .section-divider {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 24px 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="studio-page">
+    <div class="studio-header">
+      <div>
+        <a href="/" class="back-link">&larr; Back to studio</a>
+        <h2>TTS Playground</h2>
+        <p style="color:var(--text-dim);font-size:13px;margin-top:4px">
+          Generate speech from text using local AI voices. Compare engines and voices side-by-side.
+        </p>
+      </div>
+    </div>
+
+    <!-- Text input -->
+    <textarea class="tts-input" id="tts-text" placeholder="Enter text to speak...">Open Palette is a local-first AI image generation studio. It can generate images, enhance prompts with AI, and now it can talk.</textarea>
+    <div class="char-count"><span id="char-count">0</span> characters</div>
+
+    <!-- Controls -->
+    <div class="tts-controls">
+      <div class="control-group">
+        <label>Engine</label>
+        <select id="tts-engine"></select>
+      </div>
+      <div class="control-group">
+        <label>Voice</label>
+        <select id="tts-voice"></select>
+      </div>
+      <div class="control-group">
+        <label>Speed</label>
+        <div class="speed-row">
+          <input type="range" id="tts-speed" min="0.5" max="2.0" step="0.1" value="1.0">
+          <span class="speed-val" id="speed-val">1.0x</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Actions -->
+    <div class="tts-actions">
+      <button class="btn-speak" id="btn-speak">Generate Speech</button>
+      <button class="btn-compare-voices" id="btn-compare">Compare All Voices</button>
+    </div>
+
+    <!-- Single result -->
+    <div class="tts-result" id="tts-result">
+      <strong>Result</strong>
+      <audio id="tts-audio" controls></audio>
+      <div class="tts-meta" id="tts-meta"></div>
+    </div>
+
+    <hr class="section-divider" id="compare-divider" style="display:none">
+
+    <!-- Compare results -->
+    <div id="compare-section" style="display:none">
+      <h3>Voice Comparison</h3>
+      <div class="tts-compare-grid" id="compare-grid"></div>
+    </div>
+  </div>
+
+  <div class="saved-msg" id="toast-msg"></div>
+
+  <script>
+    let engines = [];
+
+    function toast(msg, type) {
+      const el = document.getElementById('toast-msg');
+      el.textContent = msg;
+      el.classList.add('show');
+      setTimeout(() => el.classList.remove('show'), 3000);
+    }
+
+    // --- Init ---
+    async function init() {
+      try {
+        const resp = await fetch('/api/tts/engines');
+        engines = await resp.json();
+      } catch (e) {
+        engines = [];
+      }
+
+      const engineSelect = document.getElementById('tts-engine');
+      engineSelect.innerHTML = '';
+      if (engines.length === 0) {
+        engineSelect.innerHTML = '<option value="">No TTS engines installed</option>';
+        document.getElementById('btn-speak').disabled = true;
+        return;
+      }
+
+      engines.forEach(e => {
+        const opt = document.createElement('option');
+        opt.value = e.name;
+        opt.textContent = e.name.charAt(0).toUpperCase() + e.name.slice(1) + ` (${e.voices.length} voices)`;
+        engineSelect.appendChild(opt);
+      });
+
+      updateVoices();
+      updateCharCount();
+    }
+
+    function updateVoices() {
+      const engineName = document.getElementById('tts-engine').value;
+      const engine = engines.find(e => e.name === engineName);
+      const voiceSelect = document.getElementById('tts-voice');
+      voiceSelect.innerHTML = '';
+
+      if (!engine) return;
+      engine.voices.forEach(v => {
+        const opt = document.createElement('option');
+        opt.value = v.id;
+        opt.textContent = `${v.id} (${v.language})`;
+        voiceSelect.appendChild(opt);
+      });
+    }
+
+    function updateCharCount() {
+      document.getElementById('char-count').textContent =
+        document.getElementById('tts-text').value.length;
+    }
+
+    // --- Generate single ---
+    async function generateSpeech() {
+      const text = document.getElementById('tts-text').value.trim();
+      if (!text) { toast('Enter some text first', 'error'); return; }
+
+      const btn = document.getElementById('btn-speak');
+      btn.disabled = true;
+      btn.textContent = 'Generating...';
+
+      try {
+        const resp = await fetch('/api/tts/generate', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            text,
+            engine: document.getElementById('tts-engine').value,
+            voice: document.getElementById('tts-voice').value,
+            speed: parseFloat(document.getElementById('tts-speed').value),
+          }),
+        });
+        const data = await resp.json();
+        if (data.error) throw new Error(data.error);
+
+        const result = document.getElementById('tts-result');
+        result.classList.add('active');
+        const audio = document.getElementById('tts-audio');
+        audio.src = data.url + '?t=' + Date.now();
+        audio.play();
+
+        document.getElementById('tts-meta').innerHTML = `
+          <span>Duration: ${data.duration}s</span>
+          <span>Voice: ${data.voice}</span>
+          <span>Engine: ${data.engine}</span>
+          <span>Size: ${(data.file_size / 1024).toFixed(0)} KB</span>
+        `;
+      } catch (e) {
+        toast('TTS failed: ' + e.message, 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Generate Speech';
+      }
+    }
+
+    // --- Compare all voices ---
+    async function compareVoices() {
+      const text = document.getElementById('tts-text').value.trim();
+      if (!text) { toast('Enter some text first', 'error'); return; }
+
+      const speed = parseFloat(document.getElementById('tts-speed').value);
+
+      // Build selection list: all voices from all engines
+      const selections = [];
+      engines.forEach(e => {
+        e.voices.forEach(v => {
+          selections.push({ engine: e.name, voice: v.id });
+        });
+      });
+
+      if (selections.length === 0) { toast('No voices available', 'error'); return; }
+
+      const btn = document.getElementById('btn-compare');
+      btn.disabled = true;
+      btn.textContent = 'Comparing...';
+
+      // Show grid with loading cards
+      const grid = document.getElementById('compare-grid');
+      grid.innerHTML = '';
+      document.getElementById('compare-section').style.display = 'block';
+      document.getElementById('compare-divider').style.display = 'block';
+
+      selections.forEach(sel => {
+        const card = document.createElement('div');
+        card.className = 'tts-card loading';
+        card.id = `tts-card-${sel.engine}-${sel.voice}`;
+        card.innerHTML = `
+          <div class="tts-card-header">
+            <span class="voice-name">${sel.voice}</span>
+            <span class="engine-badge">${sel.engine}</span>
+          </div>
+          <audio controls style="width:100%"></audio>
+          <div class="meta"></div>
+        `;
+        grid.appendChild(card);
+      });
+
+      try {
+        const resp = await fetch('/api/tts/compare', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ text, selections, speed }),
+        });
+        const data = await resp.json();
+
+        data.results.forEach(r => {
+          const card = document.getElementById(`tts-card-${r.engine}-${r.voice}`);
+          if (!card) return;
+          card.classList.remove('loading');
+
+          if (r.error) {
+            card.querySelector('.meta').textContent = 'Error: ' + r.error;
+            return;
+          }
+
+          const audio = card.querySelector('audio');
+          audio.src = r.url + '?t=' + Date.now();
+          card.querySelector('.meta').textContent =
+            `${r.duration}s / ${(r.file_size / 1024).toFixed(0)} KB`;
+        });
+      } catch (e) {
+        toast('Compare failed: ' + e.message, 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Compare All Voices';
+      }
+    }
+
+    // --- Events ---
+    document.getElementById('tts-engine').addEventListener('change', updateVoices);
+    document.getElementById('tts-text').addEventListener('input', updateCharCount);
+    document.getElementById('tts-speed').addEventListener('input', (e) => {
+      document.getElementById('speed-val').textContent = parseFloat(e.target.value).toFixed(1) + 'x';
+    });
+    document.getElementById('btn-speak').addEventListener('click', generateSpeech);
+    document.getElementById('btn-compare').addEventListener('click', compareVoices);
+
+    // Ctrl+Enter to generate
+    document.getElementById('tts-text').addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') generateSpeech();
+    });
+
+    init();
+  </script>
+</body>
+</html>
