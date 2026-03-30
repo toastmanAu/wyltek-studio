@@ -90,6 +90,16 @@ const MODEL_DEFAULTS = {
     width: 1024, height: 1024, steps: 28, cfg: 7.0,
     tips: 'Stable Diffusion 3 Medium Q4 — transformer-based, good prompt adherence. Use 25-30 steps, CFG 5-8. Different aesthetic from SDXL. ~5GB VRAM.',
   },
+  // RealVisXL V5 — upgraded realistic model
+  'RealVisXL_V5.0-Q4_0.gguf': {
+    width: 1024, height: 1024, steps: 28, cfg: 5.5,
+    tips: 'RealVisXL V5 — upgraded version with better architecture, interiors, and skin tones. Use 25-35 steps, CFG 4.5-6.5.',
+  },
+  // ZavyChromaXL — vibrant fantasy and sci-fi
+  'zavychromaxl_v100-Q4_0.gguf': {
+    width: 1024, height: 1024, steps: 30, cfg: 7.0,
+    tips: 'ZavyChromaXL — punchy, saturated colors. Excels at fantasy, sci-fi, concept art, and anything that benefits from vivid palettes. CFG 6-8.',
+  },
   // SDXL Lightning — ByteDance distilled model
   'sdxl-lightning-4step.safetensors': {
     width: 1024, height: 1024, steps: 4, cfg: 1.0,

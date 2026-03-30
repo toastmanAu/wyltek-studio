@@ -17,11 +17,13 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from backends import registry
+from job_queue import JobQueue
 
 # Global state
 config = {}
 jobs: dict[str, dict] = {}  # job_id -> status
 ws_clients: list[WebSocket] = []
+job_queue = JobQueue()
 _gallery_cache: dict = {"items": None, "ts": 0.0}
 GALLERY_TTL = 10  # seconds — also invalidated on job completion
 
@@ -370,9 +372,15 @@ async def generate(
     }
 
     jobs[job_id] = {"status": "queued", "params": params, "progress": 0}
-    asyncio.create_task(_run_job(job_id, params))
+    job_queue.submit_background(_run_job(job_id, params), lane="gpu", job_id=job_id)
 
     return {"job_id": job_id}
+
+
+@app.get("/api/queue")
+async def get_queue_status():
+    """Current queue status across all resource lanes."""
+    return job_queue.status()
 
 
 @app.get("/api/job/{job_id}")
@@ -380,7 +388,12 @@ async def get_job(job_id: str):
     """Poll job status."""
     if job_id not in jobs:
         return JSONResponse({"error": "Job not found"}, status_code=404)
-    return jobs[job_id]
+    result = dict(jobs[job_id])
+    # Add queue position for queued/running jobs
+    pos = job_queue.position(job_id)
+    if pos:
+        result["queue"] = pos
+    return result
 
 
 # --- Scoring API (static paths first, then parameterized) ---
@@ -595,7 +608,7 @@ async def compare(
             "reference_images": ref_paths,
         }
         jobs[job_id] = {"status": "queued", "params": params, "progress": 0, "comparison_id": comparison_id}
-        asyncio.create_task(_run_job(job_id, params))
+        job_queue.submit_background(_run_job(job_id, params), lane="gpu", job_id=job_id)
         job_ids.append({"job_id": job_id, "backend": entry["backend"], "model": entry.get("model", "")})
 
     return {"comparison_id": comparison_id, "jobs": job_ids}

@@ -49,6 +49,16 @@ MODEL_DEFAULTS = {
         "sampler": "dpmpp_2m", "scheduler": "karras",
         "steps": 28, "cfg": 5.5,
     },
+    # --- RealVisXL V5 (upgraded realism) ---
+    "RealVisXL_V5.0-Q4_0.gguf": {
+        "sampler": "dpmpp_2m", "scheduler": "karras",
+        "steps": 28, "cfg": 5.5,
+    },
+    # --- ZavyChromaXL (vibrant fantasy/sci-fi) ---
+    "zavychromaxl_v100-Q4_0.gguf": {
+        "sampler": "dpmpp_2m", "scheduler": "karras",
+        "steps": 30, "cfg": 7.0,
+    },
     # --- SDXL Lightning (distilled 4-step) ---
     "sdxl-lightning-4step.safetensors": {
         "sampler": "euler", "scheduler": "sgm_uniform",
