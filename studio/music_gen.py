@@ -183,10 +183,16 @@ class MusicGenEngine:
         return self._make_result(full_audio, sample_rate, output_path, "loop")
 
     def _wav_to_numpy(self, wav_tensor):
-        """Convert model output tensor to numpy array for soundfile."""
+        """Convert model output tensor to numpy array for soundfile.
+        MusicGen returns (channels, samples) — we need 1D mono."""
         audio = wav_tensor.cpu().numpy()
         if audio.ndim == 2:
-            audio = audio.T  # channels last
+            # Mono: take first channel. Stereo: mix down.
+            if audio.shape[0] <= 2:
+                audio = audio[0]  # first channel (mono from MusicGen)
+            else:
+                audio = audio.mean(axis=-1)  # shouldn't happen but safe
+        audio = audio.flatten()
         return audio
 
     def _crossfade(self, chunk_a, chunk_b, overlap_sec, sample_rate):
