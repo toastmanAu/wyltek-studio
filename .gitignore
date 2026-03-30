@@ -1,9 +1,15 @@
 config.yaml
-outputs/
-uploads/
 __pycache__/
 *.pyc
 .env
 venv/
 node_modules/
+
+# User content
+storage/
+outputs/
+uploads/
 data/
+
+# Engine binaries & models (downloaded, not committed)
+engines/

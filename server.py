@@ -46,11 +46,13 @@ from contextlib import asynccontextmanager
 async def lifespan(app):
     load_config()
     registry.init_backends(config.get("backends", {}))
+    import storage as store
+    store.init()
     import scoring
+    scoring.DB_PATH = store.db_path("scores.db")
     scoring.init_db()
     from studio import tts_registry
     tts_registry.init_engines(config.get("tts", {}))
-    os.makedirs("outputs/audio", exist_ok=True)
     yield
 
 
@@ -308,20 +310,38 @@ async def get_gallery():
     if _gallery_cache["items"] is not None and now - _gallery_cache["ts"] < GALLERY_TTL:
         return _gallery_cache["items"]
 
-    output_dir = Path(config["server"]["output_dir"])
+    import storage as store
+    # Gallery pulls from unsorted (recent quick generations)
+    # plus the old outputs/ dir for backwards compat during migration
     items = []
-    for img in sorted(output_dir.glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True):
-        meta_path = img.with_suffix(".json")
-        meta = {}
-        if meta_path.exists():
-            with open(meta_path) as f:
-                meta = json.load(f)
-        items.append({
-            "filename": img.name,
-            "url": f"/outputs/{img.name}",
-            "created": datetime.fromtimestamp(img.stat().st_mtime).isoformat(),
-            "meta": meta,
-        })
+    for item in store.list_unsorted(limit=50):
+        if item["type"] == "image":
+            items.append({
+                "filename": item["filename"],
+                "url": item["url"],
+                "created": item["created"],
+                "meta": item.get("meta", {}),
+            })
+
+    # Also check legacy outputs/ dir
+    legacy_dir = Path(config["server"]["output_dir"])
+    if legacy_dir.exists():
+        for img in sorted(legacy_dir.glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True):
+            if any(i["filename"] == img.name for i in items):
+                continue
+            meta_path = img.with_suffix(".json")
+            meta = {}
+            if meta_path.exists():
+                with open(meta_path) as f:
+                    meta = json.load(f)
+            items.append({
+                "filename": img.name,
+                "url": f"/outputs/{img.name}",
+                "created": datetime.fromtimestamp(img.stat().st_mtime).isoformat(),
+                "meta": meta,
+            })
+
+    items.sort(key=lambda x: x["created"], reverse=True)
     result = items[:50]
     _gallery_cache.update({"items": result, "ts": now})
     return result
@@ -569,6 +589,94 @@ Respond ONLY with valid JSON (no markdown, no code fences):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+# --- Storage / File Manager API ---
+
+@app.get("/api/projects")
+async def api_list_projects():
+    """List all projects."""
+    import storage as store
+    return store.list_projects()
+
+
+@app.post("/api/projects")
+async def api_create_project(request: Request):
+    """Create a new project."""
+    import storage as store
+    data = await request.json()
+    name = data.get("name", "").strip()
+    if not name:
+        return JSONResponse({"error": "Project name required"}, status_code=400)
+    meta = store.create_project(name, data.get("description", ""))
+    return meta
+
+
+@app.get("/api/projects/{project_id}")
+async def api_get_project(project_id: str):
+    """Get project details with asset counts."""
+    import storage as store
+    meta = store.get_project(project_id)
+    if not meta:
+        return JSONResponse({"error": "Project not found"}, status_code=404)
+    return meta
+
+
+@app.put("/api/projects/{project_id}")
+async def api_update_project(project_id: str, request: Request):
+    """Update project metadata."""
+    import storage as store
+    data = await request.json()
+    meta = store.update_project(project_id, data)
+    if not meta:
+        return JSONResponse({"error": "Project not found"}, status_code=404)
+    return meta
+
+
+@app.delete("/api/projects/{project_id}")
+async def api_delete_project(project_id: str):
+    """Delete a project and all its assets."""
+    import storage as store
+    if store.delete_project(project_id):
+        return {"ok": True}
+    return JSONResponse({"error": "Project not found"}, status_code=404)
+
+
+@app.get("/api/projects/{project_id}/assets")
+async def api_project_assets(project_id: str):
+    """List all assets in a project."""
+    import storage as store
+    return store.list_project_assets(project_id)
+
+
+@app.post("/api/projects/{project_id}/move")
+async def api_move_asset(project_id: str, request: Request):
+    """Move an asset into a project."""
+    import storage as store
+    data = await request.json()
+    filename = data.get("filename", "")
+    if not filename:
+        return JSONResponse({"error": "filename required"}, status_code=400)
+    if store.move_asset(filename, project_id):
+        return {"ok": True}
+    return JSONResponse({"error": "Asset not found"}, status_code=404)
+
+
+@app.get("/api/unsorted")
+async def api_list_unsorted():
+    """List recent unsorted assets."""
+    import storage as store
+    return store.list_unsorted(limit=100)
+
+
+@app.get("/storage/{filename:path}")
+async def serve_storage_file(filename: str):
+    """Serve any file from storage by filename (searches projects + unsorted)."""
+    import storage as store
+    path = store.resolve_asset(filename)
+    if path and path.exists():
+        return FileResponse(str(path))
+    return JSONResponse({"error": "File not found"}, status_code=404)
+
+
 # --- TTS API ---
 
 @app.get("/api/tts/engines")
@@ -603,7 +711,8 @@ async def tts_generate(request: Request):
         voice = voices[0]["id"]
 
     job_id = str(uuid.uuid4())[:8]
-    output_path = f"outputs/audio/{job_id}.wav"
+    import storage as store
+    output_path = str(store.asset_path(job_id, "audio", ".wav"))
 
     async def _do_tts():
         return await engine.generate(text, voice, output_path, speed)
@@ -612,7 +721,7 @@ async def tts_generate(request: Request):
         meta = await job_queue.submit(_do_tts(), lane="cpu", job_id=f"tts-{job_id}")
         return {
             "job_id": job_id,
-            "url": f"/audio/{job_id}.wav",
+            "url": f"/storage/{job_id}.wav",
             "engine": engine_name,
             "voice": voice,
             "text": text,
@@ -643,7 +752,8 @@ async def tts_compare(request: Request):
             continue
         voice = sel.get("voice", "")
         job_id = str(uuid.uuid4())[:8]
-        output_path = f"outputs/audio/{job_id}.wav"
+        import storage as store
+        output_path = str(store.asset_path(job_id, "audio", ".wav"))
 
         try:
             meta = await job_queue.submit(
@@ -652,7 +762,7 @@ async def tts_compare(request: Request):
             )
             results.append({
                 "job_id": job_id,
-                "url": f"/audio/{job_id}.wav",
+                "url": f"/storage/{job_id}.wav",
                 "engine": sel.get("engine"),
                 "voice": voice,
                 **meta,
@@ -768,7 +878,8 @@ async def _run_job(job_id: str, params: dict):
         if not backend:
             raise ValueError(f"Backend '{backend_name}' not available")
 
-        output_path = Path(config["server"]["output_dir"]) / f"{job_id}.png"
+        import storage as store
+        output_path = store.asset_path(job_id, "image", ".png")
 
         async def on_progress(pct: int, msg: str = ""):
             jobs[job_id]["progress"] = pct
@@ -824,13 +935,13 @@ async def _run_job(job_id: str, params: dict):
         jobs[job_id].update({
             "status": "complete",
             "progress": 100,
-            "output_url": f"/outputs/{job_id}.png",
+            "output_url": f"/storage/{job_id}.png",
             "scores": scores,
         })
         await broadcast({
             "type": "job_update", "job_id": job_id,
             "status": "complete", "progress": 100,
-            "output_url": f"/outputs/{job_id}.png",
+            "output_url": f"/storage/{job_id}.png",
             "scores": scores,
         })
 

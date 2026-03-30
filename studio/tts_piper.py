@@ -7,8 +7,8 @@ import wave
 from pathlib import Path
 
 
-DEFAULT_PIPER_DIR = Path(__file__).parent.parent / "tts" / "piper"
-DEFAULT_VOICES_DIR = Path(__file__).parent.parent / "tts" / "voices"
+DEFAULT_PIPER_DIR = Path(__file__).parent.parent / "engines" / "piper"
+DEFAULT_VOICES_DIR = Path(__file__).parent.parent / "engines" / "voices"
 
 
 class PiperEngine:
