@@ -1,6 +1,14 @@
 # Open Palette Configuration
 # Copy to config.yaml and edit to match your setup
 
+# Prompt Optimizer — uses local Ollama LLM to enhance prompts (runs on CPU)
+# Install Ollama: curl -fsSL https://ollama.com/install.sh | sh
+# Pull a model: ollama pull qwen2.5:14b
+prompt_optimizer:
+  enabled: false
+  ollama_url: "http://[::1]:11434"  # IPv6 localhost — change if Ollama is remote
+  model: "qwen2.5:14b"             # Any Ollama model works — configure in Settings
+
 server:
   host: "0.0.0.0"
   port: 7860

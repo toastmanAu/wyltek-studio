@@ -14,6 +14,19 @@ const state = {
   comparePollTimer: null,
 };
 
+// LoRA compatibility — SDXL architecture only (not Flux, SD3, or SD 1.5)
+function _isLoraCompatible(modelId) {
+  if (!modelId) return false;
+  const id = modelId.toLowerCase();
+  // Explicitly NOT compatible
+  if (id.includes('flux') || id.includes('sd3') || id.includes('v1-5') || id.includes('sd_1') || id.includes('1.5')) return false;
+  // Compatible: anything SDXL-based
+  if (id.includes('sdxl') || id.includes('xl') || id.includes('juggernaut') || id.includes('realvis') || id.includes('dreamshaper') || id.includes('lightning')) return true;
+  // Cloud models — no LoRA
+  if (!id.endsWith('.safetensors') && !id.endsWith('.gguf')) return false;
+  return false;
+}
+
 // Per-model optimal defaults — trained resolutions + recommended settings
 const MODEL_DEFAULTS = {
   // SD 1.5 — trained on 512x512
@@ -33,6 +46,54 @@ const MODEL_DEFAULTS = {
   'RealVisXL_V4.0-Q4_0.gguf': {
     width: 1024, height: 1024, steps: 28, cfg: 5.5,
     tips: 'RealVisXL is tuned for realistic portraits and scenes. Use 1024x1024, 25-35 steps, CFG 4.5-6.5. Lower CFG = more natural. Great for people, architecture, nature.',
+  },
+  // SDXL base safetensor — trained on 1024x1024
+  'sd_xl_base_1.0.safetensors': {
+    width: 1024, height: 1024, steps: 25, cfg: 7.0,
+    tips: 'SDXL base model. Best at 1024x1024, 20-30 steps, CFG 6-8. Good all-rounder for both photo and art styles. Foundation model that all XL finetunes build on.',
+  },
+  // Juggernaut XL v9 — photorealistic SDXL finetune
+  'juggernautXL_v9.safetensors': {
+    width: 1024, height: 1024, steps: 30, cfg: 6.0,
+    tips: 'Juggernaut XL v9 — top-tier photorealism. Use 1024x1024, 25-35 steps, CFG 5-7. Add "photorealistic, detailed, 8k" to prompts. Excels at people, landscapes, products.',
+  },
+  // RealVisXL V4 — realistic portraits and scenes
+  'realvisxl-v4.safetensors': {
+    width: 1024, height: 1024, steps: 28, cfg: 5.5,
+    tips: 'RealVisXL V4 — tuned for realistic portraits and scenes. Use 1024x1024, 25-35 steps, CFG 4.5-6.5. Lower CFG = more natural. Great for people, architecture, nature.',
+  },
+  // DreamShaper XL Turbo — fast versatile generation
+  'dreamshaper-xl-v21.safetensors': {
+    width: 1024, height: 1024, steps: 8, cfg: 2.0,
+    tips: 'DreamShaper XL Turbo — optimised for speed. Only needs 6-10 steps at CFG 1.5-2.5. Great for rapid iteration. Versatile style — handles illustration, photo, fantasy.',
+  },
+  // Flux.1 Dev GGUF — best open-source model, various quantizations
+  'flux1-dev-Q4_0.gguf': {
+    width: 1024, height: 1024, steps: 20, cfg: 3.5,
+    tips: 'Flux.1 Dev Q4 — state-of-the-art quality in ~6GB VRAM. Use 20-30 steps, CFG 3-4. Excellent prompt following, photorealism, and text rendering. Euler sampler, simple scheduler.',
+  },
+  'flux1-dev-Q5_K_S.gguf': {
+    width: 1024, height: 1024, steps: 20, cfg: 3.5,
+    tips: 'Flux.1 Dev Q5 — higher fidelity quantization (~7GB). Same settings as Q4 but slightly sharper details. May be tight on 8GB VRAM.',
+  },
+  'flux1-dev-Q8_0.gguf': {
+    width: 1024, height: 1024, steps: 20, cfg: 3.5,
+    tips: 'Flux.1 Dev Q8 — near-lossless (~12GB). Will use CPU offloading on 8GB GPU — slower but maximum quality. Best for hero images where you can wait.',
+  },
+  // Flux.1 Schnell — ultra-fast 4-step generation
+  'flux1-schnell-Q4_0.gguf': {
+    width: 1024, height: 1024, steps: 4, cfg: 1.0,
+    tips: 'Flux.1 Schnell — distilled for speed. Only 4 steps needed! CFG is ignored (set to 1). Great for rapid iteration and drafts. Same quality architecture as Dev but much faster.',
+  },
+  // SD3 Medium — Stability AI's transformer architecture
+  'sd3-medium-Q4_0.gguf': {
+    width: 1024, height: 1024, steps: 28, cfg: 7.0,
+    tips: 'Stable Diffusion 3 Medium Q4 — transformer-based, good prompt adherence. Use 25-30 steps, CFG 5-8. Different aesthetic from SDXL. ~5GB VRAM.',
+  },
+  // SDXL Lightning — ByteDance distilled model
+  'sdxl-lightning-4step.safetensors': {
+    width: 1024, height: 1024, steps: 4, cfg: 1.0,
+    tips: 'SDXL Lightning — distilled to 4 steps. CFG ~1. Extremely fast with decent quality. Uses SDXL architecture so compatible with SDXL LoRAs.',
   },
   // Gemini models — resolution flexible
   'gemini-2.5-flash-image': {
@@ -74,6 +135,21 @@ document.addEventListener('DOMContentLoaded', async () => {
   await loadGallery();
   initWebSocket();
   bindEvents();
+  // Check if OP prompt optimizer is available
+  fetch('/api/op-prompt/status')
+    .then(r => r.json())
+    .then(data => {
+      state.opStatus = data;
+      const btn = document.getElementById('btn-op-prompt');
+      if (!data.available) {
+        btn.classList.add('unavailable');
+        btn.title = data.reason || 'Prompt optimizer not available';
+      }
+    })
+    .catch(() => {
+      state.opStatus = { available: false, reason: 'Could not reach server' };
+      document.getElementById('btn-op-prompt').classList.add('unavailable');
+    });
 });
 
 async function loadBackends() {
@@ -186,10 +262,10 @@ function selectBackend(name) {
       const label = typeof m === 'string' ? m : m.label;
       const available = typeof m === 'string' || m.available !== false;
       const discovered = typeof m === 'object' && m.discovered;
+      const loraOk = _isLoraCompatible(id);
       opt.value = id;
-      opt.textContent = available
-        ? (discovered ? `${label}  [auto-detected]` : label)
-        : `${label}  [not installed]`;
+      const suffix = !available ? '  [not installed]' : discovered ? '  [auto-detected]' : '';
+      opt.textContent = (loraOk ? '\u2605 ' : '') + label + suffix;
       opt.disabled = !available;
       if (!available) opt.style.color = '#555';
       modelSelect.appendChild(opt);
@@ -211,6 +287,21 @@ function selectBackend(name) {
       opt.disabled = !available;
       if (!available) opt.style.color = '#555';
       ipSelect.appendChild(opt);
+    });
+  }
+
+  // Update LoRA options (ComfyUI only — SDXL compatible)
+  const loraSelect = document.getElementById('lora-select');
+  loraSelect.innerHTML = '<option value="">None</option>';
+  if (name === 'comfyui' && info.model_categories?.loras) {
+    info.model_categories.loras.forEach(m => {
+      const opt = document.createElement('option');
+      const available = m.available !== false;
+      opt.value = m.id;
+      opt.textContent = available ? m.label : `${m.label}  [not installed]`;
+      opt.disabled = !available;
+      if (!available) opt.style.color = '#555';
+      loraSelect.appendChild(opt);
     });
   }
 
@@ -258,6 +349,23 @@ function updateModelInfo() {
     document.getElementById('cfg-scale').value = defaults.cfg;
     document.getElementById('cfg-val').textContent = defaults.cfg.toFixed(1);
   }
+
+  // LoRA compatibility — disable selector + silently clear for non-SDXL models
+  const loraSelect = document.getElementById('lora-select');
+  const loraStrength = document.getElementById('lora-strength');
+  const loraOk = _isLoraCompatible(modelId);
+  if (loraSelect) {
+    loraSelect.disabled = !loraOk;
+    if (!loraOk) {
+      loraSelect.value = '';
+      loraSelect.style.opacity = '0.4';
+    } else {
+      loraSelect.style.opacity = '1';
+    }
+  }
+  if (loraStrength) loraStrength.disabled = !loraOk;
+  const loraClipStrength = document.getElementById('lora-clip-strength');
+  if (loraClipStrength) loraClipStrength.disabled = !loraOk;
 }
 
 // --- Reference images ---
@@ -286,7 +394,20 @@ function bindEvents() {
 
   // Advanced toggle
   document.getElementById('advanced-toggle').addEventListener('click', () => {
-    document.getElementById('advanced-content').classList.toggle('open');
+    const content = document.getElementById('advanced-content');
+    content.classList.toggle('open');
+    document.getElementById('advanced-toggle').classList.toggle('open');
+  });
+
+  // Mobile sidebar expand/collapse (click the ::after pseudo-element area)
+  document.querySelector('.sidebar').addEventListener('click', (e) => {
+    if (window.innerWidth > 768) return;
+    const sidebar = e.currentTarget;
+    const rect = sidebar.getBoundingClientRect();
+    // Only toggle if click is in the bottom 40px (the ::after area)
+    if (e.clientY > rect.bottom - 40 && e.clientY <= rect.bottom) {
+      sidebar.classList.toggle('expanded');
+    }
   });
 
   // Range sliders
@@ -300,11 +421,25 @@ function bindEvents() {
     document.getElementById('ip-val').textContent = parseFloat(e.target.value).toFixed(2);
   });
 
+  document.getElementById('lora-strength').addEventListener('input', (e) => {
+    document.getElementById('lora-val').textContent = parseFloat(e.target.value).toFixed(2);
+  });
+  document.getElementById('lora-clip-strength').addEventListener('input', (e) => {
+    document.getElementById('lora-clip-val').textContent = parseFloat(e.target.value).toFixed(2);
+  });
+
   // Model change
   document.getElementById('model-select').addEventListener('change', updateModelInfo);
 
   // Generate
   document.getElementById('btn-generate').addEventListener('click', generate);
+
+  // OP my prompt
+  document.getElementById('btn-op-prompt').addEventListener('click', opMyPrompt);
+  document.getElementById('prompt').addEventListener('input', (e) => {
+    const opBtn = document.getElementById('btn-op-prompt');
+    if (opBtn.style.display !== 'none') opBtn.disabled = !e.target.value.trim();
+  });
 
   // Keyboard shortcut
   document.addEventListener('keydown', (e) => {
@@ -315,6 +450,9 @@ function bindEvents() {
   document.getElementById('btn-save').addEventListener('click', saveImage);
   document.getElementById('btn-copy-url').addEventListener('click', copyImageUrl);
   document.getElementById('btn-use-as-ref').addEventListener('click', useAsRef);
+
+  // Batch
+  document.getElementById('btn-batch').addEventListener('click', startBatch);
 
   // Compare
   document.getElementById('btn-compare').addEventListener('click', openCompareModal);
@@ -332,21 +470,41 @@ function bindEvents() {
 }
 
 function setRefImage(index, file) {
-  state.refImages[index] = file;
-  const slot = document.querySelector(`.ref-slot[data-index="${index}"]`);
-  slot.classList.add('has-image');
-  // Show preview
-  const reader = new FileReader();
-  reader.onload = (e) => {
+  // Downscale client-side: 1024px max edge, JPEG 85% — reduces upload size + VRAM
+  _downscaleImage(file, 1024, 0.85).then(scaled => {
+    state.refImages[index] = scaled;
+    const slot = document.querySelector(`.ref-slot[data-index="${index}"]`);
+    slot.classList.add('has-image');
+    const url = URL.createObjectURL(scaled);
     let img = slot.querySelector('img');
     if (!img) {
       img = document.createElement('img');
       slot.insertBefore(img, slot.firstChild);
     }
-    img.src = e.target.result;
-  };
-  reader.readAsDataURL(file);
-  slot.querySelector('.plus').style.display = 'none';
+    img.src = url;
+    slot.querySelector('.plus').style.display = 'none';
+  });
+}
+
+function _downscaleImage(file, maxEdge, quality) {
+  return new Promise((resolve) => {
+    // Skip if already small enough
+    if (file.size < 500_000) { resolve(file); return; }
+    const img = new Image();
+    img.onload = () => {
+      const { width, height } = img;
+      if (width <= maxEdge && height <= maxEdge) { resolve(file); return; }
+      const scale = maxEdge / Math.max(width, height);
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(width * scale);
+      canvas.height = Math.round(height * scale);
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob(blob => {
+        resolve(new File([blob], file.name.replace(/\.[^.]+$/, '.jpg'), { type: 'image/jpeg' }));
+      }, 'image/jpeg', quality);
+    };
+    img.src = URL.createObjectURL(file);
+  });
 }
 
 function removeRefImage(index) {
@@ -384,6 +542,12 @@ async function generate() {
   formData.append('ip_adapter_model', document.getElementById('ip-adapter-select').value);
   formData.append('ip_adapter_strength', document.getElementById('ip-strength').value);
   formData.append('upscaler', document.getElementById('upscaler-select').value);
+  const selectedModel = document.getElementById('model-select').value;
+  const loraModel = _isLoraCompatible(selectedModel) ? document.getElementById('lora-select').value : '';
+  formData.append('lora_model', loraModel);
+  formData.append('lora_strength', document.getElementById('lora-strength').value);
+  formData.append('lora_strength_model', document.getElementById('lora-strength').value);
+  formData.append('lora_strength_clip', document.getElementById('lora-clip-strength').value);
 
   // Attach reference images
   state.refImages.forEach((file) => {
@@ -416,6 +580,9 @@ function handleJobUpdate(msg) {
   } else if (msg.status === 'complete') {
     hideProgress();
     showResult(msg.output_url);
+    if (msg.scores) {
+      renderScores(msg.scores, document.getElementById('result-container'));
+    }
     loadGallery();
     const btn = document.getElementById('btn-generate');
     btn.disabled = false;
@@ -504,6 +671,176 @@ function useAsRef() {
       setRefImage(idx, file);
       toast(`Added to reference slot ${idx + 1}`, 'success');
     });
+}
+
+// --- Scores display ---
+
+function renderScores(scores, container) {
+  if (!scores) return;
+  // Remove any existing scores panel in this container
+  const existing = container.querySelector('.scores-panel');
+  if (existing) existing.remove();
+
+  const metrics = ['sharpness', 'saturation', 'brightness', 'color_diversity',
+                   'contrast', 'noise', 'edge_density', 'dynamic_range'];
+  const labels = {
+    sharpness: 'Sharpness', saturation: 'Saturation', brightness: 'Brightness',
+    color_diversity: 'Colors', contrast: 'Contrast', noise: 'Noise',
+    edge_density: 'Edge Detail', dynamic_range: 'Dyn Range',
+  };
+
+  const panel = document.createElement('div');
+  panel.className = 'scores-panel';
+  const toggle = document.createElement('button');
+  toggle.className = 'scores-toggle';
+  toggle.textContent = 'Scores';
+  const detail = document.createElement('div');
+  detail.className = 'scores-detail';
+  detail.style.display = 'none';
+
+  metrics.forEach(m => {
+    if (scores[m] == null) return;
+    const row = document.createElement('div');
+    row.className = 'score-row';
+    const val = typeof scores[m] === 'number' ? scores[m].toFixed(2) : scores[m];
+    row.innerHTML = `<span class="score-label">${labels[m] || m}</span><span class="score-value">${val}</span>`;
+    detail.appendChild(row);
+  });
+
+  toggle.onclick = () => {
+    detail.style.display = detail.style.display === 'none' ? 'block' : 'none';
+  };
+  panel.appendChild(toggle);
+  panel.appendChild(detail);
+  container.appendChild(panel);
+}
+
+// --- OP my prompt ---
+
+async function opMyPrompt() {
+  const promptEl = document.getElementById('prompt');
+  const prompt = promptEl.value.trim();
+  if (!prompt) return;
+
+  // Check availability and show helpful setup guidance
+  if (state.opStatus && !state.opStatus.available) {
+    const reason = state.opStatus.reason || '';
+    if (reason.includes('not reachable')) {
+      toast('Ollama is not running. Install from ollama.com and run: ollama serve', 'error');
+    } else if (reason.includes('not found')) {
+      toast(`Model "${state.opStatus.model}" not installed. Run: ollama pull ${state.opStatus.model}`, 'error');
+    } else if (reason.includes('disabled')) {
+      toast('Prompt optimizer is disabled. Enable it in Settings > Prompt Optimizer', 'error');
+    } else {
+      toast('Prompt optimizer not available. Check Settings for setup instructions.', 'error');
+    }
+    return;
+  }
+
+  const btn = document.getElementById('btn-op-prompt');
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Enhancing...';
+
+  try {
+    const model = document.getElementById('model-select').value;
+    const resp = await fetch('/api/op-prompt', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ prompt, model }),
+    });
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error);
+
+    promptEl.value = data.enhanced_prompt;
+    if (data.negative_prompt) {
+      document.getElementById('negative-prompt').value = data.negative_prompt;
+    }
+    toast(`Prompt enhanced: ${data.changes_made || 'improved'}`, 'success');
+  } catch (e) {
+    if (e.message.includes('timed out')) {
+      toast('Ollama is loading the model (first run is slow). Try again in 10 seconds.', 'error');
+    } else {
+      toast(`OP failed: ${e.message}`, 'error');
+    }
+  } finally {
+    btn.disabled = !promptEl.value.trim();
+    btn.textContent = originalText;
+  }
+}
+
+// --- Batch mode (N images, same model, different seeds) ---
+
+async function startBatch() {
+  const prompt = document.getElementById('prompt').value.trim();
+  if (!prompt) { toast('Enter a prompt first', 'error'); return; }
+
+  const count = parseInt(document.getElementById('batch-count').value) || 4;
+  const backend = state.activeBackend;
+  const model = document.getElementById('model-select').value;
+
+  // Build N options with same backend/model (compare API handles it)
+  const options = [];
+  for (let i = 0; i < count; i++) {
+    options.push({ backend, model });
+  }
+
+  // Reuse compare grid UI
+  document.getElementById('placeholder').style.display = 'none';
+  document.getElementById('result-container').classList.remove('visible');
+  const grid = document.getElementById('compare-grid');
+  grid.classList.add('active');
+  grid.innerHTML = '';
+
+  options.forEach((opt, i) => {
+    const card = document.createElement('div');
+    card.className = 'compare-card';
+    card.id = `batch-card-${i}`;
+    const typeClass = (state.backends[opt.backend] || {}).type || 'local';
+    card.innerHTML = `
+      <div class="compare-card-header">
+        <span><span class="dot ${typeClass}"></span><span class="backend-name">#${i + 1}</span></span>
+        <span class="model-name">${model || 'default'}</span>
+      </div>
+      <div class="compare-card-body">
+        <div class="compare-loading">
+          <div class="compare-progress">
+            <span class="progress-status">Queued...</span>
+            <div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div>
+          </div>
+        </div>
+      </div>
+      <div class="compare-card-footer" style="display:none">
+        <button class="btn btn-save-compare">Save</button>
+        <button class="btn btn-ref-compare">Use as Ref</button>
+      </div>
+    `;
+    grid.appendChild(card);
+  });
+
+  // Submit as compare request (server handles parallel dispatch)
+  const formData = new FormData();
+  formData.append('prompt', prompt);
+  formData.append('negative_prompt', document.getElementById('negative-prompt').value);
+  formData.append('backends_json', JSON.stringify(options));
+  formData.append('width', document.getElementById('width').value);
+  formData.append('height', document.getElementById('height').value);
+  formData.append('steps', document.getElementById('steps').value);
+  formData.append('cfg_scale', document.getElementById('cfg-scale').value);
+  formData.append('seed', '-1'); // Always random for batch — each gets unique seed
+  state.refImages.forEach(file => { if (file) formData.append('reference_images', file); });
+
+  try {
+    const resp = await fetch('/api/compare', { method: 'POST', body: formData });
+    const data = await resp.json();
+    state.compareJobs = data.jobs.map((j, i) => ({
+      ...j, status: 'queued', cardId: `batch-card-${i}`,
+    }));
+    startComparePoll();
+    toast(`Generating ${count} variations...`, 'success');
+  } catch (e) {
+    toast(`Batch failed: ${e.message}`, 'error');
+  }
 }
 
 // --- Compare mode ---
@@ -682,6 +1019,7 @@ function updateCompareCard(job, data) {
       </div>`;
   } else if (data.status === 'complete') {
     body.innerHTML = `<img src="${data.output_url}?t=${Date.now()}" alt="Result">`;
+    if (data.scores) renderScores(data.scores, body);
     footer.style.display = 'flex';
     // Wire up card buttons
     footer.querySelector('.btn-save-compare').onclick = () => {

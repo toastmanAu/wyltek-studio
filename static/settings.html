@@ -161,6 +161,50 @@
 
   <div class="settings-page">
     <a href="/" class="back-link">&larr; Back to studio</a>
+
+    <!-- Prompt Optimizer (Ollama) -->
+    <h2>Prompt Optimizer (OP My Prompt)</h2>
+    <p class="backend-info" style="margin-bottom:16px">
+      Uses a local LLM via <a href="https://ollama.com" target="_blank" style="color:var(--accent)">Ollama</a> to enhance your prompts before generation. Runs on CPU/RAM so your GPU stays free for image generation.
+    </p>
+    <div class="backend-section">
+      <div class="backend-body" style="display:block; padding:18px;">
+        <div class="field-group" style="margin-bottom:12px">
+          <label>Status</label>
+          <span id="op-status" class="status" style="font-size:12px">Checking...</span>
+        </div>
+        <div class="field-group" style="margin-bottom:12px">
+          <label>Ollama URL</label>
+          <input type="text" id="op-url" placeholder="http://[::1]:11434" style="width:100%;padding:8px;background:var(--surface-2);border:1px solid var(--border);border-radius:6px;color:var(--text)">
+        </div>
+        <div class="field-group" style="margin-bottom:12px">
+          <label>Model</label>
+          <select id="op-model" style="width:100%;padding:8px;background:var(--surface-2);border:1px solid var(--border);border-radius:6px;color:var(--text)">
+            <option value="">Detecting installed models...</option>
+          </select>
+          <div style="margin-top:6px;font-size:11px;color:var(--text-dim)">
+            Or enter a custom model name:
+            <input type="text" id="op-model-custom" placeholder="e.g. llama3:8b" style="margin-top:4px;width:100%;padding:6px;background:var(--surface-2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px">
+          </div>
+        </div>
+        <div class="field-group" style="margin-bottom:12px">
+          <label style="display:flex;align-items:center;gap:8px">
+            <input type="checkbox" id="op-enabled" style="width:auto">
+            Enabled
+          </label>
+        </div>
+        <button class="btn" id="op-save" style="margin-top:8px">Save Prompt Optimizer Settings</button>
+        <div style="margin-top:16px;padding:12px;background:var(--surface-2);border-radius:8px;font-size:12px;color:var(--text-dim)">
+          <strong>Setup guide:</strong><br>
+          1. Install Ollama: <code>curl -fsSL https://ollama.com/install.sh | sh</code><br>
+          2. Pull a model: <code>ollama pull qwen2.5:14b</code><br>
+          3. Ollama runs automatically as a service. Enter the URL above.<br><br>
+          <strong>Verified models:</strong> qwen2.5:14b (best quality), qwen2.5:7b (faster), mistral:7b, llama3:8b<br>
+          <strong>Any Ollama-compatible model works</strong> — experiment with what you have installed.
+        </div>
+      </div>
+    </div>
+
     <h2>Backend Settings</h2>
     <p class="backend-info" style="margin-bottom:20px">Configure API keys and connection URLs for each backend. Keys are saved to the server config and persist across restarts.</p>
     <div id="backend-list"></div>
@@ -379,6 +423,76 @@
       await init();
     }
 
+    // --- Prompt Optimizer (Ollama) settings ---
+
+    async function initOpSettings() {
+      try {
+        const resp = await fetch('/api/op-prompt/status');
+        const data = await resp.json();
+        const statusEl = document.getElementById('op-status');
+
+        if (data.available) {
+          statusEl.textContent = 'Connected — ' + data.model;
+          statusEl.style.background = 'rgba(52,211,153,0.15)';
+          statusEl.style.color = 'var(--success)';
+        } else {
+          statusEl.textContent = data.reason || 'Not available';
+          statusEl.style.background = 'rgba(239,68,68,0.15)';
+          statusEl.style.color = 'var(--error)';
+        }
+
+        // Load current config
+        const cfgResp = await fetch('/api/op-prompt/config');
+        const cfg = await cfgResp.json();
+        document.getElementById('op-url').value = cfg.ollama_url || '';
+        document.getElementById('op-enabled').checked = cfg.enabled !== false;
+
+        // Populate model dropdown
+        const select = document.getElementById('op-model');
+        select.innerHTML = '';
+        if (cfg.installed_models && cfg.installed_models.length) {
+          cfg.installed_models.forEach(m => {
+            const opt = document.createElement('option');
+            opt.value = m;
+            opt.textContent = m;
+            if (m === cfg.model) opt.selected = true;
+            select.appendChild(opt);
+          });
+        } else {
+          const opt = document.createElement('option');
+          opt.value = cfg.model || '';
+          opt.textContent = cfg.model || '(none detected)';
+          select.appendChild(opt);
+        }
+      } catch (e) {
+        document.getElementById('op-status').textContent = 'Error loading settings';
+      }
+    }
+
+    document.getElementById('op-save').addEventListener('click', async () => {
+      const customModel = document.getElementById('op-model-custom').value.trim();
+      const selectModel = document.getElementById('op-model').value;
+      const data = {
+        enabled: document.getElementById('op-enabled').checked,
+        ollama_url: document.getElementById('op-url').value.trim(),
+        model: customModel || selectModel,
+      };
+      try {
+        await fetch('/api/op-prompt/config', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(data),
+        });
+        const msg = document.getElementById('saved-msg');
+        msg.classList.add('show');
+        setTimeout(() => msg.classList.remove('show'), 2000);
+        await initOpSettings();
+      } catch (e) {
+        alert('Failed to save: ' + e.message);
+      }
+    });
+
+    initOpSettings();
     init();
   </script>
 </body>

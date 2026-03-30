@@ -4,6 +4,7 @@
 import asyncio
 import json
 import os
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +22,8 @@ from backends import registry
 config = {}
 jobs: dict[str, dict] = {}  # job_id -> status
 ws_clients: list[WebSocket] = []
+_gallery_cache: dict = {"items": None, "ts": 0.0}
+GALLERY_TTL = 10  # seconds — also invalidated on job completion
 
 
 def load_config():
@@ -41,6 +44,8 @@ from contextlib import asynccontextmanager
 async def lifespan(app):
     load_config()
     registry.init_backends(config.get("backends", {}))
+    import scoring
+    scoring.init_db()
     yield
 
 
@@ -209,7 +214,7 @@ async def get_backends():
                         info["models"].append({"id": discovered, "label": discovered.replace(".safetensors", "").replace(".gguf", ""), "available": True, "discovered": True})
                 # Same for ip_adapters, upscalers, clip_vision
                 if "model_categories" in info:
-                    for cat in ("ip_adapters", "upscalers"):
+                    for cat in ("ip_adapters", "upscalers", "loras"):
                         live_cat = live.get(cat, [])
                         for m in info["model_categories"].get(cat, []):
                             m["available"] = m["id"] in live_cat
@@ -217,8 +222,12 @@ async def get_backends():
                             existing = info["model_categories"].get(cat, [])
                             if not any(m["id"] == discovered for m in existing):
                                 existing.append({"id": discovered, "label": discovered.rsplit(".", 1)[0], "available": True, "discovered": True})
+                # Models to hide from discovery (broken at current quantization, etc.)
+                _hidden = backend_cfg.get("hidden_models", set())
                 # Add GGUF unets as checkpoints too
                 for unet in live.get("unets", []):
+                    if unet in _hidden:
+                        continue
                     if not any((m["id"] if isinstance(m, dict) else m) == unet for m in info["models"]):
                         info["models"].append({"id": unet, "label": unet.replace(".gguf", " (GGUF)").replace(".safetensors", ""), "available": True, "discovered": True, "format": "gguf" if unet.endswith(".gguf") else "safetensors"})
 
@@ -226,10 +235,19 @@ async def get_backends():
     return result
 
 
+_comfyui_probe_cache: dict = {"data": None, "ts": 0.0, "url": ""}
+PROBE_TTL = 60  # seconds
+
+
 async def _probe_comfyui(url: str) -> dict | None:
-    """Query ComfyUI for installed models."""
+    """Query ComfyUI for installed models (cached for 60s)."""
     if not url:
         return None
+    now = time.monotonic()
+    if (_comfyui_probe_cache["data"] is not None
+            and _comfyui_probe_cache["url"] == url
+            and now - _comfyui_probe_cache["ts"] < PROBE_TTL):
+        return _comfyui_probe_cache["data"]
     try:
         import httpx
         async with httpx.AsyncClient(timeout=5) as client:
@@ -262,6 +280,11 @@ async def _probe_comfyui(url: str) -> dict | None:
             clip_v = data.get("CLIPVisionLoader", {}).get("input", {}).get("required", {}).get("clip_name", [])
             if clip_v and isinstance(clip_v[0], list):
                 result["clip_vision"] = clip_v[0]
+            # LoRAs
+            lora = data.get("LoraLoader", {}).get("input", {}).get("required", {}).get("lora_name", [])
+            if lora and isinstance(lora[0], list):
+                result["loras"] = lora[0]
+            _comfyui_probe_cache.update({"data": result, "ts": now, "url": url})
             return result
     except Exception:
         return None
@@ -269,7 +292,11 @@ async def _probe_comfyui(url: str) -> dict | None:
 
 @app.get("/api/gallery")
 async def get_gallery():
-    """Return list of generated images with metadata."""
+    """Return list of generated images with metadata (cached)."""
+    now = time.monotonic()
+    if _gallery_cache["items"] is not None and now - _gallery_cache["ts"] < GALLERY_TTL:
+        return _gallery_cache["items"]
+
     output_dir = Path(config["server"]["output_dir"])
     items = []
     for img in sorted(output_dir.glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True):
@@ -284,7 +311,9 @@ async def get_gallery():
             "created": datetime.fromtimestamp(img.stat().st_mtime).isoformat(),
             "meta": meta,
         })
-    return items[:50]
+    result = items[:50]
+    _gallery_cache.update({"items": result, "ts": now})
+    return result
 
 
 @app.post("/api/generate")
@@ -301,6 +330,10 @@ async def generate(
     ip_adapter_model: str = Form(""),
     ip_adapter_strength: float = Form(0.6),
     upscaler: str = Form(""),
+    lora_model: str = Form(""),
+    lora_strength: float = Form(0.8),
+    lora_strength_model: float = Form(0.0),
+    lora_strength_clip: float = Form(0.0),
     reference_images: list[UploadFile] = File(default=[]),
 ):
     """Start an image generation job."""
@@ -329,6 +362,10 @@ async def generate(
         "ip_adapter_model": ip_adapter_model,
         "ip_adapter_strength": ip_adapter_strength,
         "upscaler": upscaler,
+        "lora_model": lora_model,
+        "lora_strength": lora_strength,
+        "lora_strength_model": lora_strength_model if lora_strength_model > 0 else 0,
+        "lora_strength_clip": lora_strength_clip if lora_strength_clip > 0 else 0,
         "reference_images": ref_paths,
     }
 
@@ -344,6 +381,170 @@ async def get_job(job_id: str):
     if job_id not in jobs:
         return JSONResponse({"error": "Job not found"}, status_code=404)
     return jobs[job_id]
+
+
+# --- Scoring API (static paths first, then parameterized) ---
+
+@app.get("/api/scores/models")
+async def get_model_profiles():
+    """Aggregated average scores per model."""
+    import scoring
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, scoring.get_model_profiles)
+
+
+@app.get("/api/scores/compare")
+async def compare_scores(job_ids: str = ""):
+    """Scores for multiple jobs."""
+    import scoring
+    ids = [j.strip() for j in job_ids.split(",") if j.strip()]
+    if not ids:
+        return []
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, scoring.get_scores_batch, ids)
+
+
+@app.get("/api/scores/{job_id}")
+async def get_image_scores(job_id: str):
+    """Scores for a single image."""
+    import scoring
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, scoring.get_scores, job_id)
+    if not result:
+        return JSONResponse({"error": "Scores not found"}, status_code=404)
+    return result
+
+
+# --- Prompt Optimizer API ---
+
+@app.get("/api/op-prompt/status")
+async def op_prompt_status():
+    """Check if prompt optimizer is available."""
+    opt_config = config.get("prompt_optimizer", {})
+    if not opt_config.get("enabled", False):
+        return {"available": False, "reason": "disabled in config"}
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(f"{opt_config.get('ollama_url', 'http://localhost:11434')}/api/tags")
+            if resp.status_code == 200:
+                models = [m["name"] for m in resp.json().get("models", [])]
+                target = opt_config.get("model", "qwen2.5:14b")
+                available = any(target in m for m in models)
+                return {"available": available, "model": target,
+                        "reason": "" if available else f"Model {target} not found in Ollama"}
+    except Exception:
+        pass
+    return {"available": False, "reason": "Ollama not reachable"}
+
+
+@app.get("/api/op-prompt/config")
+async def get_op_config():
+    """Return prompt optimizer config + installed Ollama models."""
+    opt_config = config.get("prompt_optimizer", {})
+    result = {
+        "enabled": opt_config.get("enabled", False),
+        "ollama_url": opt_config.get("ollama_url", ""),
+        "model": opt_config.get("model", ""),
+        "installed_models": [],
+    }
+    # Try to list installed Ollama models
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(f"{result['ollama_url']}/api/tags")
+            if resp.status_code == 200:
+                result["installed_models"] = [m["name"] for m in resp.json().get("models", [])]
+    except Exception:
+        pass
+    return result
+
+
+@app.post("/api/op-prompt/config")
+async def save_op_config(request: Request):
+    """Save prompt optimizer config."""
+    data = await request.json()
+    if "prompt_optimizer" not in config:
+        config["prompt_optimizer"] = {}
+    if "enabled" in data:
+        config["prompt_optimizer"]["enabled"] = data["enabled"]
+    if "ollama_url" in data and data["ollama_url"]:
+        config["prompt_optimizer"]["ollama_url"] = data["ollama_url"]
+    if "model" in data and data["model"]:
+        config["prompt_optimizer"]["model"] = data["model"]
+
+    # Save to config.yaml
+    cfg_path = Path(__file__).parent / "config.yaml"
+    with open(cfg_path, "w") as f:
+        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+    return {"ok": True}
+
+
+@app.post("/api/op-prompt")
+async def op_prompt(request: Request):
+    """Enhance a prompt using local Ollama LLM."""
+    opt_config = config.get("prompt_optimizer", {})
+    if not opt_config.get("enabled", False):
+        return JSONResponse({"error": "Prompt optimizer not enabled"}, status_code=503)
+
+    data = await request.json()
+    user_prompt = data.get("prompt", "").strip()
+    target_model = data.get("model", "")
+
+    if not user_prompt:
+        return JSONResponse({"error": "No prompt provided"}, status_code=400)
+
+    ollama_url = opt_config.get("ollama_url", "http://localhost:11434")
+    ollama_model = opt_config.get("model", "qwen2.5:14b")
+
+    system_prompt = f"""You are an expert Stable Diffusion prompt engineer. The user will give you an image generation prompt. Your job is to enhance it for maximum quality.
+
+The target generation model is: {target_model or 'unknown'}
+
+Rules:
+- Add specific quality descriptors (lighting, composition, detail level, style)
+- Remove ambiguity — make vague descriptions concrete
+- Keep the user's core intent intact
+- Suggest a negative prompt to avoid common artifacts
+- Be concise — SD prompts work best under 75 tokens
+
+Respond ONLY with valid JSON (no markdown, no code fences):
+{{"enhanced_prompt": "...", "negative_prompt": "...", "changes_made": "brief explanation of what you improved"}}"""
+
+    import re
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"{ollama_url}/api/generate",
+                json={
+                    "model": ollama_model,
+                    "prompt": user_prompt,
+                    "system": system_prompt,
+                    "stream": False,
+                    "options": {"temperature": 0.3},
+                },
+            )
+            if resp.status_code != 200:
+                return JSONResponse({"error": f"Ollama error: {resp.status_code}"}, status_code=502)
+            result = resp.json()
+            response_text = result.get("response", "")
+
+            # Parse JSON from response (handle potential markdown wrapping)
+            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+            if json_match:
+                parsed = json.loads(json_match.group())
+                return {
+                    "enhanced_prompt": parsed.get("enhanced_prompt", user_prompt),
+                    "negative_prompt": parsed.get("negative_prompt", ""),
+                    "changes_made": parsed.get("changes_made", ""),
+                    "original_prompt": user_prompt,
+                }
+            return JSONResponse({"error": "Failed to parse LLM response", "raw": response_text}, status_code=500)
+    except httpx.TimeoutException:
+        return JSONResponse({"error": "Ollama timed out (30s)"}, status_code=504)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 @app.post("/api/compare")
@@ -423,7 +624,21 @@ async def broadcast(msg: dict):
 
 # --- Job runner ---
 
+MAX_FINISHED_JOBS = 200
+
+
+def _evict_old_jobs():
+    """Remove oldest completed/errored jobs when exceeding limit."""
+    finished = [(jid, j) for jid, j in jobs.items() if j["status"] in ("complete", "error")]
+    if len(finished) <= MAX_FINISHED_JOBS:
+        return
+    # Sort by creation (job_id order is chronological via uuid, but use insertion order)
+    for jid, _ in finished[:-MAX_FINISHED_JOBS]:
+        del jobs[jid]
+
+
 async def _run_job(job_id: str, params: dict):
+    _evict_old_jobs()
     jobs[job_id]["status"] = "running"
     await broadcast({"type": "job_update", "job_id": job_id, "status": "running", "progress": 0})
 
@@ -473,15 +688,30 @@ async def _run_job(job_id: str, params: dict):
         except Exception:
             pass  # metadata embedding is best-effort
 
+        # Score the image (~50ms, runs in thread executor)
+        scores = None
+        try:
+            import scoring
+            scores = await scoring.score_and_save(
+                str(output_path), job_id, params.get("model", ""),
+                params.get("backend", ""), params.get("prompt", ""),
+                meta["created"],
+            )
+        except Exception:
+            pass  # scoring is best-effort
+
+        _gallery_cache["items"] = None  # invalidate gallery cache
         jobs[job_id].update({
             "status": "complete",
             "progress": 100,
             "output_url": f"/outputs/{job_id}.png",
+            "scores": scores,
         })
         await broadcast({
             "type": "job_update", "job_id": job_id,
             "status": "complete", "progress": 100,
             "output_url": f"/outputs/{job_id}.png",
+            "scores": scores,
         })
 
     except Exception as e:
