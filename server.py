@@ -647,6 +647,13 @@ async def get_model_catalog():
         elif item["type"] == "piper-voice":
             voice_path = Path(__file__).parent / "engines" / "voices" / item["filename"]
             entry["installed"] = voice_path.exists()
+        elif item["type"] == "pip-package":
+            pkg = item.get("pip_package", "")
+            try:
+                __import__(pkg.replace("-", "_").split("[")[0])
+                entry["installed"] = True
+            except ImportError:
+                entry["installed"] = False
         elif comfyui_root and item["type"] in DEST_MAP and DEST_MAP[item["type"]]:
             dest = comfyui_root / DEST_MAP[item["type"]] / item["filename"]
             entry["installed"] = dest.exists()
@@ -679,6 +686,20 @@ async def download_model(model_id: str):
 
     async def _do_download():
         try:
+            if item["type"] == "pip-package":
+                # Install via pip
+                pkg = item.get("pip_package", "")
+                _download_status[model_id]["progress"] = 10
+                proc = await asyncio.create_subprocess_exec(
+                    "pip", "install", pkg,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                _, stderr_out = await proc.communicate()
+                if proc.returncode == 0:
+                    _download_status[model_id] = {"status": "complete", "progress": 100}
+                else:
+                    _download_status[model_id] = {"status": "error", "error": stderr_out.decode()[-300:]}
+                return
+
             if item["type"] == "ollama":
                 # Pull via Ollama API
                 ollama_url = config.get("prompt_optimizer", {}).get("ollama_url", "http://[::1]:11434")
@@ -1003,6 +1024,27 @@ async def music_generate(request: Request):
 
 
 # --- TTS API ---
+
+@app.post("/api/tts/clone-voice")
+async def upload_clone_voice(voice_name: str = Form(...),
+                             audio: UploadFile = File(...)):
+    """Upload a WAV reference for XTTS voice cloning."""
+    voices_dir = Path(__file__).parent / "engines" / "xtts_voices"
+    voices_dir.mkdir(parents=True, exist_ok=True)
+
+    # Sanitize filename
+    import re
+    safe_name = re.sub(r'[^\w\s-]', '', voice_name.lower().strip())
+    safe_name = re.sub(r'[\s]+', '_', safe_name)
+    if not safe_name:
+        return JSONResponse({"error": "Invalid voice name"}, status_code=400)
+
+    dest = voices_dir / f"{safe_name}.wav"
+    async with aiofiles.open(dest, "wb") as f:
+        await f.write(await audio.read())
+
+    return {"ok": True, "voice_id": f"clone_{safe_name}", "name": voice_name}
+
 
 @app.get("/api/tts/engines")
 async def get_tts_engines():

@@ -148,6 +148,32 @@ CATALOG = [
         "meta_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_GB/jenny_dioco/medium/en_GB-jenny_dioco-medium.onnx.json",
         "size_mb": 61, "category": "TTS Voices (Piper)", "type": "piper-voice",
     },
+    # --- TTS Engines (pip install) ---
+    {
+        "id": "tts-kokoro", "name": "Kokoro TTS (82M, high quality)",
+        "desc": "11 natural voices, 4x realtime on CPU. Best quality for size.",
+        "pip_package": "kokoro",
+        "size_mb": 300, "category": "TTS Engines", "type": "pip-package",
+    },
+    {
+        "id": "tts-xtts", "name": "XTTS v2 (voice cloning, multi-language)",
+        "desc": "Clone any voice from a 6-second sample. 17 languages. ~1x realtime on CPU.",
+        "pip_package": "TTS",
+        "size_mb": 1800, "category": "TTS Engines", "type": "pip-package",
+    },
+    {
+        "id": "tts-bark", "name": "Bark (expressive, emotions, laughter)",
+        "desc": "Most expressive TTS. Supports [laughs], [sighs], [music] tags. Slow on CPU.",
+        "pip_package": "suno-bark",
+        "size_mb": 5000, "category": "TTS Engines", "type": "pip-package",
+    },
+    # --- Music Generation ---
+    {
+        "id": "music-audiocraft", "name": "MusicGen (text-to-music)",
+        "desc": "Generate royalty-free backing tracks from text descriptions. Small (300M) and Medium (1.5B) models.",
+        "pip_package": "audiocraft",
+        "size_mb": 3300, "category": "Music Generation", "type": "pip-package",
+    },
     # --- Ollama models ---
     {
         "id": "ollama-qwen25-14b", "name": "Qwen 2.5 14B (for OP my prompt)",

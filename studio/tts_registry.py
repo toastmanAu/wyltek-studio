@@ -56,3 +56,21 @@ def init_engines(tts_config: dict):
             register(kokoro)
     except Exception:
         pass
+
+    # XTTS v2 — voice cloning, multi-language
+    try:
+        from studio.tts_xtts import XTTSEngine
+        xtts = XTTSEngine(tts_config.get("xtts", {}))
+        if xtts.available():
+            register(xtts)
+    except Exception:
+        pass
+
+    # Bark — most expressive, emotions, laughter
+    try:
+        from studio.tts_bark import BarkEngine
+        bark_engine = BarkEngine(tts_config.get("bark", {}))
+        if bark_engine.available():
+            register(bark_engine)
+    except Exception:
+        pass
