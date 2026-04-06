@@ -1,0 +1,1853 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Wyltek Studio — Sprite Forge</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="stylesheet" href="/static/css/nav.css">
+  <script src="/static/js/nav.js"></script>
+  <style>
+    .studio-page { max-width: 1400px; margin: 0 auto; padding: 32px 24px; }
+    .studio-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; flex-wrap: wrap; gap: 8px; }
+    .studio-header h2 { margin: 0; }
+    .studio-header .subtitle { font-size: 13px; color: var(--text-dim); }
+
+    /* Tabs */
+    .tab-bar { display: flex; gap: 4px; margin-bottom: 20px; border-bottom: 1px solid var(--border); padding-bottom: 8px; flex-wrap: wrap; }
+    .tab-btn {
+      padding: 8px 14px; font-size: 12px; font-weight: 600; border: none;
+      background: var(--surface-2); color: var(--text-dim); border-radius: 6px 6px 0 0;
+      cursor: pointer; transition: all 0.15s; white-space: nowrap;
+    }
+    .tab-btn:hover { color: var(--text); background: var(--surface-3); }
+    .tab-btn.active { color: var(--accent); background: var(--accent-dim); }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    /* Generate tab */
+    .prompt-area { margin-bottom: 16px; }
+    .prompt-area textarea {
+      width: 100%; padding: 12px; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; color: var(--text); font-size: 14px; resize: vertical; min-height: 70px;
+    }
+    .prompt-row { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; }
+
+    .gen-controls {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+      gap: 10px; margin-bottom: 16px;
+    }
+    .gen-controls label { display: block; font-size: 10px; color: var(--text-dim); text-transform: uppercase; margin-bottom: 3px; }
+    .gen-controls select, .gen-controls input {
+      width: 100%; padding: 7px; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text); font-size: 12px;
+    }
+
+    .ref-uploads { display: flex; gap: 12px; margin-bottom: 16px; }
+    .ref-slot {
+      width: 120px; height: 120px; border: 2px dashed var(--border); border-radius: 8px;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      cursor: pointer; transition: border-color 0.15s; position: relative; overflow: hidden;
+    }
+    .ref-slot:hover { border-color: var(--accent); }
+    .ref-slot.has-image { border-style: solid; }
+    .ref-slot img { width: 100%; height: 100%; object-fit: contain; }
+    .ref-slot .ref-label { font-size: 10px; color: var(--text-dim); text-align: center; }
+    .ref-slot .ref-clear {
+      position: absolute; top: 4px; right: 4px; width: 20px; height: 20px;
+      background: rgba(0,0,0,0.7); color: #fff; border: none; border-radius: 50%;
+      cursor: pointer; font-size: 12px; display: none; line-height: 20px; text-align: center;
+    }
+    .ref-slot.has-image .ref-clear { display: block; }
+
+    .btn-row { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+    .btn-primary {
+      padding: 10px 24px; font-size: 13px; font-weight: 600;
+      background: var(--accent); color: #fff; border: none; border-radius: 8px; cursor: pointer;
+    }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-secondary {
+      padding: 8px 16px; font-size: 12px; font-weight: 600;
+      background: var(--surface-2); color: var(--accent); border: 1px solid var(--accent);
+      border-radius: 6px; cursor: pointer;
+    }
+    .btn-secondary:hover { background: var(--accent-dim); }
+    .btn-secondary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .progress-bar { height: 4px; background: var(--border); border-radius: 2px; margin: 12px 0; overflow: hidden; display: none; }
+    .progress-bar.active { display: block; }
+    .progress-fill { height: 100%; background: var(--accent); transition: width 0.3s; width: 0%; }
+    .progress-msg { font-size: 12px; color: var(--text-dim); text-align: center; display: none; }
+    .progress-msg.active { display: block; }
+
+    /* Sprite grid */
+    .sprite-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 12px; margin-top: 16px;
+    }
+    .sprite-card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+      overflow: hidden; cursor: pointer; transition: border-color 0.15s;
+    }
+    .sprite-card:hover { border-color: var(--accent); }
+    .sprite-card.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+    .sprite-card img {
+      width: 100%; aspect-ratio: 1; object-fit: contain;
+      background: repeating-conic-gradient(var(--surface-2) 0% 25%, var(--surface-3) 0% 50%) 50% / 16px 16px;
+      image-rendering: pixelated;
+    }
+    .sprite-card .card-actions {
+      padding: 8px; display: flex; gap: 4px; justify-content: center;
+    }
+    .sprite-card .card-actions button {
+      padding: 4px 10px; font-size: 10px; border-radius: 4px; cursor: pointer;
+      border: 1px solid var(--border); background: var(--surface-2); color: var(--text-dim);
+    }
+    .sprite-card .card-actions button:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* Palette tab */
+    .constrain-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .constrain-preview {
+      background: repeating-conic-gradient(var(--surface-2) 0% 25%, var(--surface-3) 0% 50%) 50% / 16px 16px;
+      border: 1px solid var(--border); border-radius: 8px; min-height: 200px;
+      display: flex; align-items: center; justify-content: center; overflow: hidden;
+    }
+    .constrain-preview img { max-width: 100%; max-height: 400px; image-rendering: pixelated; }
+    .constrain-controls { display: flex; flex-direction: column; gap: 10px; }
+    .constrain-controls label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; margin-bottom: 2px; display: block; }
+    .constrain-controls select, .constrain-controls input {
+      width: 100%; padding: 7px; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text); font-size: 12px;
+    }
+    .palette-preview {
+      display: flex; flex-wrap: wrap; gap: 1px; margin-top: 6px;
+    }
+    .pal-swatch { width: 14px; height: 14px; border-radius: 2px; }
+
+    /* Sheet tab */
+    .sheet-grid {
+      display: grid; grid-template-columns: repeat(8, 1fr); gap: 2px;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+      padding: 8px; margin-bottom: 16px;
+    }
+    .sheet-cell {
+      aspect-ratio: 32/40; border: 1px dashed var(--border); border-radius: 4px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 9px; color: var(--text-dim); overflow: hidden;
+      background: var(--surface-2);
+    }
+    .sheet-cell img { width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; }
+    .sheet-cell.filled { border-style: solid; }
+
+    /* Mod builder tab */
+    .mod-form { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
+    .mod-form label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; margin-bottom: 2px; display: block; }
+    .mod-form input, .mod-form textarea {
+      width: 100%; padding: 8px; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text); font-size: 13px;
+    }
+    .yaml-preview {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+      padding: 16px; font-family: monospace; font-size: 12px; white-space: pre-wrap;
+      max-height: 400px; overflow-y: auto; color: var(--text-dim);
+    }
+
+    .saved-msg {
+      position: fixed; bottom: 24px; right: 24px;
+      background: var(--surface); border: 1px solid var(--accent);
+      border-radius: 8px; padding: 10px 20px; font-size: 13px;
+      opacity: 0; transform: translateY(10px);
+      transition: opacity 0.3s, transform 0.3s; pointer-events: none; z-index: 1000;
+    }
+    .saved-msg.show { opacity: 1; transform: translateY(0); }
+    .saved-msg.error { border-color: #e74c3c; color: #e74c3c; pointer-events: auto; cursor: pointer; }
+
+    @media (max-width: 900px) {
+      .studio-page { padding: 16px 12px; max-width: 100%; }
+      .tab-btn { padding: 6px 10px; font-size: 11px; }
+      .gen-controls { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 8px; }
+      .constrain-layout { grid-template-columns: 1fr; }
+      .ref-uploads { flex-wrap: wrap; }
+      .ref-slot { width: 90px; height: 90px; }
+      #pe-canvas { max-width: 100%; height: auto !important; }
+    }
+    @media (max-width: 600px) {
+      .studio-page { padding: 12px 8px; }
+      .tab-bar { gap: 2px; }
+      .tab-btn { padding: 5px 8px; font-size: 10px; }
+      .gen-controls { grid-template-columns: 1fr 1fr; }
+      .sprite-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+      .ref-slot { width: 80px; height: 80px; }
+      .ref-uploads { gap: 6px; }
+    }
+    @media (max-width: 480px) {
+      .tab-btn { padding: 4px 6px; font-size: 9px; }
+      .gen-controls { grid-template-columns: 1fr; }
+      .sprite-grid { grid-template-columns: 1fr 1fr; }
+      .pe-layout { flex-direction: column; }
+      .pe-layout > div:last-child { width: 100% !important; min-width: 0 !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="studio-page">
+    <div class="studio-header">
+      <div>
+        <h2>Sprite Forge</h2>
+        <div class="subtitle">AI-powered game sprite generation & modding</div>
+      </div>
+    </div>
+
+    <div class="tab-bar">
+      <button class="tab-btn active" onclick="switchTab('generate')">Generate</button>
+      <button class="tab-btn" onclick="switchTab('palette')">Palette & Constrain</button>
+      <button class="tab-btn" onclick="switchTab('sheet')">Sprite Sheet</button>
+      <button class="tab-btn" onclick="switchTab('mod')">Mod Builder</button>
+      <button class="tab-btn" onclick="switchTab('pixedit')">Pixel Editor</button>
+    </div>
+
+    <!-- ====== TAB 1: Generate ====== -->
+    <div class="tab-panel active" id="tab-generate">
+      <div class="prompt-area">
+        <textarea id="prompt" placeholder="Describe the sprite you want to generate...&#10;e.g. Bitcoin demon warrior, top-down game sprite, dark red armor" rows="3"></textarea>
+        <div class="prompt-row">
+          <span style="font-size:11px;color:var(--text-dim)" id="model-info">Loading models...</span>
+          <button class="btn-secondary" id="btn-op" onclick="opMyPrompt()">OP my prompt</button>
+        </div>
+      </div>
+
+      <div class="ref-uploads">
+        <div class="ref-slot" id="ref-sprite" onclick="pickRef('sprite')" title="Original sprite reference">
+          <span class="ref-label">Reference<br>Sprite</span>
+          <button class="ref-clear" onclick="clearRef(event,'sprite')">x</button>
+        </div>
+        <div class="ref-slot" id="ref-style" onclick="pickRef('style')" title="Style reference (logo, concept art)">
+          <span class="ref-label">Style<br>Reference</span>
+          <button class="ref-clear" onclick="clearRef(event,'style')">x</button>
+        </div>
+        <div style="display:flex;flex-direction:column;justify-content:center;gap:4px;position:relative">
+          <label style="font-size:10px;color:var(--text-dim)">Crypto Logo</label>
+          <input type="text" id="crypto-logo-search" placeholder="Search coin..." autocomplete="off"
+            style="font-size:11px;padding:4px 6px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;width:130px"
+            oninput="filterCryptoLogos()" onfocus="filterCryptoLogos()">
+          <div id="crypto-logo-dropdown" style="display:none;position:absolute;top:100%;left:0;width:180px;max-height:240px;overflow-y:auto;background:var(--surface);border:1px solid var(--border);border-radius:4px;z-index:100;box-shadow:0 4px 12px rgba(0,0,0,0.3)"></div>
+          <div id="crypto-logo-status" style="font-size:9px;color:var(--text-dim);text-align:center"></div>
+        </div>
+        <input type="file" id="ref-input" accept="image/*" style="display:none">
+      </div>
+
+      <div class="gen-controls">
+        <div>
+          <label>Model</label>
+          <select id="sprite-model" onchange="modelChanged()"></select>
+        </div>
+        <div>
+          <label>Target Preset</label>
+          <select id="preset" onchange="presetChanged()"></select>
+        </div>
+        <div>
+          <label>LoRA Strength</label>
+          <input type="range" id="lora-strength" min="0" max="1" step="0.05" value="0.55">
+          <div style="font-size:10px;color:var(--text-dim);text-align:center" id="lora-val">0.55</div>
+        </div>
+        <div>
+          <label>IP-Adapter</label>
+          <input type="range" id="ip-strength" min="0" max="1" step="0.05" value="0.75">
+          <div style="font-size:10px;color:var(--text-dim);text-align:center" id="ip-val">0.75</div>
+        </div>
+        <div>
+          <label>Blend Mode</label>
+          <select id="ip-weight-type">
+            <option value="style transfer" selected>Style Transfer</option>
+            <option value="standard">Standard</option>
+            <option value="prompt is more important">Prompt Priority</option>
+          </select>
+        </div>
+        <div>
+          <label>Ref Influence</label>
+          <div style="display:flex;gap:6px;align-items:center">
+            <input type="range" id="ip-start" min="0" max="1" step="0.05" value="0.0" style="width:60px" title="Start step">
+            <span style="font-size:9px;color:var(--text-dim)">to</span>
+            <input type="range" id="ip-end" min="0" max="1" step="0.05" value="0.8" style="width:60px" title="End step">
+          </div>
+          <div style="font-size:9px;color:var(--text-dim);text-align:center" id="ip-range-val">0.0 – 0.8</div>
+        </div>
+        <div>
+          <label>Batch Size</label>
+          <select id="batch-size">
+            <option value="2">2</option>
+            <option value="4" selected>4</option>
+            <option value="6">6</option>
+            <option value="8">8</option>
+          </select>
+        </div>
+        <div>
+          <label>Steps</label>
+          <input type="number" id="steps" min="10" max="40" value="20">
+        </div>
+        <div>
+          <label>CFG</label>
+          <input type="number" id="cfg" min="1" max="20" step="0.5" value="7.0">
+        </div>
+        <div>
+          <label>Seed</label>
+          <input type="number" id="seed" value="-1" title="-1 = random">
+        </div>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn-primary" id="btn-gen" onclick="generateSprites()">Generate Sprites</button>
+      </div>
+
+      <div class="progress-bar" id="gen-progress"><div class="progress-fill" id="gen-fill"></div></div>
+      <div class="progress-msg" id="gen-msg"></div>
+
+      <div class="sprite-grid" id="sprite-grid"></div>
+    </div>
+
+    <!-- ====== TAB 2: Palette & Constrain ====== -->
+    <div class="tab-panel" id="tab-palette">
+      <div class="constrain-layout">
+        <div>
+          <h4 style="font-size:13px;color:var(--text-dim);margin:0 0 8px">Original</h4>
+          <div class="constrain-preview" id="pal-original">
+            <span style="color:var(--text-dim);font-size:12px">Select a sprite from Generate tab</span>
+          </div>
+        </div>
+        <div>
+          <h4 style="font-size:13px;color:var(--text-dim);margin:0 0 8px">Constrained</h4>
+          <div class="constrain-preview" id="pal-result"></div>
+        </div>
+      </div>
+
+      <div class="constrain-controls" style="margin-top:16px">
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px">
+          <div>
+            <label>Palette</label>
+            <select id="pal-name" onchange="updatePalettePreview()">
+              <option value="xcom">X-COM</option>
+              <option value="nes">NES</option>
+              <option value="snes">SNES</option>
+              <option value="gameboy">Game Boy</option>
+            </select>
+          </div>
+          <div>
+            <label>Max Colors</label>
+            <select id="pal-max-colors">
+              <option value="4">4</option>
+              <option value="8">8</option>
+              <option value="16">16</option>
+              <option value="32">32</option>
+              <option value="64">64</option>
+              <option value="128">128</option>
+              <option value="256" selected>256</option>
+            </select>
+          </div>
+          <div>
+            <label>Width</label>
+            <input type="number" id="pal-width" value="32" min="4" max="512">
+          </div>
+          <div>
+            <label>Height</label>
+            <input type="number" id="pal-height" value="40" min="4" max="512">
+          </div>
+          <div>
+            <label>Dithering</label>
+            <select id="pal-dither">
+              <option value="none">None</option>
+              <option value="floyd-steinberg">Floyd-Steinberg</option>
+              <option value="ordered">Ordered (Bayer)</option>
+            </select>
+          </div>
+        </div>
+        <div class="palette-preview" id="pal-swatches"></div>
+        <div class="btn-row" style="margin-top:8px">
+          <button class="btn-primary" onclick="constrainSprite()">Apply Constraints</button>
+          <button class="btn-secondary" onclick="sendToSheet()" id="btn-to-sheet" disabled>Send to Sheet</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ====== TAB 3: Sprite Sheet ====== -->
+    <div class="tab-panel" id="tab-sheet">
+      <div style="display:flex;gap:12px;margin-bottom:12px;align-items:center">
+        <div>
+          <label style="font-size:10px;color:var(--text-dim)">LAYOUT</label>
+          <select id="sheet-layout" onchange="updateSheetGrid()">
+            <option value="xcom-8dir">X-COM 8 Directions</option>
+            <option value="custom-4x4">4x4 Grid</option>
+            <option value="custom-8x4">8x4 Grid</option>
+          </select>
+        </div>
+        <button class="btn-primary" onclick="exportSheet()">Export Sheet</button>
+      </div>
+      <div class="sheet-grid" id="sheet-grid"></div>
+      <div style="margin-top:8px;font-size:11px;color:var(--text-dim)" id="sheet-info">
+        Drag constrained sprites here or use "Send to Sheet" from Palette tab.
+      </div>
+    </div>
+
+    <!-- ====== TAB 4: Mod Builder ====== -->
+    <div class="tab-panel" id="tab-mod">
+      <!-- Create / Select mod -->
+      <div id="mod-picker">
+        <!-- ROM Upload -->
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px">
+          <h4 style="margin:0 0 8px;font-size:14px">Load ROM</h4>
+          <p style="font-size:12px;color:var(--text-dim);margin:0 0 12px">Drop a ROM file to auto-extract all sprites, maps, and assets. Currently supports: <strong>GBA Pokemon</strong> (FireRed, LeafGreen, Ruby, Sapphire, Emerald)</p>
+          <div id="rom-drop" style="border:2px dashed var(--border);border-radius:8px;padding:24px;text-align:center;cursor:pointer;transition:border-color 0.15s"
+               onclick="document.getElementById('rom-input').click()">
+            <div style="font-size:24px;margin-bottom:6px">&#128190;</div>
+            <div style="font-size:13px;color:var(--text-dim)">Click or drag ROM file here</div>
+            <div style="font-size:11px;color:var(--text-dim);margin-top:4px">.gba, .nds, .nes, .smc, .sfc</div>
+          </div>
+          <input type="file" id="rom-input" style="display:none" onchange="uploadRom(this.files[0])">
+          <div id="rom-progress" style="display:none;margin-top:12px">
+            <div class="progress-bar active"><div class="progress-fill" id="rom-fill" style="width:0%"></div></div>
+            <div style="font-size:12px;color:var(--text-dim);text-align:center" id="rom-msg">Uploading...</div>
+          </div>
+        </div>
+
+        <!-- Extracted ROM assets (shown after upload) -->
+        <div id="rom-assets" style="display:none;margin-bottom:16px"></div>
+
+        <!-- Or create from template -->
+        <div style="display:flex;gap:12px;align-items:flex-end;margin-bottom:16px;flex-wrap:wrap">
+          <div>
+            <label style="font-size:10px;color:var(--text-dim);display:block;margin-bottom:3px">OR CREATE FROM TEMPLATE</label>
+            <select id="mod-template" style="padding:8px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px">
+            </select>
+          </div>
+          <div>
+            <label style="font-size:10px;color:var(--text-dim);display:block;margin-bottom:3px">MOD NAME</label>
+            <input type="text" id="mod-name" value="" placeholder="CryptoAliens" style="padding:8px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;width:200px">
+          </div>
+          <button class="btn-primary" onclick="createMod()">Create Mod</button>
+        </div>
+
+        <div id="mod-list" style="margin-bottom:16px"></div>
+      </div>
+
+      <!-- Active mod workspace -->
+      <div id="mod-workspace" style="display:none">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <div>
+            <h3 style="margin:0;font-size:16px" id="mod-ws-name"></h3>
+            <div style="font-size:12px;color:var(--text-dim)" id="mod-ws-game"></div>
+          </div>
+          <div style="display:flex;gap:6px">
+            <button class="btn-secondary" onclick="previewYaml()">Preview YAML</button>
+            <button class="btn-secondary" onclick="closeMod()">Back to Mods</button>
+          </div>
+        </div>
+
+        <div style="font-size:12px;color:var(--text-dim);margin-bottom:12px" id="mod-ws-progress"></div>
+
+        <!-- Slot categories -->
+        <div id="mod-slots"></div>
+
+        <div class="yaml-preview" id="yaml-preview" style="display:none;margin-top:16px"></div>
+      </div>
+    </div>
+
+    <!-- ====== TAB 5: Pixel Editor ====== -->
+    <div class="tab-panel" id="tab-pixedit">
+      <div class="pe-layout" style="display:flex;gap:16px;flex-wrap:wrap">
+        <!-- Canvas area -->
+        <div style="flex:1;min-width:0">
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+            <h3 style="margin:0;font-size:14px">Pixel Editor</h3>
+            <span id="pe-sprite-name" style="font-size:11px;color:var(--text-dim)">No sprite loaded</span>
+            <span id="pe-dimensions" style="font-size:10px;color:var(--text-dim)"></span>
+          </div>
+          <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">
+            <button onclick="peUndo()" class="btn-secondary" style="padding:4px 10px;font-size:11px" title="Ctrl+Z">Undo</button>
+            <button onclick="peRedo()" class="btn-secondary" style="padding:4px 10px;font-size:11px" title="Ctrl+Y">Redo</button>
+            <span style="width:1px;background:var(--border);margin:0 4px"></span>
+            <button onclick="peTool='draw'" id="pe-tool-draw" class="btn-secondary" style="padding:4px 10px;font-size:11px;border-color:var(--accent)">Draw</button>
+            <button onclick="peTool='erase'" id="pe-tool-erase" class="btn-secondary" style="padding:4px 10px;font-size:11px">Erase</button>
+            <button onclick="peTool='pick'" id="pe-tool-pick" class="btn-secondary" style="padding:4px 10px;font-size:11px">Pick</button>
+            <button onclick="peTool='fill'" id="pe-tool-fill" class="btn-secondary" style="padding:4px 10px;font-size:11px">Fill</button>
+            <span style="width:1px;background:var(--border);margin:0 4px"></span>
+            <label style="font-size:10px;color:var(--text-dim);display:flex;align-items:center;gap:4px">
+              Grid <input type="checkbox" id="pe-grid-toggle" checked onchange="peRender()">
+            </label>
+            <span style="width:1px;background:var(--border);margin:0 4px"></span>
+            <button onclick="peSave()" class="btn-primary" style="padding:4px 14px;font-size:11px">Save</button>
+            <button onclick="peExportPng()" class="btn-secondary" style="padding:4px 10px;font-size:11px">Export PNG</button>
+          </div>
+          <div style="position:relative;background:repeating-conic-gradient(var(--surface-2) 0% 25%,var(--surface-3) 0% 50%) 50%/16px 16px;border:1px solid var(--border);border-radius:4px;display:inline-block;max-width:100%;overflow:auto">
+            <canvas id="pe-canvas" width="640" height="640" style="cursor:crosshair;display:block;image-rendering:pixelated;max-width:100%"></canvas>
+          </div>
+          <div style="font-size:10px;color:var(--text-dim);margin-top:4px" id="pe-cursor-info">x: — y: —</div>
+        </div>
+
+        <!-- Palette panel -->
+        <div style="width:200px;min-width:180px;flex-shrink:0">
+          <div style="margin-bottom:12px">
+            <label style="font-size:11px;font-weight:600">Platform Palette</label>
+            <select id="pe-palette-select" onchange="peLoadPalette()" style="width:100%;margin-top:4px;padding:4px;font-size:11px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px">
+              <option value="sprite">From Sprite (auto)</option>
+              <option value="gba-15bit">GBA 15-bit (32768)</option>
+              <option value="nes">NES (54 colors)</option>
+              <option value="snes">SNES 16-color</option>
+              <option value="gameboy">Game Boy (4 shades)</option>
+              <option value="xcom">X-COM (256 colors)</option>
+            </select>
+          </div>
+          <div style="margin-bottom:8px">
+            <label style="font-size:10px;color:var(--text-dim)">Active Color</label>
+            <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
+              <div id="pe-active-color" style="width:32px;height:32px;border:2px solid var(--text);border-radius:4px;background:#000"></div>
+              <div>
+                <div id="pe-active-rgb" style="font-size:10px;color:var(--text-dim)">R:0 G:0 B:0</div>
+                <div id="pe-active-idx" style="font-size:10px;color:var(--text-dim)">#0</div>
+              </div>
+            </div>
+          </div>
+          <div id="pe-palette-grid" style="display:grid;grid-template-columns:repeat(8,1fr);gap:1px;margin-top:8px"></div>
+
+          <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border)">
+            <label style="font-size:11px;font-weight:600">Load Sprite</label>
+            <button onclick="document.getElementById('pe-file-input').click()" class="btn-secondary" style="width:100%;margin-top:6px;padding:6px;font-size:11px">Upload Image</button>
+            <input type="file" id="pe-file-input" accept="image/*" style="display:none" onchange="peLoadFile(event)">
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="saved-msg" id="toast-msg"></div>
+
+  <script>
+    // --- State ---
+    let state = {
+      presets: [],
+      palettes: {},
+      generated: [],       // [{url, selected}]
+      selectedForPalette: null,  // url of sprite sent to palette tab
+      constrainedUrl: null,
+      sheetSprites: [],    // [{url, slot}]
+    };
+
+    function toast(msg, duration) {
+      const isError = /fail|error/i.test(msg);
+      if (isError) console.error('[sprite-forge]', msg);
+      const el = document.getElementById('toast-msg');
+      el.textContent = msg;
+      el.classList.add('show');
+      if (isError) el.classList.add('error');
+      else el.classList.remove('error');
+      setTimeout(() => el.classList.remove('show', 'error'), duration || (isError ? 10000 : 3000));
+    }
+
+    // --- Tabs ---
+    function switchTab(name) {
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+      document.querySelector(`.tab-btn[onclick="switchTab('${name}')"]`).classList.add('active');
+      document.getElementById('tab-' + name).classList.add('active');
+    }
+
+    // --- Init ---
+    state.spriteModels = {};
+
+    async function init() {
+      // Load models
+      try {
+        state.spriteModels = await (await fetch('/api/sprites/models')).json();
+        const sel = document.getElementById('sprite-model');
+        const labels = {
+          'juggernautXL_v9': 'JuggernautXL v9 (best detail)',
+          'dreamshaper-xl': 'DreamShaper XL (fast, 8 steps)',
+          'zavychroma': 'ZavyChroma XL (vibrant colors)',
+          'realvisxl-v5': 'RealVisXL V5 (realism)',
+          'sd15': 'SD 1.5 (lightweight)',
+        };
+        sel.innerHTML = Object.keys(state.spriteModels).map(k =>
+          `<option value="${k}">${labels[k] || k}</option>`
+        ).join('');
+        modelChanged();
+      } catch (e) { console.error('Failed to load models', e); }
+
+      // Load presets
+      try {
+        state.presets = await (await fetch('/api/sprites/presets')).json();
+        const sel = document.getElementById('preset');
+        sel.innerHTML = state.presets.map(p =>
+          `<option value="${p.id}">${p.label} (${p.width}x${p.height})</option>`
+        ).join('');
+      } catch (e) { console.error('Failed to load presets', e); }
+
+      // Load palettes
+      try {
+        state.palettes = await (await fetch('/api/sprites/palettes')).json();
+        updatePalettePreview();
+      } catch (e) { console.error('Failed to load palettes', e); }
+
+      // Slider labels
+      document.getElementById('lora-strength').oninput = e =>
+        document.getElementById('lora-val').textContent = e.target.value;
+      document.getElementById('ip-strength').oninput = e =>
+        document.getElementById('ip-val').textContent = e.target.value;
+      const updateIpRange = () => {
+        const s = document.getElementById('ip-start').value;
+        const e = document.getElementById('ip-end').value;
+        document.getElementById('ip-range-val').textContent = s + ' – ' + e;
+      };
+      document.getElementById('ip-start').oninput = updateIpRange;
+      document.getElementById('ip-end').oninput = updateIpRange;
+
+      // Init sheet grid
+      updateSheetGrid();
+
+      // Load mod templates and existing mods
+      await loadModTemplates();
+      await loadModList();
+    }
+
+    function presetChanged() {
+      const preset = state.presets.find(p => p.id === document.getElementById('preset').value);
+      if (preset) {
+        document.getElementById('pal-width').value = preset.width;
+        document.getElementById('pal-height').value = preset.height;
+        if (preset.palette !== 'custom') {
+          document.getElementById('pal-name').value = preset.palette;
+          document.getElementById('pal-max-colors').value = preset.max_colors;
+          updatePalettePreview();
+        }
+      }
+    }
+
+    function updatePalettePreview() {
+      const name = document.getElementById('pal-name').value;
+      const colors = state.palettes[name] || [];
+      const container = document.getElementById('pal-swatches');
+      container.innerHTML = colors.map(c =>
+        `<div class="pal-swatch" style="background:rgb(${c[0]},${c[1]},${c[2]})" title="rgb(${c.join(',')})"></div>`
+      ).join('');
+    }
+
+    // --- Reference images ---
+    let pendingRefSlot = null;
+
+    function pickRef(slot) {
+      pendingRefSlot = slot;
+      document.getElementById('ref-input').click();
+    }
+
+    const CRYPTO_LOGOS = [
+      // Layer 1s
+      {name:"Bitcoin",ticker:"BTC",slug:"bitcoin-btc"},
+      {name:"Ethereum",ticker:"ETH",slug:"ethereum-eth"},
+      {name:"Nervos Network",ticker:"CKB",slug:"nervos-network-ckb"},
+      {name:"Solana",ticker:"SOL",slug:"solana-sol"},
+      {name:"Cardano",ticker:"ADA",slug:"cardano-ada"},
+      {name:"Polkadot",ticker:"DOT",slug:"polkadot-new-dot"},
+      {name:"Avalanche",ticker:"AVAX",slug:"avalanche-avax"},
+      {name:"BNB",ticker:"BNB",slug:"bnb-bnb"},
+      {name:"Toncoin",ticker:"TON",slug:"toncoin-ton"},
+      {name:"NEAR Protocol",ticker:"NEAR",slug:"near-protocol-near"},
+      {name:"Aptos",ticker:"APT",slug:"aptos-apt"},
+      {name:"Sui",ticker:"SUI",slug:"sui-sui"},
+      {name:"Cosmos",ticker:"ATOM",slug:"cosmos-atom"},
+      {name:"Stellar",ticker:"XLM",slug:"stellar-xlm"},
+      {name:"XRP",ticker:"XRP",slug:"xrp-xrp"},
+      {name:"Tezos",ticker:"XTZ",slug:"tezos-xtz"},
+      {name:"Algorand",ticker:"ALGO",slug:"algorand-algo"},
+      {name:"Fantom",ticker:"FTM",slug:"fantom-ftm"},
+      {name:"Hedera",ticker:"HBAR",slug:"hedera-hbar"},
+      {name:"VeChain",ticker:"VET",slug:"vechain-vet"},
+      {name:"Internet Computer",ticker:"ICP",slug:"internet-computer-icp"},
+      {name:"Kaspa",ticker:"KAS",slug:"kaspa-kas"},
+      {name:"MultiversX",ticker:"EGLD",slug:"multiversx-egld"},
+      {name:"IOTA",ticker:"MIOTA",slug:"iota-miota"},
+      {name:"NEO",ticker:"NEO",slug:"neo-neo"},
+      {name:"EOS",ticker:"EOS",slug:"eos-eos"},
+      {name:"Waves",ticker:"WAVES",slug:"waves-waves"},
+      {name:"ICON",ticker:"ICX",slug:"icon-icx"},
+      {name:"Ontology",ticker:"ONT",slug:"ontology-ont"},
+      {name:"Kadena",ticker:"KDA",slug:"kadena-kda"},
+      {name:"Ergo",ticker:"ERG",slug:"ergo-erg"},
+      {name:"Conflux",ticker:"CFX",slug:"conflux-cfx"},
+      {name:"Mina",ticker:"MINA",slug:"mina-mina"},
+      {name:"Zilliqa",ticker:"ZIL",slug:"zilliqa-zil"},
+      {name:"Harmony",ticker:"ONE",slug:"harmony-one"},
+      {name:"Celo",ticker:"CELO",slug:"celo-celo"},
+      {name:"Kava",ticker:"KAVA",slug:"kava-kava"},
+      {name:"Sei",ticker:"SEI",slug:"sei-sei"},
+      {name:"Flow",ticker:"FLOW",slug:"flow-flow"},
+      {name:"Theta Network",ticker:"THETA",slug:"theta-network-theta"},
+      {name:"Theta Fuel",ticker:"TFUEL",slug:"theta-fuel-tfuel"},
+      {name:"Stacks",ticker:"STX",slug:"stacks-stx"},
+      {name:"Quant",ticker:"QNT",slug:"quant-qnt"},
+      {name:"Helium",ticker:"HNT",slug:"helium-hnt"},
+      {name:"Flux",ticker:"FLUX",slug:"flux-flux"},
+      {name:"Chia",ticker:"XCH",slug:"chia-xch"},
+      {name:"Ronin",ticker:"RON",slug:"ronin-ron"},
+      // Layer 2s & Scaling
+      {name:"Polygon",ticker:"MATIC",slug:"polygon-matic"},
+      {name:"Arbitrum",ticker:"ARB",slug:"arbitrum-arb"},
+      {name:"Optimism",ticker:"OP",slug:"optimism-ethereum-op"},
+      {name:"StarkNet",ticker:"STRK",slug:"starknet-strk"},
+      {name:"Mantle",ticker:"MNT",slug:"mantle-mnt"},
+      {name:"Loopring",ticker:"LRC",slug:"loopring-lrc"},
+      {name:"Skale",ticker:"SKL",slug:"skale-skl"},
+      {name:"Celestia",ticker:"TIA",slug:"celestia-tia"},
+      {name:"EigenLayer",ticker:"EIGEN",slug:"eigenlayer-eigen"},
+      // DeFi
+      {name:"Chainlink",ticker:"LINK",slug:"chainlink-link"},
+      {name:"Uniswap",ticker:"UNI",slug:"uniswap-uni"},
+      {name:"Aave",ticker:"AAVE",slug:"aave-aave"},
+      {name:"Maker",ticker:"MKR",slug:"maker-mkr"},
+      {name:"Lido DAO",ticker:"LDO",slug:"lido-dao-ldo"},
+      {name:"The Graph",ticker:"GRT",slug:"the-graph-grt"},
+      {name:"Synthetix",ticker:"SNX",slug:"synthetix-snx"},
+      {name:"Compound",ticker:"COMP",slug:"compound-comp"},
+      {name:"Curve DAO",ticker:"CRV",slug:"curve-dao-token-crv"},
+      {name:"Yearn Finance",ticker:"YFI",slug:"yearn-finance-yfi"},
+      {name:"1inch",ticker:"1INCH",slug:"1inch-1inch"},
+      {name:"SushiSwap",ticker:"SUSHI",slug:"sushiswap-sushi"},
+      {name:"PancakeSwap",ticker:"CAKE",slug:"pancakeswap-cake"},
+      {name:"dYdX",ticker:"DYDX",slug:"dydx-dydx"},
+      {name:"GMX",ticker:"GMX",slug:"gmx-gmx"},
+      {name:"Frax",ticker:"FRAX",slug:"frax-frax"},
+      {name:"Rocket Pool",ticker:"RPL",slug:"rocket-pool-rpl"},
+      {name:"THORChain",ticker:"RUNE",slug:"thorchain-rune"},
+      {name:"Raydium",ticker:"RAY",slug:"raydium-ray"},
+      {name:"Orca",ticker:"ORCA",slug:"orca-orca"},
+      {name:"Injective",ticker:"INJ",slug:"injective-inj"},
+      {name:"Pendle",ticker:"PENDLE",slug:"pendle-pendle"},
+      {name:"Ondo Finance",ticker:"ONDO",slug:"ondo-finance-ondo"},
+      {name:"Ethena",ticker:"ENA",slug:"ethena-ena"},
+      {name:"Pyth Network",ticker:"PYTH",slug:"pyth-network-pyth"},
+      {name:"Wormhole",ticker:"W",slug:"wormhole-w"},
+      {name:"WOO Network",ticker:"WOO",slug:"woo-network-woo"},
+      {name:"Ankr",ticker:"ANKR",slug:"ankr-ankr"},
+      {name:"Livepeer",ticker:"LPT",slug:"livepeer-lpt"},
+      {name:"Ocean Protocol",ticker:"OCEAN",slug:"ocean-protocol-ocean"},
+      // AI & Data
+      {name:"Fetch.ai",ticker:"FET",slug:"fetch-ai-fet"},
+      {name:"SingularityNET",ticker:"AGIX",slug:"singularitynet-agix"},
+      {name:"Bittensor",ticker:"TAO",slug:"bittensor-tao"},
+      {name:"Akash Network",ticker:"AKT",slug:"akash-network-akt"},
+      {name:"Arweave",ticker:"AR",slug:"arweave-ar"},
+      {name:"Filecoin",ticker:"FIL",slug:"filecoin-fil"},
+      {name:"Storj",ticker:"STORJ",slug:"storj-storj"},
+      {name:"Siacoin",ticker:"SC",slug:"siacoin-sc"},
+      // Gaming & NFTs
+      {name:"Axie Infinity",ticker:"AXS",slug:"axie-infinity-axs"},
+      {name:"The Sandbox",ticker:"SAND",slug:"the-sandbox-sand"},
+      {name:"Decentraland",ticker:"MANA",slug:"decentraland-mana"},
+      {name:"Gala",ticker:"GALA",slug:"gala-gala"},
+      {name:"Enjin Coin",ticker:"ENJ",slug:"enjin-coin-enj"},
+      {name:"Immutable X",ticker:"IMX",slug:"immutable-x-imx"},
+      {name:"Chiliz",ticker:"CHZ",slug:"chiliz-chz"},
+      {name:"WAX",ticker:"WAXP",slug:"wax-waxp"},
+      {name:"Illuvium",ticker:"ILV",slug:"illuvium-ilv"},
+      // Memecoins
+      {name:"Dogecoin",ticker:"DOGE",slug:"dogecoin-doge"},
+      {name:"Shiba Inu",ticker:"SHIB",slug:"shiba-inu-shib"},
+      {name:"Pepe",ticker:"PEPE",slug:"pepe-pepe"},
+      {name:"Bonk",ticker:"BONK",slug:"bonk1-bonk"},
+      {name:"Floki",ticker:"FLOKI",slug:"floki-inu-floki"},
+      {name:"Worldcoin",ticker:"WLD",slug:"worldcoin-wld"},
+      // Privacy
+      {name:"Monero",ticker:"XMR",slug:"monero-xmr"},
+      {name:"Zcash",ticker:"ZEC",slug:"zcash-zec"},
+      {name:"Dash",ticker:"DASH",slug:"dash-dash"},
+      {name:"Secret",ticker:"SCRT",slug:"secret-scrt"},
+      {name:"Oasis Network",ticker:"ROSE",slug:"oasis-network-rose"},
+      // Stablecoins
+      {name:"Tether",ticker:"USDT",slug:"tether-usdt"},
+      {name:"USD Coin",ticker:"USDC",slug:"usd-coin-usdc"},
+      // Forks & Legacy
+      {name:"Litecoin",ticker:"LTC",slug:"litecoin-ltc"},
+      {name:"Bitcoin Cash",ticker:"BCH",slug:"bitcoin-cash-bch"},
+      {name:"Bitcoin SV",ticker:"BSV",slug:"bitcoin-sv-bsv"},
+      {name:"Bitcoin Gold",ticker:"BTG",slug:"bitcoin-gold-btg"},
+      {name:"Ethereum Classic",ticker:"ETC",slug:"ethereum-classic-etc"},
+      {name:"Ravencoin",ticker:"RVN",slug:"ravencoin-rvn"},
+      // Exchange tokens
+      {name:"Cronos",ticker:"CRO",slug:"cronos-cro"},
+      {name:"OKB",ticker:"OKB",slug:"okb-okb"},
+      // Web3 / Other
+      {name:"Basic Attention Token",ticker:"BAT",slug:"basic-attention-token-bat"},
+    ];
+
+    function filterCryptoLogos() {
+      const q = document.getElementById('crypto-logo-search').value.toLowerCase();
+      const dd = document.getElementById('crypto-logo-dropdown');
+      const matches = q.length === 0
+        ? CRYPTO_LOGOS.slice(0, 30)
+        : CRYPTO_LOGOS.filter(c =>
+            c.name.toLowerCase().includes(q) ||
+            c.ticker.toLowerCase().includes(q)
+          ).slice(0, 30);
+
+      if (matches.length === 0) {
+        dd.style.display = 'none';
+        return;
+      }
+      dd.innerHTML = matches.map(c =>
+        `<div style="padding:6px 8px;cursor:pointer;font-size:11px;display:flex;justify-content:space-between;border-bottom:1px solid var(--border)"
+          onmousedown="selectCryptoLogo('${c.slug}','${c.name}')"
+          onmouseover="this.style.background='var(--accent)'"
+          onmouseout="this.style.background=''">
+          <span>${c.name}</span><span style="color:var(--text-dim)">${c.ticker}</span>
+        </div>`
+      ).join('');
+      dd.style.display = 'block';
+    }
+
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('#crypto-logo-search') && !e.target.closest('#crypto-logo-dropdown')) {
+        document.getElementById('crypto-logo-dropdown').style.display = 'none';
+      }
+    });
+
+    async function selectCryptoLogo(slug, name) {
+      const dd = document.getElementById('crypto-logo-dropdown');
+      const search = document.getElementById('crypto-logo-search');
+      const status = document.getElementById('crypto-logo-status');
+      dd.style.display = 'none';
+      search.value = name;
+      status.textContent = 'Fetching...';
+
+      try {
+        const resp = await fetch(`/api/sprites/crypto-logo/${slug}`);
+        if (!resp.ok) throw new Error('Not found');
+        const blob = await resp.blob();
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          const el = document.getElementById('ref-style');
+          el.innerHTML = `<img src="${ev.target.result}"><button class="ref-clear" onclick="clearRef(event,'style')">x</button>`;
+          el.classList.add('has-image');
+          status.textContent = '';
+        };
+        reader.readAsDataURL(blob);
+      } catch (e) {
+        status.textContent = 'Not found';
+        setTimeout(() => { status.textContent = ''; }, 3000);
+      }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('ref-input').addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file || !pendingRefSlot) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          const el = document.getElementById('ref-' + pendingRefSlot);
+          el.innerHTML = `<img src="${ev.target.result}"><button class="ref-clear" onclick="clearRef(event,'${pendingRefSlot}')">x</button>`;
+          el.classList.add('has-image');
+          el.dataset.file = file.name;
+        };
+        reader.readAsDataURL(file);
+        e.target.value = '';
+      });
+
+      init();
+    });
+
+    function clearRef(e, slot) {
+      e.stopPropagation();
+      const el = document.getElementById('ref-' + slot);
+      el.innerHTML = `<span class="ref-label">${slot === 'sprite' ? 'Reference<br>Sprite' : 'Style<br>Reference'}</span><button class="ref-clear" onclick="clearRef(event,'${slot}')">x</button>`;
+      el.classList.remove('has-image');
+      delete el.dataset.file;
+    }
+
+    function modelChanged() {
+      const id = document.getElementById('sprite-model').value;
+      const m = state.spriteModels[id];
+      if (m) {
+        document.getElementById('steps').value = m.steps;
+        document.getElementById('cfg').value = m.cfg;
+        document.getElementById('model-info').textContent = `${m.checkpoint} + pixel-art LoRA`;
+      }
+    }
+
+    // --- OP my prompt ---
+    async function opMyPrompt() {
+      const promptEl = document.getElementById('prompt');
+      const prompt = promptEl.value.trim();
+      if (!prompt) { toast('Enter a prompt first'); return; }
+
+      const btn = document.getElementById('btn-op');
+      btn.disabled = true; btn.textContent = 'Enhancing...';
+      try {
+        const resp = await fetch('/api/op-prompt', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt, mode: 'sprite' }),
+        });
+        const data = await resp.json();
+        if (data.error) throw new Error(data.error);
+        promptEl.value = data.enhanced_prompt;
+        toast(data.changes_made || 'Prompt enhanced');
+      } catch (e) {
+        toast('OP failed: ' + e.message);
+      } finally {
+        btn.disabled = false; btn.textContent = 'OP my prompt';
+      }
+    }
+
+    // --- Generate ---
+    async function generateSprites() {
+      const prompt = document.getElementById('prompt').value.trim();
+      if (!prompt) { toast('Enter a prompt'); return; }
+
+      const btn = document.getElementById('btn-gen');
+      btn.disabled = true; btn.textContent = 'Generating...';
+      document.getElementById('gen-progress').classList.add('active');
+      document.getElementById('gen-msg').classList.add('active');
+      document.getElementById('gen-msg').textContent = 'Submitting...';
+
+      try {
+        // Extract reference images from DOM slots
+        const refImages = [];
+        for (const slot of ['sprite', 'style']) {
+          const el = document.getElementById('ref-' + slot);
+          if (el && el.classList.contains('has-image')) {
+            const img = el.querySelector('img');
+            if (img && img.src.startsWith('data:')) {
+              refImages.push({ slot, data: img.src });
+            }
+          }
+        }
+
+        const resp = await fetch('/api/sprites/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prompt,
+            model: document.getElementById('sprite-model').value,
+            batch_size: parseInt(document.getElementById('batch-size').value),
+            steps: parseInt(document.getElementById('steps').value),
+            cfg: parseFloat(document.getElementById('cfg').value),
+            seed: parseInt(document.getElementById('seed').value),
+            lora_strength: parseFloat(document.getElementById('lora-strength').value),
+            ip_adapter_strength: parseFloat(document.getElementById('ip-strength').value),
+            ip_adapter_weight_type: document.getElementById('ip-weight-type').value,
+            ip_adapter_start: parseFloat(document.getElementById('ip-start').value),
+            ip_adapter_end: parseFloat(document.getElementById('ip-end').value),
+            reference_images_b64: refImages,
+          }),
+        });
+        const data = await resp.json();
+        if (data.error) throw new Error(data.error);
+        pollGenJob(data.job_id);
+      } catch (e) {
+        toast('Failed: ' + e.message);
+        resetGenUI();
+      }
+    }
+
+    function pollGenJob(jobId) {
+      const poll = setInterval(async () => {
+        try {
+          const resp = await fetch(`/api/job/${jobId}`);
+          const data = await resp.json();
+
+          if (data.status === 'running' || data.status === 'queued') {
+            document.getElementById('gen-fill').style.width = (data.progress || 0) + '%';
+            document.getElementById('gen-msg').textContent =
+              data.message || (data.status === 'queued' ? 'Queued...' : `Generating... ${data.progress || 0}%`);
+          } else if (data.status === 'complete') {
+            clearInterval(poll);
+            state.generated = (data.urls || []).map(u => ({ url: u, selected: false }));
+            renderSpriteGrid();
+            resetGenUI();
+            toast(`${data.count} sprites generated!`);
+          } else if (data.status === 'error') {
+            clearInterval(poll);
+            resetGenUI();
+            toast('Error: ' + (data.error || 'unknown'));
+          }
+        } catch (e) {
+          clearInterval(poll);
+          resetGenUI();
+          toast('Poll error: ' + e.message);
+        }
+      }, 2000);
+    }
+
+    function resetGenUI() {
+      document.getElementById('btn-gen').disabled = false;
+      document.getElementById('btn-gen').textContent = 'Generate Sprites';
+      document.getElementById('gen-progress').classList.remove('active');
+      document.getElementById('gen-msg').classList.remove('active');
+    }
+
+    function renderSpriteGrid() {
+      const grid = document.getElementById('sprite-grid');
+      grid.innerHTML = '';
+      state.generated.forEach((s, i) => {
+        const card = document.createElement('div');
+        card.className = 'sprite-card' + (s.selected ? ' selected' : '');
+        card.innerHTML = `
+          <img src="${s.url}?t=${Date.now()}" alt="Sprite ${i}">
+          <div class="card-actions">
+            <button onclick="sendToPalette(${i})">Palette</button>
+            <button onclick="downloadSprite(${i})">Download</button>
+          </div>
+        `;
+        card.querySelector('img').onclick = () => {
+          state.generated.forEach(g => g.selected = false);
+          s.selected = true;
+          renderSpriteGrid();
+        };
+        grid.appendChild(card);
+      });
+    }
+
+    function sendToPalette(idx) {
+      const sprite = state.generated[idx];
+      if (!sprite) return;
+      state.selectedForPalette = sprite.url;
+      document.getElementById('pal-original').innerHTML = `<img src="${sprite.url}?t=${Date.now()}">`;
+      document.getElementById('pal-result').innerHTML = '';
+      document.getElementById('btn-to-sheet').disabled = true;
+      switchTab('palette');
+      presetChanged();
+      toast('Sprite loaded in Palette tab');
+    }
+
+    function downloadSprite(idx) {
+      const sprite = state.generated[idx];
+      if (!sprite) return;
+      const a = document.createElement('a');
+      a.href = sprite.url;
+      a.download = `sprite_${idx}.png`;
+      a.click();
+    }
+
+    // --- Palette & Constrain ---
+    async function constrainSprite() {
+      if (!state.selectedForPalette) { toast('No sprite selected'); return; }
+
+      try {
+        const resp = await fetch('/api/sprites/constrain', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            image_url: state.selectedForPalette,
+            palette: document.getElementById('pal-name').value,
+            max_colors: parseInt(document.getElementById('pal-max-colors').value),
+            target_width: parseInt(document.getElementById('pal-width').value),
+            target_height: parseInt(document.getElementById('pal-height').value),
+            dithering: document.getElementById('pal-dither').value,
+          }),
+        });
+        const data = await resp.json();
+        if (data.error) throw new Error(data.error);
+
+        state.constrainedUrl = data.url;
+        // Show at 8x zoom for small sprites
+        const w = data.width;
+        const scale = w <= 64 ? 8 : (w <= 128 ? 4 : 1);
+        document.getElementById('pal-result').innerHTML =
+          `<img src="${data.url}?t=${Date.now()}" style="width:${w * scale}px;height:${data.height * scale}px">`;
+        document.getElementById('btn-to-sheet').disabled = false;
+        toast(`Constrained: ${data.width}x${data.height}, ${data.colors_used} colors`);
+      } catch (e) {
+        toast('Constrain failed: ' + e.message);
+      }
+    }
+
+    function sendToSheet() {
+      if (!state.constrainedUrl) return;
+      const slot = state.sheetSprites.length;
+      state.sheetSprites.push({ url: state.constrainedUrl, slot });
+      updateSheetGrid();
+      switchTab('sheet');
+      toast('Added to sprite sheet');
+    }
+
+    // --- Sprite Sheet ---
+    function updateSheetGrid() {
+      const layout = document.getElementById('sheet-layout').value;
+      const grid = document.getElementById('sheet-grid');
+      let cols, rows, labels;
+
+      if (layout === 'xcom-8dir') {
+        cols = 8; rows = 4;
+        labels = ['N','NE','E','SE','S','SW','W','NW'];
+        grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+      } else if (layout === 'custom-4x4') {
+        cols = 4; rows = 4; labels = null;
+        grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+      } else {
+        cols = 8; rows = 4; labels = null;
+        grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+      }
+
+      grid.innerHTML = '';
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const slot = r * cols + c;
+          const cell = document.createElement('div');
+          cell.className = 'sheet-cell';
+          cell.dataset.slot = slot;
+
+          const sprite = state.sheetSprites.find(s => s.slot === slot);
+          if (sprite) {
+            cell.innerHTML = `<img src="${sprite.url}?t=${Date.now()}">`;
+            cell.classList.add('filled');
+          } else {
+            const label = labels ? (r === 0 ? labels[c] : `${labels[c]}-${r}`) : slot;
+            cell.textContent = label;
+          }
+          grid.appendChild(cell);
+        }
+      }
+      document.getElementById('sheet-info').textContent =
+        `${state.sheetSprites.length} sprites placed. ${cols * rows - state.sheetSprites.length} slots empty.`;
+    }
+
+    async function exportSheet() {
+      if (state.sheetSprites.length === 0) { toast('No sprites in sheet'); return; }
+      try {
+        const preset = state.presets.find(p => p.id === document.getElementById('preset').value);
+        const resp = await fetch('/api/sprites/sheet', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sprites: state.sheetSprites,
+            cell_width: preset?.width || 32,
+            cell_height: preset?.height || 40,
+            columns: 8,
+          }),
+        });
+        const data = await resp.json();
+        if (data.error) throw new Error(data.error);
+        const a = document.createElement('a');
+        a.href = data.url;
+        a.download = 'spritesheet.png';
+        a.click();
+        toast(`Sheet exported: ${data.width}x${data.height}`);
+      } catch (e) {
+        toast('Export failed: ' + e.message);
+      }
+    }
+
+    // --- Mod Builder ---
+    state.activeMod = null;
+    state.modTemplates = {};
+
+    async function loadModTemplates() {
+      try {
+        state.modTemplates = await (await fetch('/api/sprites/mods/templates')).json();
+        const sel = document.getElementById('mod-template');
+        sel.innerHTML = Object.entries(state.modTemplates).map(([k, v]) =>
+          `<option value="${k}">${v.name} — ${v.game}</option>`
+        ).join('');
+      } catch (e) { console.error('Failed to load templates', e); }
+    }
+
+    async function loadModList() {
+      try {
+        const mods = await (await fetch('/api/sprites/mods')).json();
+        const el = document.getElementById('mod-list');
+        if (mods.length === 0) {
+          el.innerHTML = '<div style="color:var(--text-dim);font-size:13px;padding:12px">No mods yet. Create one above.</div>';
+          return;
+        }
+        el.innerHTML = mods.map(m => `
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:8px;cursor:pointer;display:flex;justify-content:space-between;align-items:center" onclick="openMod('${m.id}')">
+            <div>
+              <div style="font-weight:600;font-size:14px">${m.name}</div>
+              <div style="font-size:11px;color:var(--text-dim)">${m.game} — ${m.filled_count}/${m.slot_count} sprites filled</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <div style="width:60px;height:6px;background:var(--border);border-radius:3px;overflow:hidden">
+                <div style="height:100%;background:var(--accent);width:${Math.round(m.filled_count/m.slot_count*100)}%"></div>
+              </div>
+              <span style="font-size:11px;color:var(--text-dim)">${Math.round(m.filled_count/m.slot_count*100)}%</span>
+            </div>
+          </div>
+        `).join('');
+      } catch (e) { console.error('Failed to load mods', e); }
+    }
+
+    async function createMod() {
+      const template = document.getElementById('mod-template').value;
+      const name = document.getElementById('mod-name').value.trim();
+      if (!template) { toast('Select a template'); return; }
+      try {
+        const resp = await fetch('/api/sprites/mods', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ template, name }),
+        });
+        const mod = await resp.json();
+        if (mod.error) throw new Error(mod.error);
+        toast(`Mod "${mod.name}" created with ${mod.slot_count} slots`);
+        openMod(mod.id);
+      } catch (e) { toast('Create failed: ' + e.message); }
+    }
+
+    async function openMod(modId) {
+      try {
+        const mod = await (await fetch(`/api/sprites/mods/${modId}`)).json();
+        if (mod.error) throw new Error(mod.error);
+        state.activeMod = mod;
+
+        document.getElementById('mod-picker').style.display = 'none';
+        document.getElementById('mod-workspace').style.display = 'block';
+        document.getElementById('mod-ws-name').textContent = mod.name;
+        document.getElementById('mod-ws-game').textContent = mod.game;
+        document.getElementById('mod-ws-progress').textContent =
+          `${mod.filled_count}/${mod.slot_count} slots filled`;
+
+        renderModSlots(mod);
+      } catch (e) { toast('Failed to open mod: ' + e.message); }
+    }
+
+    function closeMod() {
+      state.activeMod = null;
+      document.getElementById('mod-picker').style.display = 'block';
+      document.getElementById('mod-workspace').style.display = 'none';
+      document.getElementById('yaml-preview').style.display = 'none';
+      loadModList();
+    }
+
+    function renderModSlots(mod) {
+      const container = document.getElementById('mod-slots');
+      const categories = {};
+      mod.slots.forEach(s => {
+        if (!categories[s.category]) categories[s.category] = [];
+        categories[s.category].push(s);
+      });
+
+      container.innerHTML = Object.entries(categories).map(([cat, slots]) => `
+        <div style="margin-bottom:16px">
+          <h4 style="font-size:12px;color:var(--text-dim);text-transform:uppercase;margin:0 0 8px">${cat} (${slots.filter(s=>s.sprite).length}/${slots.length})</h4>
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px">
+            ${slots.map(s => `
+              <div style="background:var(--surface);border:1px solid ${s.sprite ? 'var(--success)' : 'var(--border)'};border-radius:8px;padding:8px;text-align:center">
+                <div style="width:100%;aspect-ratio:1;background:repeating-conic-gradient(var(--surface-2) 0% 25%,var(--surface-3) 0% 50%) 50%/12px 12px;border-radius:4px;margin-bottom:6px;display:flex;align-items:center;justify-content:center;overflow:hidden">
+                  ${s.sprite
+                    ? `<img src="${s.sprite}?t=${Date.now()}" style="width:100%;height:100%;object-fit:contain;image-rendering:pixelated">`
+                    : `<span style="font-size:20px;opacity:0.3">?</span>`
+                  }
+                </div>
+                <div style="font-size:11px;font-weight:600;margin-bottom:2px">${s.name}</div>
+                <div style="font-size:9px;color:var(--text-dim)">${s.width}x${s.height} ${s.type}</div>
+                <div style="margin-top:6px;display:flex;gap:4px;justify-content:center;flex-wrap:wrap">
+                  <button onclick="generateForSlot('${s.id}','${s.name}',${s.width},${s.height})" style="padding:3px 8px;font-size:9px;border:1px solid var(--border);background:var(--surface-2);color:var(--text-dim);border-radius:4px;cursor:pointer">Generate</button>
+                  ${state.generated.length > 0 ? `<button onclick="assignFromGrid('${s.id}')" style="padding:3px 8px;font-size:9px;border:1px solid var(--accent);background:var(--accent-dim);color:var(--accent);border-radius:4px;cursor:pointer">Assign</button>` : ''}
+                  ${s.sprite ? `<button onclick="peEditSprite('${s.sprite}','${s.name.replace(/'/g,"\\'")}','${s.id}')" style="padding:3px 8px;font-size:9px;border:1px solid var(--border);background:var(--surface-2);color:var(--text-dim);border-radius:4px;cursor:pointer">Edit</button>` : ''}
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function generateForSlot(slotId, slotName, w, h) {
+      // Pre-fill the generate tab for this slot
+      document.getElementById('prompt').value = `${slotName}, crypto themed, pixel art game sprite`;
+      // Set appropriate preset
+      if (h === 40 && w === 32) document.getElementById('preset').value = 'xcom-unit';
+      else if (h === 48 && w === 32) document.getElementById('preset').value = 'xcom-bigobs';
+      else if (h === 200 && w === 320) document.getElementById('preset').value = 'xcom-ufopaedia';
+      else if (h === 64 && w === 64) document.getElementById('preset').value = 'gba-pokemon';
+      presetChanged();
+      state._pendingSlot = slotId;
+      switchTab('generate');
+      toast(`Generate sprite for: ${slotName}. When done, assign it back in Mod Builder.`);
+    }
+
+    async function assignFromGrid(slotId) {
+      const selected = state.generated.find(g => g.selected);
+      if (!selected) { toast('Select a sprite from the grid first (click one)'); return; }
+      if (!state.activeMod) return;
+
+      // If we have a constrained version, prefer that
+      const url = state.constrainedUrl || selected.url;
+
+      try {
+        const resp = await fetch(`/api/sprites/mods/${state.activeMod.id}/slots/${slotId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sprite_url: url }),
+        });
+        const data = await resp.json();
+        if (data.error) throw new Error(data.error);
+
+        // Refresh mod
+        await openMod(state.activeMod.id);
+        toast(`Assigned to ${slotId}`);
+      } catch (e) { toast('Assign failed: ' + e.message); }
+    }
+
+    async function previewYaml() {
+      if (!state.activeMod) { toast('Open a mod first'); return; }
+      try {
+        const resp = await fetch(`/api/sprites/mods/${state.activeMod.id}/yaml`);
+        const data = await resp.json();
+        document.getElementById('yaml-preview').textContent = data.yaml;
+        document.getElementById('yaml-preview').style.display = 'block';
+      } catch (e) { toast('YAML preview failed: ' + e.message); }
+    }
+
+    // --- ROM Upload ---
+    state.romAssets = null;
+
+    // Drag and drop
+    document.addEventListener('DOMContentLoaded', () => {
+      const drop = document.getElementById('rom-drop');
+      drop.addEventListener('dragover', e => { e.preventDefault(); drop.style.borderColor = 'var(--accent)'; });
+      drop.addEventListener('dragleave', () => { drop.style.borderColor = 'var(--border)'; });
+      drop.addEventListener('drop', e => {
+        e.preventDefault();
+        drop.style.borderColor = 'var(--border)';
+        if (e.dataTransfer.files.length) uploadRom(e.dataTransfer.files[0]);
+      });
+    });
+
+    async function uploadRom(file) {
+      if (!file) return;
+      const romExts = ['.gba','.nds','.nes','.smc','.sfc','.gb','.gbc','.bin'];
+      const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
+      if (!romExts.includes(ext)) {
+        toast('Unsupported file type — expected: ' + romExts.join(', '));
+        return;
+      }
+      const progEl = document.getElementById('rom-progress');
+      progEl.style.display = 'block';
+      document.getElementById('rom-msg').textContent = `Uploading ${file.name} (${(file.size/1024/1024).toFixed(1)} MB)...`;
+      document.getElementById('rom-fill').style.width = '30%';
+
+      try {
+        const form = new FormData();
+        form.append('rom', file);
+        document.getElementById('rom-msg').textContent = 'Extracting sprites...';
+        document.getElementById('rom-fill').style.width = '60%';
+
+        const resp = await fetch('/api/sprites/rom/upload', { method: 'POST', body: form });
+        const data = await resp.json();
+        if (data.error) throw new Error(data.error);
+
+        document.getElementById('rom-fill').style.width = '100%';
+        document.getElementById('rom-msg').textContent = `${data.game} — ${data.total_assets} assets extracted`;
+
+        state.romAssets = data;
+        renderRomAssets(data);
+        toast(`${data.game}: ${data.total_assets} sprites extracted!`);
+      } catch (e) {
+        document.getElementById('rom-msg').textContent = 'Error: ' + e.message;
+        toast('ROM extraction failed: ' + e.message);
+      }
+    }
+
+    function renderRomAssets(data) {
+      const container = document.getElementById('rom-assets');
+      container.style.display = 'block';
+
+      let html = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <h3 style="margin:0;font-size:16px">${data.game} — ${data.total_assets} Assets</h3>
+        <span style="font-size:11px;color:var(--text-dim)">${data.console.toUpperCase()}</span>
+      </div>`;
+
+      for (const [cat, assets] of Object.entries(data.categories)) {
+        html += `<div style="margin-bottom:16px">
+          <h4 style="font-size:12px;color:var(--text-dim);text-transform:uppercase;margin:0 0 8px">${cat} (${assets.length})</h4>
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(90px,1fr));gap:6px">`;
+
+        assets.forEach(a => {
+          const safeName = (a.meta?.pokemon_name || a.name).replace(/'/g, "\\'");
+          const hasOffset = a.meta?.offset;
+          const compression = a.meta?.compression || (a.meta?.compressed ? 'nintendo_lz2' : 'none');
+          html += `<div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:4px;text-align:center" title="${a.name}" data-asset-id="${a.id}" data-pal-idx="0">
+            <img id="img-${a.id}" src="${a.url}" style="width:100%;aspect-ratio:1;object-fit:contain;image-rendering:pixelated;background:#000;border-radius:4px;cursor:pointer" onclick="selectRomSprite('${a.url}','${safeName}',${a.width},${a.height})">
+            <div style="font-size:9px;color:var(--text-dim);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${a.meta?.pokemon_name || a.name}</div>
+            <div style="display:flex;gap:2px;justify-content:center;margin-top:3px">
+              ${hasOffset ? `<button onclick="swapPalette('${a.id}','${a.meta.offset}','${compression}',-1)" style="padding:2px 5px;font-size:8px;border:1px solid var(--border);background:var(--surface-2);color:var(--text-dim);border-radius:3px;cursor:pointer" title="Previous palette">◀</button>
+              <button onclick="swapPalette('${a.id}','${a.meta.offset}','${compression}',1)" style="padding:2px 5px;font-size:8px;border:1px solid var(--border);background:var(--surface-2);color:var(--text-dim);border-radius:3px;cursor:pointer" title="Next palette">▶</button>` : ''}
+              <button onclick="peEditSprite('${a.url}','${safeName}')" style="padding:2px 6px;font-size:8px;border:1px solid var(--border);background:var(--surface-2);color:var(--text-dim);border-radius:3px;cursor:pointer">Edit</button>
+            </div>
+          </div>`;
+        });
+
+        html += `</div></div>`;
+      }
+
+      container.innerHTML = html;
+    }
+
+    async function swapPalette(assetId, offset, compression, direction) {
+      if (!state.romAssets) return;
+      const card = document.querySelector(`[data-asset-id="${assetId}"]`);
+      if (!card) return;
+
+      let idx = parseInt(card.dataset.palIdx || '0') + direction;
+      if (idx < 0) idx = 19; // wrap around (max 20 palettes)
+      if (idx > 19) idx = 0;
+      card.dataset.palIdx = idx;
+
+      try {
+        const resp = await fetch('/api/sprites/rom/repalette', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            slug: state.romAssets.slug,
+            asset_id: assetId,
+            palette_index: idx,
+            offset: offset,
+            compression: compression,
+          }),
+        });
+        const data = await resp.json();
+        if (data.error) { toast(data.error); return; }
+
+        const img = document.getElementById('img-' + assetId);
+        if (img) img.src = data.url + '?t=' + Date.now();
+      } catch (e) {
+        toast('Palette swap failed: ' + e.message);
+      }
+    }
+
+    function selectRomSprite(url, name, w, h) {
+      // Send to Generate tab as a reference + pre-fill prompt
+      state.selectedForPalette = url;
+      document.getElementById('prompt').value = `crypto monster version of ${name}, pixel art game sprite, front-facing`;
+
+      // Load sprite into Reference Sprite slot as data URL for IP-Adapter
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        canvas.getContext('2d').drawImage(img, 0, 0);
+        const dataUrl = canvas.toDataURL('image/png');
+        const el = document.getElementById('ref-sprite');
+        el.innerHTML = `<img src="${dataUrl}"><button class="ref-clear" onclick="clearRef(event,'sprite')">x</button>`;
+        el.classList.add('has-image');
+      };
+      img.src = url;
+
+      toast(`Selected ${name} — switch to Generate tab to create replacement`);
+    }
+
+    // Ctrl+Enter to generate
+    document.getElementById('prompt').addEventListener('keydown', e => {
+      if (e.ctrlKey && e.key === 'Enter') generateSprites();
+    });
+
+    // ========== PIXEL EDITOR ==========
+    const PE = {
+      canvas: null, ctx: null,
+      pixels: null,         // Uint8Array(w*h*4) RGBA
+      w: 0, h: 0,
+      scale: 10,            // pixels per cell
+      palette: [],          // [{r,g,b,a}]
+      activeColorIdx: 0,
+      undoStack: [],
+      redoStack: [],
+      sourceUrl: null,      // where this sprite came from (for save-back)
+      sourceSlot: null,      // mod slot id if applicable
+      sourceName: '',
+    };
+    let peTool = 'draw';
+    let peMouseDown = false;
+
+    function peInit() {
+      PE.canvas = document.getElementById('pe-canvas');
+      PE.ctx = PE.canvas.getContext('2d', { willReadFrequently: true });
+      PE.canvas.addEventListener('mousedown', peOnMouseDown);
+      PE.canvas.addEventListener('mousemove', peOnMouseMove);
+      PE.canvas.addEventListener('mouseup', () => peMouseDown = false);
+      PE.canvas.addEventListener('mouseleave', () => peMouseDown = false);
+      PE.canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+      // Keyboard shortcuts
+      document.addEventListener('keydown', e => {
+        if (document.getElementById('tab-pixedit').classList.contains('active')) {
+          if (e.ctrlKey && e.key === 'z') { e.preventDefault(); peUndo(); }
+          if (e.ctrlKey && e.key === 'y') { e.preventDefault(); peRedo(); }
+          if (e.key === 'd') peTool = 'draw';
+          if (e.key === 'e') peTool = 'erase';
+          if (e.key === 'p') peTool = 'pick';
+          if (e.key === 'f') peTool = 'fill';
+          peUpdateToolBtns();
+        }
+      });
+    }
+
+    function peUpdateToolBtns() {
+      for (const t of ['draw','erase','pick','fill']) {
+        const btn = document.getElementById('pe-tool-' + t);
+        btn.style.borderColor = peTool === t ? 'var(--accent)' : 'var(--border)';
+      }
+    }
+
+    function peLoadImage(url, name, slotId) {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        PE.w = img.naturalWidth;
+        PE.h = img.naturalHeight;
+
+        // Scale canvas to fit — aim for ~640px on longest side
+        PE.scale = Math.max(1, Math.floor(640 / Math.max(PE.w, PE.h)));
+        PE.canvas.width = PE.w * PE.scale;
+        PE.canvas.height = PE.h * PE.scale;
+
+        // Read pixels
+        const tmp = document.createElement('canvas');
+        tmp.width = PE.w; tmp.height = PE.h;
+        const tctx = tmp.getContext('2d');
+        tctx.drawImage(img, 0, 0);
+        const imgData = tctx.getImageData(0, 0, PE.w, PE.h);
+        PE.pixels = new Uint8Array(imgData.data);
+
+        // Extract unique colors for palette
+        peExtractPalette();
+
+        PE.undoStack = [];
+        PE.redoStack = [];
+        PE.sourceUrl = url;
+        PE.sourceSlot = slotId || null;
+        PE.sourceName = name || 'Untitled';
+
+        document.getElementById('pe-sprite-name').textContent = PE.sourceName;
+        document.getElementById('pe-dimensions').textContent = `${PE.w}x${PE.h}`;
+        document.getElementById('pe-palette-select').value = 'sprite';
+
+        peRender();
+        switchTab('pixedit');
+      };
+      img.src = url;
+    }
+
+    function peExtractPalette() {
+      const colors = new Map();
+      for (let i = 0; i < PE.pixels.length; i += 4) {
+        const key = `${PE.pixels[i]},${PE.pixels[i+1]},${PE.pixels[i+2]},${PE.pixels[i+3]}`;
+        if (!colors.has(key)) {
+          colors.set(key, { r: PE.pixels[i], g: PE.pixels[i+1], b: PE.pixels[i+2], a: PE.pixels[i+3] });
+        }
+      }
+      PE.palette = Array.from(colors.values());
+      // Sort: transparent first, then by luminance
+      PE.palette.sort((a, b) => {
+        if (a.a === 0 && b.a !== 0) return -1;
+        if (b.a === 0 && a.a !== 0) return 1;
+        return (a.r * 0.299 + a.g * 0.587 + a.b * 0.114) - (b.r * 0.299 + b.g * 0.587 + b.b * 0.114);
+      });
+      PE.activeColorIdx = PE.palette.length > 1 ? 1 : 0;
+      peRenderPalette();
+    }
+
+    function peLoadPalette() {
+      const sel = document.getElementById('pe-palette-select').value;
+      if (sel === 'sprite') { peExtractPalette(); return; }
+
+      const PLATFORM_PALETTES = {
+        'gba-15bit': (() => {
+          // Full GBA 15-bit color space: 32 levels per channel, 32768 colors
+          const p = [{ r: 0, g: 0, b: 0, a: 0 }]; // transparent at idx 0
+          for (let r = 0; r < 32; r++)
+            for (let g = 0; g < 32; g++)
+              for (let b = 0; b < 32; b++)
+                p.push({ r: r << 3, g: g << 3, b: b << 3, a: 255 });
+          return p;
+        })(),
+        'nes': [{ r:0, g:0, b:0, a:0 },
+          ...[
+          [124,124,124],[0,0,252],[0,0,188],[68,40,188],
+          [148,0,132],[168,0,32],[168,16,0],[136,20,0],
+          [80,48,0],[0,120,0],[0,104,0],[0,88,0],
+          [0,64,88],[0,0,0],
+          [188,188,188],[0,120,248],[0,88,248],[104,68,252],
+          [216,0,204],[228,0,88],[248,56,0],[228,92,16],
+          [172,124,0],[0,184,0],[0,168,0],[0,168,68],
+          [0,136,136],
+          [248,248,248],[60,188,252],[104,136,252],[152,120,248],
+          [248,120,248],[248,88,152],[248,120,88],[252,160,68],
+          [248,184,0],[184,248,24],[88,216,84],[44,236,136],
+          [0,232,216],[120,120,120],
+          [252,252,252],[164,228,252],[184,184,248],[216,184,248],
+          [248,184,248],[248,164,192],[240,208,176],[252,224,168],
+          [248,216,120],[216,248,120],[184,248,184],[176,248,200],
+          [152,248,240],[196,196,196]
+        ].map(([r,g,b]) => ({r,g,b,a:255}))],
+        'snes': [{ r:0, g:0, b:0, a:0 },
+          ...[
+          [128,0,0],[0,128,0],[128,128,0],[0,0,128],[128,0,128],
+          [0,128,128],[192,192,192],[128,128,128],[255,0,0],[0,255,0],
+          [255,255,0],[0,0,255],[255,0,255],[0,255,255],[255,255,255]
+        ].map(([r,g,b]) => ({r,g,b,a:255}))],
+        'gameboy': [{ r:0, g:0, b:0, a:0 },
+          ...[
+          [155,188,15],[139,172,15],[48,98,48],[15,56,15]
+        ].map(([r,g,b]) => ({r,g,b,a:255}))],
+        'xcom': [{ r:0, g:0, b:0, a:0 },
+          ...[...Array(128)].map((_,i) => {
+            // Simplified X-COM ramp
+            const v = Math.round(i * 2);
+            return {r:v,g:v,b:v,a:255};
+          })],
+      };
+
+      // GBA 15-bit is too large for a grid — show a condensed representative set
+      if (sel === 'gba-15bit') {
+        // Show 256 representative colors (5-bit steps)
+        const p = [{ r:0, g:0, b:0, a:0 }];
+        for (let r = 0; r < 32; r += 2)
+          for (let g = 0; g < 32; g += 2)
+            for (let b = 0; b < 32; b += 8)
+              p.push({ r: r<<3, g: g<<3, b: b<<3, a: 255 });
+        PE.palette = p;
+      } else {
+        PE.palette = PLATFORM_PALETTES[sel] || PE.palette;
+      }
+      PE.activeColorIdx = Math.min(PE.activeColorIdx, PE.palette.length - 1);
+      peRenderPalette();
+    }
+
+    function peRenderPalette() {
+      const grid = document.getElementById('pe-palette-grid');
+      // For large palettes, adjust grid columns
+      const cols = PE.palette.length > 64 ? 16 : 8;
+      grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+
+      grid.innerHTML = PE.palette.slice(0, 512).map((c, i) => {
+        const bg = c.a === 0
+          ? 'repeating-conic-gradient(#666 0% 25%,#999 0% 50%) 50%/8px 8px'
+          : `rgb(${c.r},${c.g},${c.b})`;
+        const border = i === PE.activeColorIdx ? '2px solid var(--accent)' : '1px solid var(--border)';
+        return `<div onclick="peSelectColor(${i})" style="aspect-ratio:1;background:${bg};border:${border};border-radius:2px;cursor:pointer" title="R:${c.r} G:${c.g} B:${c.b}${c.a===0?' (transparent)':''}"></div>`;
+      }).join('');
+
+      peUpdateActiveColor();
+    }
+
+    function peSelectColor(idx) {
+      PE.activeColorIdx = idx;
+      peRenderPalette();
+    }
+
+    function peUpdateActiveColor() {
+      const c = PE.palette[PE.activeColorIdx] || {r:0,g:0,b:0,a:255};
+      const el = document.getElementById('pe-active-color');
+      if (c.a === 0) {
+        el.style.background = 'repeating-conic-gradient(#666 0% 25%,#999 0% 50%) 50%/8px 8px';
+      } else {
+        el.style.background = `rgb(${c.r},${c.g},${c.b})`;
+      }
+      document.getElementById('pe-active-rgb').textContent = c.a === 0 ? 'Transparent' : `R:${c.r} G:${c.g} B:${c.b}`;
+      document.getElementById('pe-active-idx').textContent = `#${PE.activeColorIdx}`;
+    }
+
+    function peRender() {
+      if (!PE.pixels || !PE.w) return;
+      const ctx = PE.ctx;
+      const s = PE.scale;
+      const showGrid = document.getElementById('pe-grid-toggle').checked && s >= 4;
+
+      ctx.clearRect(0, 0, PE.canvas.width, PE.canvas.height);
+
+      // Draw pixels
+      for (let y = 0; y < PE.h; y++) {
+        for (let x = 0; x < PE.w; x++) {
+          const i = (y * PE.w + x) * 4;
+          const r = PE.pixels[i], g = PE.pixels[i+1], b = PE.pixels[i+2], a = PE.pixels[i+3];
+          if (a === 0) {
+            // Checkerboard for transparent
+            ctx.fillStyle = '#444';
+            ctx.fillRect(x * s, y * s, s, s);
+            ctx.fillStyle = '#666';
+            ctx.fillRect(x * s, y * s, s/2, s/2);
+            ctx.fillRect(x * s + s/2, y * s + s/2, s/2, s/2);
+          } else {
+            ctx.fillStyle = `rgba(${r},${g},${b},${a/255})`;
+            ctx.fillRect(x * s, y * s, s, s);
+          }
+        }
+      }
+
+      // Grid
+      if (showGrid) {
+        ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+        ctx.lineWidth = 0.5;
+        for (let x = 0; x <= PE.w; x++) {
+          ctx.beginPath(); ctx.moveTo(x * s, 0); ctx.lineTo(x * s, PE.h * s); ctx.stroke();
+        }
+        for (let y = 0; y <= PE.h; y++) {
+          ctx.beginPath(); ctx.moveTo(0, y * s); ctx.lineTo(PE.w * s, y * s); ctx.stroke();
+        }
+      }
+    }
+
+    function peGetPixelCoords(e) {
+      const rect = PE.canvas.getBoundingClientRect();
+      const x = Math.floor((e.clientX - rect.left) / PE.scale);
+      const y = Math.floor((e.clientY - rect.top) / PE.scale);
+      return { x: Math.max(0, Math.min(PE.w - 1, x)), y: Math.max(0, Math.min(PE.h - 1, y)) };
+    }
+
+    function pePushUndo() {
+      PE.undoStack.push(new Uint8Array(PE.pixels));
+      if (PE.undoStack.length > 100) PE.undoStack.shift();
+      PE.redoStack = [];
+    }
+
+    function peUndo() {
+      if (PE.undoStack.length === 0) return;
+      PE.redoStack.push(new Uint8Array(PE.pixels));
+      PE.pixels = PE.undoStack.pop();
+      peRender();
+    }
+
+    function peRedo() {
+      if (PE.redoStack.length === 0) return;
+      PE.undoStack.push(new Uint8Array(PE.pixels));
+      PE.pixels = PE.redoStack.pop();
+      peRender();
+    }
+
+    function peSetPixel(x, y) {
+      const i = (y * PE.w + x) * 4;
+      const c = PE.palette[PE.activeColorIdx];
+      if (!c) return;
+      PE.pixels[i] = c.r;
+      PE.pixels[i+1] = c.g;
+      PE.pixels[i+2] = c.b;
+      PE.pixels[i+3] = c.a;
+    }
+
+    function peErasePixel(x, y) {
+      const i = (y * PE.w + x) * 4;
+      PE.pixels[i] = 0; PE.pixels[i+1] = 0; PE.pixels[i+2] = 0; PE.pixels[i+3] = 0;
+    }
+
+    function pePickColor(x, y) {
+      const i = (y * PE.w + x) * 4;
+      const r = PE.pixels[i], g = PE.pixels[i+1], b = PE.pixels[i+2], a = PE.pixels[i+3];
+      // Find closest in palette
+      let best = 0, bestDist = Infinity;
+      PE.palette.forEach((c, idx) => {
+        const d = (c.r-r)**2 + (c.g-g)**2 + (c.b-b)**2 + (c.a-a)**2;
+        if (d < bestDist) { bestDist = d; best = idx; }
+      });
+      PE.activeColorIdx = best;
+      peRenderPalette();
+      peTool = 'draw';
+      peUpdateToolBtns();
+    }
+
+    function peFill(sx, sy) {
+      const i0 = (sy * PE.w + sx) * 4;
+      const tr = PE.pixels[i0], tg = PE.pixels[i0+1], tb = PE.pixels[i0+2], ta = PE.pixels[i0+3];
+      const c = PE.palette[PE.activeColorIdx];
+      if (!c) return;
+      if (c.r === tr && c.g === tg && c.b === tb && c.a === ta) return;
+
+      const stack = [[sx, sy]];
+      const visited = new Set();
+      while (stack.length > 0) {
+        const [x, y] = stack.pop();
+        if (x < 0 || x >= PE.w || y < 0 || y >= PE.h) continue;
+        const key = y * PE.w + x;
+        if (visited.has(key)) continue;
+        const ii = key * 4;
+        if (PE.pixels[ii] !== tr || PE.pixels[ii+1] !== tg || PE.pixels[ii+2] !== tb || PE.pixels[ii+3] !== ta) continue;
+        visited.add(key);
+        PE.pixels[ii] = c.r; PE.pixels[ii+1] = c.g; PE.pixels[ii+2] = c.b; PE.pixels[ii+3] = c.a;
+        stack.push([x+1,y],[x-1,y],[x,y+1],[x,y-1]);
+      }
+    }
+
+    function peOnMouseDown(e) {
+      e.preventDefault();
+      const { x, y } = peGetPixelCoords(e);
+
+      if (peTool === 'pick') { pePickColor(x, y); return; }
+      if (peTool === 'fill') { pePushUndo(); peFill(x, y); peRender(); return; }
+
+      pePushUndo();
+      peMouseDown = true;
+      if (peTool === 'draw') peSetPixel(x, y);
+      else if (peTool === 'erase') peErasePixel(x, y);
+      peRender();
+    }
+
+    function peOnMouseMove(e) {
+      const { x, y } = peGetPixelCoords(e);
+      const i = (y * PE.w + x) * 4;
+      const r = PE.pixels?.[i] ?? 0, g = PE.pixels?.[i+1] ?? 0, b = PE.pixels?.[i+2] ?? 0, a = PE.pixels?.[i+3] ?? 0;
+      document.getElementById('pe-cursor-info').textContent =
+        `x:${x} y:${y} — R:${r} G:${g} B:${b}${a === 0 ? ' (transparent)' : ''}`;
+
+      if (!peMouseDown) return;
+      if (peTool === 'draw') { peSetPixel(x, y); peRender(); }
+      else if (peTool === 'erase') { peErasePixel(x, y); peRender(); }
+    }
+
+    function peLoadFile(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (ev) => peLoadImage(ev.target.result, file.name);
+      reader.readAsDataURL(file);
+      e.target.value = '';
+    }
+
+    function peToDataUrl() {
+      const tmp = document.createElement('canvas');
+      tmp.width = PE.w; tmp.height = PE.h;
+      const tctx = tmp.getContext('2d');
+      const imgData = tctx.createImageData(PE.w, PE.h);
+      imgData.data.set(PE.pixels);
+      tctx.putImageData(imgData, 0, 0);
+      return tmp.toDataURL('image/png');
+    }
+
+    function peExportPng() {
+      if (!PE.pixels) { toast('No sprite loaded'); return; }
+      const link = document.createElement('a');
+      link.download = (PE.sourceName || 'sprite').replace(/\.[^.]+$/, '') + '_edited.png';
+      link.href = peToDataUrl();
+      link.click();
+    }
+
+    async function peSave() {
+      if (!PE.pixels) { toast('No sprite loaded'); return; }
+      if (!PE.sourceUrl) { peExportPng(); return; }
+
+      // If from a mod slot, save back
+      if (PE.sourceSlot && state.activeMod) {
+        const dataUrl = peToDataUrl();
+        try {
+          const resp = await fetch(`/api/sprites/mods/${state.activeMod.id}/slots/${PE.sourceSlot}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sprite_data: dataUrl }),
+          });
+          const data = await resp.json();
+          if (data.error) throw new Error(data.error);
+          toast('Saved to mod slot');
+          await openMod(state.activeMod.id);
+        } catch (e) { toast('Save failed: ' + e.message); }
+      } else {
+        // Save as download
+        peExportPng();
+      }
+    }
+
+    // Entry points — called from mod slots and ROM sprites
+    function peEditSprite(url, name, slotId) {
+      peLoadImage(url, name, slotId);
+    }
+
+    document.addEventListener('DOMContentLoaded', peInit);
+  </script>
+</body>
+</html>
