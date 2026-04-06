@@ -145,6 +145,13 @@
       background: var(--surface-2); border: 1px solid var(--border);
       border-radius: 6px; color: var(--text); font-size: 13px;
     }
+
+    @media (max-width: 768px) {
+      .fm-page { padding: 12px; }
+      .project-grid { grid-template-columns: 1fr !important; }
+      .asset-grid { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)) !important; }
+      .move-modal { min-width: 0; width: 90%; }
+    }
   </style>
 </head>
 <body>

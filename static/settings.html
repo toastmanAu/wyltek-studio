@@ -151,6 +151,15 @@
       margin-bottom: 16px;
     }
     .back-link:hover { color: var(--text); }
+
+    @media (max-width: 768px) {
+      .settings-page { padding: 16px 12px; }
+      .key-row { flex-direction: column; }
+      .key-row .form-group { width: 100%; }
+      .toggle { width: 48px; height: 28px; min-width: 48px; }
+      .toggle::after { width: 22px; height: 22px; top: 3px; left: 3px; }
+      .toggle.on::after { transform: translateX(20px); }
+    }
   </style>
 </head>
 <body>
@@ -201,6 +210,86 @@
           3. Ollama runs automatically as a service. Enter the URL above.<br><br>
           <strong>Verified models:</strong> qwen2.5:14b (best quality), qwen2.5:7b (faster), mistral:7b, llama3:8b<br>
           <strong>Any Ollama-compatible model works</strong> — experiment with what you have installed.
+        </div>
+      </div>
+    </div>
+
+    <!-- On-Chain Settings (JIDSDR) -->
+    <h2>On-Chain Settings (JIDSDR)</h2>
+    <p class="backend-info" style="margin-bottom:16px">
+      Store your preferences on the <a href="https://www.nervos.org" target="_blank" style="color:var(--accent)">Nervos CKB</a> blockchain via JoyID.
+      Your settings follow you across any app that integrates JIDSDR.
+      <span style="display:inline-block;padding:2px 8px;font-size:10px;background:var(--surface-2);border:1px solid var(--border);border-radius:10px;margin-left:4px">Testnet</span>
+    </p>
+    <div class="backend-section">
+      <div class="backend-body" style="display:block;padding:18px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px;flex-wrap:wrap">
+          <div>
+            <div id="jid-address" style="font-size:12px;font-family:monospace;color:var(--text-dim)">Not connected</div>
+            <div id="jid-balance" style="font-size:11px;color:var(--accent)"></div>
+          </div>
+          <button class="btn" id="jid-connect-btn" style="min-height:44px;padding:10px 20px">Connect JoyID</button>
+        </div>
+
+        <div id="jid-cell-status" style="font-size:11px;padding:6px 10px;border-radius:4px;background:var(--surface-2);margin-bottom:12px;display:none"></div>
+
+        <div id="jid-settings-form" style="display:none">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
+            <div class="field-group">
+              <label>Default Generator</label>
+              <select id="jid-gen" style="width:100%;padding:8px;background:var(--surface-2);border:1px solid var(--border);border-radius:6px;color:var(--text)">
+                <option value="comfyui">ComfyUI</option>
+                <option value="gemini">Gemini</option>
+                <option value="together">Together AI</option>
+              </select>
+            </div>
+            <div class="field-group">
+              <label>Default Model</label>
+              <select id="jid-model" style="width:100%;padding:8px;background:var(--surface-2);border:1px solid var(--border);border-radius:6px;color:var(--text)">
+                <option value="juggernautXL_v9">Juggernaut XL v9</option>
+                <option value="dreamshaper-xl">DreamShaper XL</option>
+                <option value="sd15">SD 1.5</option>
+                <option value="zavychroma">ZavyChroma XL</option>
+              </select>
+            </div>
+            <div class="field-group">
+              <label>Sprite LoRA Strength</label>
+              <input type="number" id="jid-lora" value="0.55" min="0" max="1" step="0.05" style="width:100%;padding:8px;background:var(--surface-2);border:1px solid var(--border);border-radius:6px;color:var(--text)">
+            </div>
+            <div class="field-group">
+              <label>IP-Adapter Strength</label>
+              <input type="number" id="jid-ipa" value="0.75" min="0" max="1" step="0.05" style="width:100%;padding:8px;background:var(--surface-2);border:1px solid var(--border);border-radius:6px;color:var(--text)">
+            </div>
+            <div class="field-group">
+              <label>Theme</label>
+              <select id="jid-theme" style="width:100%;padding:8px;background:var(--surface-2);border:1px solid var(--border);border-radius:6px;color:var(--text)">
+                <option value="dark">Dark</option>
+                <option value="light">Light</option>
+              </select>
+            </div>
+            <div class="field-group">
+              <label>Language</label>
+              <select id="jid-lang" style="width:100%;padding:8px;background:var(--surface-2);border:1px solid var(--border);border-radius:6px;color:var(--text)">
+                <option value="en">English</option>
+                <option value="zh">Chinese</option>
+                <option value="ja">Japanese</option>
+                <option value="ko">Korean</option>
+              </select>
+            </div>
+          </div>
+
+          <div style="border-top:1px solid var(--border);padding-top:12px;margin-bottom:12px">
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:8px">
+              <input type="checkbox" id="jid-encrypt" style="width:auto"> Password protect settings
+            </label>
+            <input type="password" id="jid-password" placeholder="Encryption password" style="width:100%;padding:8px;background:var(--surface-2);border:1px solid var(--border);border-radius:6px;color:var(--text);display:none">
+          </div>
+
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn" id="jid-save-btn" style="min-height:44px;padding:10px 20px;background:var(--accent);color:#000;font-weight:600;border:none">Save On-Chain</button>
+            <button class="btn" id="jid-load-btn" style="min-height:44px;padding:10px 16px">Load from Chain</button>
+          </div>
+          <div id="jid-tx-status" style="font-size:11px;color:var(--text-dim);font-family:monospace;margin-top:8px;min-height:16px;word-break:break-all"></div>
         </div>
       </div>
     </div>
@@ -600,6 +689,283 @@
     loadCatalog();
     initOpSettings();
     init();
+
+    // ========== JIDSDR — On-Chain Settings ==========
+    let jidModule = null;
+    let jidConnector = null;
+    let jidState = { connected: false, cell: null, settings: null, address: null };
+
+    async function loadJIDSDR() {
+      if (jidModule) return jidModule;
+      jidModule = await import('/static/js/jidsdr.js');
+      return jidModule;
+    }
+
+    async function loadConnector() {
+      if (jidConnector) return jidConnector;
+      jidConnector = await import('/static/js/joyid-connector.js');
+      return jidConnector;
+    }
+
+    // AES-256-GCM password encryption (PQC-safe symmetric)
+    async function deriveKey(password, salt) {
+      const enc = new TextEncoder();
+      const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']);
+      return crypto.subtle.deriveKey(
+        { name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' },
+        keyMaterial,
+        { name: 'AES-GCM', length: 256 },
+        false,
+        ['encrypt', 'decrypt']
+      );
+    }
+
+    async function encryptPayload(jsonStr, password) {
+      const salt = crypto.getRandomValues(new Uint8Array(16));
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const key = await deriveKey(password, salt);
+      const enc = new TextEncoder();
+      const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, enc.encode(jsonStr));
+      // Format: [0x02 (encrypted flag)] [16 salt] [12 iv] [ciphertext]
+      const result = new Uint8Array(1 + 16 + 12 + ciphertext.byteLength);
+      result[0] = 0x02; // encrypted version marker
+      result.set(salt, 1);
+      result.set(iv, 17);
+      result.set(new Uint8Array(ciphertext), 29);
+      return result;
+    }
+
+    async function decryptPayload(bytes, password) {
+      if (bytes[0] !== 0x02) return null; // not encrypted
+      const salt = bytes.slice(1, 17);
+      const iv = bytes.slice(17, 29);
+      const ciphertext = bytes.slice(29);
+      const key = await deriveKey(password, salt);
+      const dec = new TextDecoder();
+      const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext);
+      return JSON.parse(dec.decode(plaintext));
+    }
+
+    // Toggle password field visibility
+    document.getElementById('jid-encrypt').addEventListener('change', (e) => {
+      document.getElementById('jid-password').style.display = e.target.checked ? 'block' : 'none';
+    });
+
+    async function jidOnConnected(address) {
+      jidState.connected = true;
+      jidState.address = address;
+      const btn = document.getElementById('jid-connect-btn');
+      btn.textContent = 'Disconnect';
+      btn.disabled = false;
+      document.getElementById('jid-address').textContent = address.slice(0, 12) + '...' + address.slice(-8);
+      document.getElementById('jid-settings-form').style.display = 'block';
+      document.getElementById('jid-tx-status').textContent = 'Connected — syncing CCC signer...';
+
+      // Also connect the CCC signer so saveSettings/findSettingsCell work
+      try {
+        const mod = await loadJIDSDR();
+        const signer = mod.getSigner();
+        if (!(await signer.isConnected())) {
+          await signer.connect();
+        }
+        const balance = await mod.getBalance();
+        document.getElementById('jid-balance').textContent = balance + ' CKB';
+        document.getElementById('jid-tx-status').textContent = 'Connected — loading settings...';
+      } catch (e) {
+        // CCC signer connect may fail silently if popup blocked —
+        // still show the form, save will prompt again
+        console.warn('CCC signer sync:', e.message);
+        document.getElementById('jid-tx-status').textContent = 'Connected (signing will prompt JoyID again)';
+      }
+
+      // Load settings in background
+      jidLoadSettings();
+    }
+
+    // Check for returning from JoyID redirect
+    (async () => {
+      const stored = sessionStorage.getItem('joyid_result');
+      if (stored) {
+        sessionStorage.removeItem('joyid_result');
+        try {
+          const result = JSON.parse(stored);
+          if (result.address) {
+            jidOnConnected(result.address);
+          }
+        } catch {}
+      }
+    })();
+
+    document.getElementById('jid-connect-btn').addEventListener('click', async () => {
+      const btn = document.getElementById('jid-connect-btn');
+
+      if (jidState.connected) {
+        jidState = { connected: false, cell: null, settings: null, address: null };
+        btn.textContent = 'Connect JoyID';
+        document.getElementById('jid-address').textContent = 'Not connected';
+        document.getElementById('jid-balance').textContent = '';
+        document.getElementById('jid-settings-form').style.display = 'none';
+        document.getElementById('jid-cell-status').style.display = 'none';
+        return;
+      }
+
+      try {
+        btn.textContent = 'Connecting...';
+        btn.disabled = true;
+        const connector = await loadConnector();
+        const callbackUrl = window.location.origin + '/joyid-callback';
+        const result = await connector.joyidConnect({
+          redirectURL: callbackUrl,
+          network: 'testnet',
+          joyidAppURL: 'https://testnet.joyid.dev',
+        });
+        // Popup flow succeeded
+        if (result && result.address) {
+          jidOnConnected(result.address);
+        }
+      } catch (e) {
+        btn.textContent = 'Connect JoyID';
+        btn.disabled = false;
+        document.getElementById('jid-tx-status').textContent = 'Connect failed: ' + e.message;
+      }
+    });
+
+    async function jidLoadSettings() {
+      const mod = await loadJIDSDR();
+      const statusEl = document.getElementById('jid-cell-status');
+      statusEl.style.display = 'block';
+      statusEl.textContent = 'Searching for settings cell...';
+
+      const found = await mod.findSettingsCell();
+      if (found) {
+        jidState.cell = found.cell;
+        jidState.settings = found.settings;
+        statusEl.textContent = 'Settings loaded from chain';
+        statusEl.style.color = 'var(--success)';
+        // Populate form
+        if (found.settings.generator) document.getElementById('jid-gen').value = found.settings.generator;
+        if (found.settings.model) document.getElementById('jid-model').value = found.settings.model;
+        if (found.settings.loraStrength != null) document.getElementById('jid-lora').value = found.settings.loraStrength;
+        if (found.settings.ipAdapterStrength != null) document.getElementById('jid-ipa').value = found.settings.ipAdapterStrength;
+        if (found.settings.theme) document.getElementById('jid-theme').value = found.settings.theme;
+        if (found.settings.lang) document.getElementById('jid-lang').value = found.settings.lang;
+      } else {
+        statusEl.textContent = 'No settings cell found — will create on first save';
+        statusEl.style.color = 'var(--warn)';
+      }
+    }
+
+    document.getElementById('jid-load-btn').addEventListener('click', async () => {
+      if (!jidState.connected) return;
+
+      // Check if data might be encrypted
+      const mod = await loadJIDSDR();
+      const found = await mod.findSettingsCell();
+      if (!found) {
+        document.getElementById('jid-tx-status').textContent = 'No settings cell found';
+        return;
+      }
+
+      // If decodeSettings returned null, it might be encrypted
+      if (!found.settings) {
+        const pw = prompt('Settings appear encrypted. Enter password:');
+        if (!pw) return;
+        try {
+          // Get raw cell data
+          const hex = found.cell.outputData;
+          const raw = new Uint8Array(hex.slice(2).match(/.{2}/g).map(b => parseInt(b, 16)));
+          const decrypted = await decryptPayload(raw, pw);
+          if (decrypted) {
+            jidState.settings = decrypted;
+            jidState.cell = found.cell;
+            // Populate form
+            if (decrypted.generator) document.getElementById('jid-gen').value = decrypted.generator;
+            if (decrypted.model) document.getElementById('jid-model').value = decrypted.model;
+            if (decrypted.loraStrength != null) document.getElementById('jid-lora').value = decrypted.loraStrength;
+            if (decrypted.ipAdapterStrength != null) document.getElementById('jid-ipa').value = decrypted.ipAdapterStrength;
+            if (decrypted.theme) document.getElementById('jid-theme').value = decrypted.theme;
+            if (decrypted.lang) document.getElementById('jid-lang').value = decrypted.lang;
+            document.getElementById('jid-tx-status').textContent = 'Decrypted and loaded';
+          }
+        } catch (e) {
+          document.getElementById('jid-tx-status').textContent = 'Decrypt failed — wrong password?';
+        }
+        return;
+      }
+
+      jidState.cell = found.cell;
+      jidState.settings = found.settings;
+      await jidLoadSettings();
+      document.getElementById('jid-tx-status').textContent = 'Reloaded from chain';
+    });
+
+    document.getElementById('jid-save-btn').addEventListener('click', async () => {
+      if (!jidState.connected) return;
+
+      const mod = await loadJIDSDR();
+      const btn = document.getElementById('jid-save-btn');
+      const statusEl = document.getElementById('jid-tx-status');
+
+      const settings = {
+        app: 'wyltek-studio',
+        generator: document.getElementById('jid-gen').value,
+        model: document.getElementById('jid-model').value,
+        loraStrength: parseFloat(document.getElementById('jid-lora').value),
+        ipAdapterStrength: parseFloat(document.getElementById('jid-ipa').value),
+        theme: document.getElementById('jid-theme').value,
+        lang: document.getElementById('jid-lang').value,
+        savedAt: new Date().toISOString(),
+      };
+
+      btn.disabled = true;
+      btn.textContent = 'Saving...';
+
+      try {
+        const useEncryption = document.getElementById('jid-encrypt').checked;
+        const password = document.getElementById('jid-password').value;
+
+        if (useEncryption && !password) {
+          statusEl.textContent = 'Enter a password for encryption';
+          btn.disabled = false;
+          btn.textContent = 'Save On-Chain';
+          return;
+        }
+
+        let saveData;
+        if (useEncryption) {
+          // Encrypt — we bypass the normal encodeSettings and provide raw bytes
+          const encrypted = await encryptPayload(JSON.stringify(settings), password);
+          saveData = settings; // still pass the object for capacity calc
+          // Override the encode function temporarily
+          const origEncode = mod.encodeSettings;
+          mod.encodeSettings = () => encrypted;
+          const txHash = await mod.saveSettings(settings, jidState.cell, (msg) => { statusEl.textContent = msg; });
+          mod.encodeSettings = origEncode;
+          statusEl.textContent = 'Encrypted & saved! tx: ' + txHash.slice(0, 18) + '...';
+        } else {
+          const txHash = await mod.saveSettings(settings, jidState.cell, (msg) => { statusEl.textContent = msg; });
+          statusEl.textContent = 'Saved! tx: ' + txHash.slice(0, 18) + '...';
+        }
+
+        jidState.settings = settings;
+
+        // Refresh cell reference after delay
+        setTimeout(async () => {
+          try {
+            const found = await mod.findSettingsCell();
+            if (found) jidState.cell = found.cell;
+            const balance = await mod.getBalance();
+            document.getElementById('jid-balance').textContent = balance + ' CKB';
+          } catch {}
+        }, 8000);
+      } catch (e) {
+        statusEl.textContent = 'Save failed: ' + e.message;
+        console.error(e);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Save On-Chain';
+      }
+    });
   </script>
 </body>
 </html>

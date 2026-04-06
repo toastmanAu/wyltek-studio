@@ -218,6 +218,16 @@
       border-top: 1px solid var(--border);
       margin: 24px 0;
     }
+
+    @media (max-width: 768px) {
+      .studio-page { padding: 16px 12px; }
+      .control-group select, .control-group input[type="range"] { min-width: 0; width: 100%; }
+      .speed-row input { min-width: 0; width: 100%; }
+      .tts-compare-grid { grid-template-columns: 1fr !important; }
+    }
+    @media (max-width: 480px) {
+      .voice-picker { grid-template-columns: 1fr !important; }
+    }
   </style>
 </head>
 <body>

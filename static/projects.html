@@ -220,6 +220,13 @@
     .quick-action .qa-icon { font-size: 24px; margin-bottom: 6px; }
     .quick-action .qa-label { font-size: 13px; font-weight: 600; }
     .quick-action .qa-desc { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+
+    @media (max-width: 768px) {
+      .proj-page { padding: 12px; }
+      .proj-grid { grid-template-columns: 1fr !important; }
+      .quick-actions { grid-template-columns: 1fr !important; }
+      .asset-pool-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)) !important; }
+    }
   </style>
 </head>
 <body>
@@ -264,12 +271,18 @@
           <div class="qa-label">Generate Narration</div>
           <div class="qa-desc">Create TTS audio for this project</div>
         </div>
+        <div class="quick-action" onclick="document.getElementById('upload-input').click()">
+          <div class="qa-icon">&#128228;</div>
+          <div class="qa-label">Upload Files</div>
+          <div class="qa-desc">Import screenshots, images, or audio</div>
+        </div>
         <div class="quick-action" onclick="window.location.href='/files'">
           <div class="qa-icon">&#128194;</div>
           <div class="qa-label">Import from Files</div>
           <div class="qa-desc">Move unsorted assets into this project</div>
         </div>
       </div>
+      <input type="file" id="upload-input" multiple accept="image/*,audio/*,video/*" style="display:none" onchange="uploadFiles(this.files)">
 
       <!-- Asset pool -->
       <div class="asset-pool">
@@ -800,6 +813,27 @@
           toast('Render error: ' + (data.error || 'unknown'));
         }
       }, 2000);
+    }
+
+    // --- Upload ---
+    async function uploadFiles(fileList) {
+      if (!state.activeProject || !fileList.length) return;
+      const form = new FormData();
+      for (const f of fileList) form.append('files', f);
+      toast(`Uploading ${fileList.length} file(s)...`);
+      try {
+        const resp = await fetch(`/api/projects/${state.activeProject}/upload`, {
+          method: 'POST', body: form,
+        });
+        const data = await resp.json();
+        if (data.error) throw new Error(data.error);
+        toast(`Uploaded ${data.count} file(s)`);
+        state.assets = await (await fetch(`/api/projects/${state.activeProject}/assets`)).json();
+        renderPool();
+      } catch (e) {
+        toast('Upload failed: ' + e.message);
+      }
+      document.getElementById('upload-input').value = '';
     }
 
     // --- Init ---

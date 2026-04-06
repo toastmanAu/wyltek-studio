@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Wyltek Studio — Video Studio</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="stylesheet" href="/static/css/nav.css">
+  <script src="/static/js/nav.js"></script>
+  <style>
+    .studio-page {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 32px 24px;
+    }
+    .studio-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 24px;
+    }
+    .studio-header h2 { margin: 0; }
+
+    .prompt-area { margin-bottom: 20px; }
+    .prompt-area textarea {
+      width: 100%; padding: 12px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; color: var(--text); font-size: 14px;
+      resize: vertical; min-height: 80px;
+    }
+
+    .gen-controls {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 12px; margin-bottom: 20px;
+    }
+    .gen-controls label {
+      display: block; font-size: 11px; color: var(--text-dim);
+      text-transform: uppercase; margin-bottom: 4px;
+    }
+    .gen-controls select, .gen-controls input {
+      width: 100%; padding: 8px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text); font-size: 13px;
+    }
+
+    .btn-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+
+    .btn-generate {
+      padding: 10px 28px; font-size: 14px; font-weight: 600;
+      background: var(--accent); color: #fff; border: none;
+      border-radius: 8px; cursor: pointer;
+    }
+    .btn-generate:hover { background: var(--accent-hover); }
+    .btn-generate:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .status-banner {
+      padding: 16px; margin: 20px 0; border-radius: 8px;
+      background: var(--surface); border: 1px solid var(--border);
+      text-align: center;
+    }
+    .status-banner.gpu-ok { border-color: var(--success, #34d399); }
+    .status-banner.gpu-required { border-color: var(--warning, #f59e0b); }
+    .status-banner h4 { margin: 0 0 6px 0; }
+    .status-banner p { margin: 0; font-size: 13px; color: var(--text-dim); }
+
+    .result-area { margin-top: 20px; }
+    .result-area video {
+      width: 100%; max-height: 560px; border-radius: 8px; background: #000;
+    }
+    .result-meta {
+      font-size: 12px; color: var(--text-dim); margin-top: 8px;
+      display: flex; gap: 16px; flex-wrap: wrap;
+    }
+
+    .model-cards {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+      gap: 12px; margin-bottom: 24px;
+    }
+    .model-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 14px; cursor: pointer;
+      transition: border-color 0.15s;
+    }
+    .model-card:hover { border-color: var(--accent); }
+    .model-card.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+    .model-card.unavailable { opacity: 0.5; cursor: default; }
+    .model-card h4 { margin: 0 0 4px 0; font-size: 14px; }
+    .model-card .desc { font-size: 12px; color: var(--text-dim); }
+    .model-card .reqs { font-size: 11px; color: var(--text-dim); margin-top: 6px; }
+    .model-card .badge {
+      display: inline-block; padding: 2px 8px; border-radius: 4px;
+      font-size: 10px; font-weight: 600; margin-top: 6px;
+    }
+    .badge-ready { background: rgba(52,211,153,0.2); color: var(--success, #34d399); }
+    .badge-needs-gpu { background: rgba(245,158,11,0.2); color: var(--warning, #f59e0b); }
+    .badge-not-installed { background: rgba(156,163,175,0.2); color: var(--text-dim); }
+
+    .progress-bar {
+      height: 4px; background: var(--border); border-radius: 2px;
+      margin: 12px 0; overflow: hidden; display: none;
+    }
+    .progress-bar.active { display: block; }
+    .progress-fill { height: 100%; background: var(--accent); transition: width 0.3s; width: 0%; }
+    .progress-msg { font-size: 12px; color: var(--text-dim); text-align: center; display: none; }
+    .progress-msg.active { display: block; }
+
+    .neg-prompt { margin-bottom: 16px; }
+    .neg-prompt summary {
+      cursor: pointer; font-size: 12px; color: var(--text-dim);
+      margin-bottom: 6px;
+    }
+    .neg-prompt textarea {
+      width: 100%; padding: 10px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text); font-size: 13px;
+      min-height: 50px; resize: vertical;
+    }
+
+    .btn-op {
+      padding: 6px 16px; font-size: 12px; font-weight: 600;
+      background: var(--surface-2, #2a2a3e); color: var(--accent);
+      border: 1px solid var(--accent); border-radius: 6px; cursor: pointer;
+    }
+    .btn-op:hover { background: var(--accent-dim, rgba(124,92,252,0.15)); }
+    .btn-op:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .saved-msg {
+      position: fixed; bottom: 24px; right: 24px;
+      background: var(--surface); border: 1px solid var(--accent);
+      border-radius: 8px; padding: 10px 20px; font-size: 13px;
+      opacity: 0; transform: translateY(10px);
+      transition: opacity 0.3s, transform 0.3s; pointer-events: none; z-index: 1000;
+    }
+    .saved-msg.show { opacity: 1; transform: translateY(0); }
+
+    @media (max-width: 768px) {
+      .studio-page { padding: 16px 12px; }
+      .gen-controls { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+      .model-cards { grid-template-columns: 1fr !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="studio-page">
+    <div class="studio-header">
+      <h2>Video Studio</h2>
+    </div>
+
+    <div id="gpu-status"></div>
+
+    <h3 style="font-size:14px;color:var(--text-dim);margin-bottom:12px">Model</h3>
+    <div class="model-cards" id="model-cards"></div>
+
+    <div class="prompt-area">
+      <textarea id="prompt" placeholder="Describe the video you want to generate..." rows="3"></textarea>
+      <div style="display:flex;justify-content:flex-end;margin-top:6px">
+        <button class="btn-op" id="btn-op" onclick="opMyPrompt()" title="Enhance prompt with local AI">OP my prompt</button>
+      </div>
+    </div>
+
+    <details class="neg-prompt">
+      <summary>Negative prompt</summary>
+      <textarea id="neg-prompt">low quality, blurry, distorted, watermark</textarea>
+    </details>
+
+    <div class="gen-controls">
+      <div>
+        <label>Duration</label>
+        <select id="duration">
+          <option value="2">2 seconds</option>
+          <option value="3">3 seconds</option>
+          <option value="4" selected>4 seconds</option>
+          <option value="6">6 seconds</option>
+        </select>
+      </div>
+      <div>
+        <label>Resolution</label>
+        <select id="resolution">
+          <option value="512x512" selected>512x512</option>
+          <option value="512x768">512x768 (2:3)</option>
+          <option value="768x512">768x512 (3:2)</option>
+        </select>
+      </div>
+      <div>
+        <label>Steps</label>
+        <input type="number" id="steps" min="10" max="40" value="20">
+      </div>
+      <div>
+        <label>CFG</label>
+        <input type="number" id="cfg" min="1" max="20" step="0.5" value="7.0">
+      </div>
+      <div>
+        <label>FPS</label>
+        <select id="fps">
+          <option value="8" selected>8 fps</option>
+          <option value="12">12 fps</option>
+          <option value="16">16 fps</option>
+        </select>
+      </div>
+      <div>
+        <label>Seed</label>
+        <input type="number" id="seed" value="-1" title="-1 = random">
+      </div>
+    </div>
+
+    <div class="btn-row">
+      <button class="btn-generate" id="btn-gen" onclick="generateVideo()">Generate Video</button>
+    </div>
+
+    <div class="progress-bar" id="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+    <div class="progress-msg" id="progress-msg"></div>
+
+    <div class="result-area" id="result-area" style="display:none">
+      <video id="result-video" controls loop autoplay muted></video>
+      <div class="result-meta" id="result-meta"></div>
+    </div>
+  </div>
+
+  <div class="saved-msg" id="toast-msg"></div>
+
+  <script>
+    const MODELS = [
+      {
+        id: 'animatediff',
+        name: 'AnimateDiff v3',
+        desc: 'SD 1.5 motion synthesis. Good for stylized short clips with consistent motion.',
+        vram: '8GB',
+        available: false,
+        installed: false,
+        badge: 'not-installed',
+      },
+      {
+        id: 'svd',
+        name: 'Stable Video Diffusion',
+        desc: 'Image-to-video from Stability AI. Generates motion from a still image.',
+        vram: '12GB+',
+        available: false,
+        installed: false,
+        badge: 'needs-gpu',
+      },
+      {
+        id: 'cogvideox',
+        name: 'CogVideoX',
+        desc: 'Tsinghua text-to-video. High quality, needs significant VRAM.',
+        vram: '16GB+',
+        available: false,
+        installed: false,
+        badge: 'needs-gpu',
+      },
+    ];
+
+    let selectedModel = null;
+    let currentJobId = null;
+
+    function toast(msg) {
+      const el = document.getElementById('toast-msg');
+      el.textContent = msg;
+      el.classList.add('show');
+      setTimeout(() => el.classList.remove('show'), 3000);
+    }
+
+    async function checkStatus() {
+      try {
+        const resp = await fetch('/api/video/status');
+        const data = await resp.json();
+        const el = document.getElementById('gpu-status');
+
+        if (data.gpu_available) {
+          el.innerHTML = `<div class="status-banner gpu-ok">
+            <h4>GPU: ${data.gpu_name || 'Available'}</h4>
+            <p>${data.vram_total || '?'} VRAM | ${data.models_ready || 0} model(s) ready</p>
+          </div>`;
+        } else {
+          el.innerHTML = `<div class="status-banner gpu-required">
+            <h4>No compatible GPU detected</h4>
+            <p>Video generation requires a GPU with 8GB+ VRAM.</p>
+          </div>`;
+        }
+
+        // Update model states from server
+        if (data.models) {
+          data.models.forEach(m => {
+            const model = MODELS.find(x => x.id === m.id);
+            if (model) {
+              model.available = m.available;
+              model.installed = m.installed;
+              if (m.available) model.badge = 'ready';
+              else if (m.installed) model.badge = 'needs-gpu';
+              else model.badge = 'not-installed';
+            }
+          });
+        }
+        // Auto-select first available model
+        const first = MODELS.find(m => m.available);
+        if (first && !selectedModel) selectedModel = first.id;
+      } catch (e) {
+        document.getElementById('gpu-status').innerHTML = `<div class="status-banner gpu-required">
+          <h4>Video backend not available</h4>
+          <p>Could not connect to video generation service.</p>
+        </div>`;
+      }
+      renderModels();
+    }
+
+    function renderModels() {
+      const container = document.getElementById('model-cards');
+      container.innerHTML = '';
+      MODELS.forEach(m => {
+        const card = document.createElement('div');
+        const classes = ['model-card'];
+        if (selectedModel === m.id) classes.push('selected');
+        if (!m.available) classes.push('unavailable');
+        card.className = classes.join(' ');
+
+        let badgeLabel = 'Not installed';
+        if (m.available) badgeLabel = 'Ready';
+        else if (m.installed) badgeLabel = 'Needs more VRAM';
+
+        card.innerHTML = `
+          <h4>${m.name}</h4>
+          <div class="desc">${m.desc}</div>
+          <div class="reqs">VRAM: ${m.vram}</div>
+          <span class="badge badge-${m.badge}">${badgeLabel}</span>
+        `;
+        card.onclick = () => {
+          if (!m.available) {
+            toast(m.installed ? `${m.name} needs more VRAM` : `${m.name} not installed`);
+            return;
+          }
+          selectedModel = m.id;
+          renderModels();
+        };
+        container.appendChild(card);
+      });
+    }
+
+    async function generateVideo() {
+      if (!selectedModel) { toast('Select a model first'); return; }
+      const prompt = document.getElementById('prompt').value.trim();
+      if (!prompt) { toast('Enter a prompt'); return; }
+
+      const btn = document.getElementById('btn-gen');
+      btn.disabled = true;
+      btn.textContent = 'Generating...';
+      document.getElementById('progress-bar').classList.add('active');
+      document.getElementById('progress-msg').classList.add('active');
+      document.getElementById('progress-msg').textContent = 'Submitting...';
+      document.getElementById('result-area').style.display = 'none';
+
+      const [w, h] = document.getElementById('resolution').value.split('x').map(Number);
+
+      try {
+        const resp = await fetch('/api/video/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: selectedModel,
+            prompt,
+            negative_prompt: document.getElementById('neg-prompt').value.trim(),
+            duration: parseInt(document.getElementById('duration').value),
+            width: w, height: h,
+            steps: parseInt(document.getElementById('steps').value),
+            cfg: parseFloat(document.getElementById('cfg').value),
+            seed: parseInt(document.getElementById('seed').value),
+            fps: parseInt(document.getElementById('fps').value),
+          }),
+        });
+        const data = await resp.json();
+        if (data.error) throw new Error(data.error);
+        currentJobId = data.job_id;
+        pollJob(data.job_id);
+      } catch (e) {
+        toast('Failed: ' + e.message);
+        resetUI();
+      }
+    }
+
+    function pollJob(jobId) {
+      const poll = setInterval(async () => {
+        try {
+          const resp = await fetch(`/api/job/${jobId}`);
+          const data = await resp.json();
+
+          if (data.status === 'running' || data.status === 'queued') {
+            const pct = data.progress || 0;
+            document.getElementById('progress-fill').style.width = pct + '%';
+            document.getElementById('progress-msg').textContent =
+              data.message || (data.status === 'queued' ? 'Queued...' : `Generating... ${pct}%`);
+          } else if (data.status === 'complete') {
+            clearInterval(poll);
+            document.getElementById('progress-fill').style.width = '100%';
+            document.getElementById('progress-bar').classList.remove('active');
+            document.getElementById('progress-msg').classList.remove('active');
+            document.getElementById('result-area').style.display = 'block';
+            document.getElementById('result-video').src = data.output_url + '?t=' + Date.now();
+            document.getElementById('result-meta').innerHTML = `
+              <span>Duration: ${data.duration || '?'}s</span>
+              <span>Frames: ${data.frames || '?'}</span>
+              <span>FPS: ${data.fps || '?'}</span>
+              <span>Size: ${((data.file_size || 0) / 1024 / 1024).toFixed(1)} MB</span>
+              <span>Seed: ${data.seed || '?'}</span>
+            `;
+            resetUI();
+            toast('Video generated!');
+          } else if (data.status === 'error') {
+            clearInterval(poll);
+            resetUI();
+            toast('Error: ' + (data.error || 'unknown'));
+          }
+        } catch (e) {
+          clearInterval(poll);
+          resetUI();
+          toast('Polling error: ' + e.message);
+        }
+      }, 2000);
+    }
+
+    function resetUI() {
+      document.getElementById('btn-gen').disabled = false;
+      document.getElementById('btn-gen').textContent = 'Generate Video';
+      document.getElementById('progress-bar').classList.remove('active');
+      document.getElementById('progress-msg').classList.remove('active');
+    }
+
+    // --- OP my prompt ---
+    let opAvailable = false;
+
+    async function checkOpStatus() {
+      try {
+        const resp = await fetch('/api/op-prompt/status');
+        const data = await resp.json();
+        opAvailable = data.available;
+        document.getElementById('btn-op').disabled = !data.available;
+        if (!data.available) {
+          document.getElementById('btn-op').title = data.reason || 'Prompt optimizer not available';
+        }
+      } catch {
+        document.getElementById('btn-op').disabled = true;
+      }
+    }
+
+    async function opMyPrompt() {
+      const promptEl = document.getElementById('prompt');
+      const prompt = promptEl.value.trim();
+      if (!prompt) { toast('Enter a prompt first'); return; }
+
+      if (!opAvailable) {
+        toast('Prompt optimizer not available — check Settings');
+        return;
+      }
+
+      const btn = document.getElementById('btn-op');
+      btn.disabled = true;
+      btn.textContent = 'Enhancing...';
+
+      try {
+        const resp = await fetch('/api/op-prompt', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt, mode: 'video' }),
+        });
+        const data = await resp.json();
+        if (data.error) throw new Error(data.error);
+
+        promptEl.value = data.enhanced_prompt;
+        if (data.negative_prompt) {
+          document.getElementById('neg-prompt').value = data.negative_prompt;
+        }
+        toast(data.changes_made || 'Prompt enhanced');
+      } catch (e) {
+        if (e.message.includes('timed out')) {
+          toast('Ollama loading model — try again in 10s');
+        } else {
+          toast('OP failed: ' + e.message);
+        }
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'OP my prompt';
+      }
+    }
+
+    // Ctrl+Enter to generate
+    document.getElementById('prompt').addEventListener('keydown', e => {
+      if (e.ctrlKey && e.key === 'Enter') generateVideo();
+    });
+
+    checkStatus();
+    checkOpStatus();
+  </script>
+</body>
+</html>

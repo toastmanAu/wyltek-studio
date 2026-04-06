@@ -72,6 +72,12 @@
       animation: spin 0.8s linear infinite; margin-right: 8px; vertical-align: middle;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
+
+    @media (max-width: 768px) {
+      .music-page { padding: 16px 12px; }
+      .ctrl-group select, .ctrl-group input { min-width: 0; width: 100%; }
+      .dur-row input { min-width: 0; }
+    }
   </style>
 </head>
 <body>

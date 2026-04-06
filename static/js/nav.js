@@ -6,6 +6,8 @@
     { href: '/',           icon: '&#9998;',  label: 'Generate',    id: 'generate' },
     { href: '/studio/tts', icon: '&#9835;',  label: 'TTS Studio',  id: 'tts' },
     { href: '/studio/music', icon: '&#127925;', label: 'Music Studio', id: 'music' },
+    { href: '/studio/video', icon: '&#127909;', label: 'Video Studio', id: 'video' },
+    { href: '/studio/meme',    icon: '&#128514;', label: 'Meme Forge',   id: 'meme' },
     { section: 'Manage' },
     { href: '/files',      icon: '&#128194;', label: 'Files',      id: 'files' },
     { section: 'Produce' },
@@ -17,7 +19,9 @@
   // Determine active page from current path
   const path = window.location.pathname;
   let activeId = 'generate';
-  if (path.startsWith('/studio/music')) activeId = 'music';
+  if (path.startsWith('/studio/meme')) activeId = 'meme';
+  else if (path.startsWith('/studio/video')) activeId = 'video';
+  else if (path.startsWith('/studio/music')) activeId = 'music';
   else if (path.startsWith('/studio/tts')) activeId = 'tts';
   else if (path.startsWith('/projects')) activeId = 'projects';
   else if (path.startsWith('/files')) activeId = 'files';
@@ -53,6 +57,10 @@
     </div>
     <div class="sidebar-links">${linksHtml}</div>
     <div class="sidebar-footer">
+      <button id="ai-copilot-btn" class="nav-link ai-copilot-btn" style="opacity:0.4" title="Loading AI Copilot...">
+        <span class="nav-icon">&#10024;</span>
+        <span class="nav-label">AI Copilot</span>
+      </button>
       <button class="sidebar-toggle" onclick="window._toggleNav()">
         <span class="toggle-icon">&#9664;</span>
         <span class="toggle-label">Collapse</span>
@@ -94,6 +102,11 @@
     shell.appendChild(pageContent);
     body.appendChild(overlay);
     body.appendChild(shell);
+
+    // Load AI copilot (page-agent + Ollama)
+    const copilot = document.createElement('script');
+    copilot.src = '/static/js/ai-copilot.js';
+    document.head.appendChild(copilot);
   });
 
   // Toggle collapsed

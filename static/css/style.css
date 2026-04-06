@@ -28,7 +28,7 @@ body {
 /* Layout */
 .app {
   display: grid;
-  grid-template-columns: 380px 1fr;
+  grid-template-columns: min(380px, 30vw) 1fr;
   grid-template-rows: auto 1fr;
   height: 100vh;
   overflow: hidden;
@@ -333,7 +333,8 @@ select {
 }
 
 .btn {
-  padding: 8px 16px;
+  padding: 10px 16px;
+  min-height: 44px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   background: var(--surface-2);
@@ -462,7 +463,8 @@ input[type="range"] {
 }
 .batch-row .btn-compare { flex: 1; }
 .batch-count-input {
-  width: 52px;
+  width: 60px;
+  min-height: 36px;
   text-align: center;
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -523,8 +525,22 @@ input[type="range"] {
   .modal { width: 95%; max-height: 85vh; overflow-y: auto; }
 
   /* Ref images smaller */
-  .ref-images { grid-template-columns: repeat(4, 1fr); gap: 4px; }
+  .ref-images { grid-template-columns: repeat(3, 1fr); gap: 4px; }
   .ref-slot { min-height: 50px; }
+
+  /* Buttons adequate for touch */
+  .btn { min-height: 44px; padding: 10px 14px; }
+  .btn-filter { min-height: 36px; padding: 8px 10px; }
+}
+
+/* Small phones */
+@media (max-width: 480px) {
+  .sidebar { padding: 8px 12px; }
+  .ref-images { grid-template-columns: repeat(2, 1fr); }
+  .gallery-strip { height: 50px; }
+  .gallery-strip img { height: 40px; width: 40px; }
+  header { padding: 8px 12px; }
+  .modal { width: 98%; padding: 16px; }
 }
 
 /* Compact sidebar on short screens */
@@ -787,7 +803,8 @@ input[type="range"] {
 }
 .btn-filter {
   font-size: 11px;
-  padding: 4px 10px;
+  padding: 8px 12px;
+  min-height: 36px;
   background: var(--surface-2);
   color: var(--text-dim);
   border: 1px solid var(--border);

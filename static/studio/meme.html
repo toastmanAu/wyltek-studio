@@ -1,0 +1,952 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Wyltek Studio — Meme Forge</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="stylesheet" href="/static/css/nav.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anton&family=Oswald:wght@700&family=Bangers&display=swap">
+  <script src="/static/js/nav.js"></script>
+  <style>
+    .studio-page { max-width: 1000px; margin: 0 auto; padding: 32px 24px; }
+    .studio-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; flex-wrap: wrap; gap: 8px; }
+    .studio-header h2 { margin: 0; }
+    .studio-header .subtitle { font-size: 13px; color: var(--text-dim); }
+
+    /* Tabs */
+    .tab-bar { display: flex; gap: 4px; margin-bottom: 20px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+    .tab-btn {
+      padding: 8px 14px; font-size: 12px; font-weight: 600; border: none;
+      background: var(--surface-2); color: var(--text-dim); border-radius: 6px 6px 0 0;
+      cursor: pointer; transition: all 0.15s;
+    }
+    .tab-btn:hover { color: var(--text); background: var(--surface-3); }
+    .tab-btn.active { color: var(--accent); background: var(--accent-dim); }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    /* Generate tab */
+    .prompt-area textarea {
+      width: 100%; padding: 12px; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; color: var(--text); font-size: 14px; resize: vertical; min-height: 70px;
+      margin-bottom: 10px;
+    }
+    .gen-controls {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+      gap: 10px; margin-bottom: 14px;
+    }
+    .gen-controls label { display: block; font-size: 10px; color: var(--text-dim); text-transform: uppercase; margin-bottom: 3px; }
+    .gen-controls select, .gen-controls input {
+      width: 100%; padding: 7px; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text); font-size: 12px;
+    }
+
+    /* Upload tab */
+    .drop-zone {
+      border: 2px dashed var(--border); border-radius: 12px; padding: 60px 24px;
+      text-align: center; cursor: pointer; transition: all 0.2s; color: var(--text-dim);
+    }
+    .drop-zone:hover, .drop-zone.drag-over { border-color: var(--accent); color: var(--text); background: var(--accent-dim); }
+    .drop-zone .drop-icon { font-size: 40px; margin-bottom: 12px; }
+    .drop-zone p { font-size: 14px; margin-bottom: 6px; }
+    .drop-zone small { font-size: 12px; }
+
+    /* Buttons */
+    .btn-primary {
+      padding: 10px 24px; font-size: 13px; font-weight: 600;
+      background: var(--accent); color: #fff; border: none; border-radius: 8px; cursor: pointer;
+    }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-secondary {
+      padding: 8px 16px; font-size: 12px; font-weight: 600;
+      background: var(--surface-2); color: var(--accent); border: 1px solid var(--accent);
+      border-radius: 6px; cursor: pointer;
+    }
+    .btn-secondary:hover { background: var(--accent-dim); }
+
+    .progress-bar { height: 4px; background: var(--border); border-radius: 2px; margin: 12px 0; overflow: hidden; display: none; }
+    .progress-bar.active { display: block; }
+    .progress-fill { height: 100%; background: var(--accent); transition: width 0.3s; width: 0%; }
+    .progress-label { font-size: 11px; color: var(--text-dim); margin-top: 4px; display: none; }
+    .progress-bar.active + .progress-label { display: block; }
+
+    /* Canvas section */
+    #canvas-section { display: none; margin-top: 24px; }
+    .canvas-wrap {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+      padding: 16px; display: flex; align-items: center; justify-content: center;
+      margin-bottom: 24px; min-height: 200px;
+    }
+    #meme-canvas { max-width: 100%; height: auto; display: block; border-radius: 4px; }
+
+    /* Text overlay controls */
+    .overlay-section {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+      padding: 20px; margin-bottom: 16px;
+    }
+    .overlay-section-title {
+      font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em;
+      color: var(--text-dim); margin-bottom: 14px;
+    }
+    .text-layers { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
+    .text-layer { display: flex; flex-direction: column; gap: 10px; }
+    .layer-label { font-size: 11px; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: 0.06em; }
+    .layer-textarea {
+      width: 100%; padding: 10px; background: var(--surface-2); border: 1px solid var(--border);
+      border-radius: 8px; color: var(--text); font-size: 13px; resize: vertical; min-height: 60px;
+      font-family: inherit;
+    }
+    .ctrl-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; }
+    .ctrl-group { display: flex; flex-direction: column; gap: 3px; }
+    .ctrl-group label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; white-space: nowrap; }
+    .ctrl-group select, .ctrl-group input[type="number"] {
+      padding: 6px 8px; background: var(--surface-2); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text); font-size: 12px;
+    }
+    .ctrl-group select { min-width: 110px; }
+    .ctrl-group input[type="number"] { width: 64px; }
+    .ctrl-group input[type="color"] {
+      width: 40px; height: 32px; padding: 2px 3px; border: 1px solid var(--border);
+      border-radius: 6px; background: var(--surface-2); cursor: pointer;
+    }
+    .ctrl-group input[type="range"] { width: 80px; accent-color: var(--accent); }
+
+    .align-btns { display: flex; gap: 2px; }
+    .align-btn {
+      width: 28px; height: 28px; border: 1px solid var(--border); border-radius: 4px;
+      background: var(--surface-2); color: var(--text-dim); cursor: pointer; font-size: 13px;
+      display: flex; align-items: center; justify-content: center; transition: all 0.15s;
+    }
+    .align-btn.active { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
+
+    .caps-toggle { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-dim); cursor: pointer; }
+    .caps-toggle input { accent-color: var(--accent); width: 14px; height: 14px; cursor: pointer; }
+
+    .size-val { font-size: 11px; color: var(--text-dim); min-width: 26px; text-align: right; }
+    .download-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+
+    /* Toast */
+    #toast {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+      background: var(--surface-3); color: var(--text); padding: 10px 20px;
+      border-radius: 8px; font-size: 13px; border: 1px solid var(--border);
+      opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 999;
+    }
+    #toast.visible { opacity: 1; }
+    #toast.error { border-color: var(--error); color: var(--error); }
+
+    /* Template tab */
+    .template-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+      gap: 10px; margin-bottom: 20px;
+    }
+    .template-card {
+      background: var(--surface); border: 2px solid var(--border); border-radius: 10px;
+      padding: 14px 10px; text-align: center; cursor: pointer; transition: all 0.15s;
+    }
+    .template-card:hover { border-color: var(--accent); background: var(--accent-dim); }
+    .template-card.selected { border-color: var(--accent); background: var(--accent-dim); }
+    .template-card .t-emoji { font-size: 28px; margin-bottom: 6px; }
+    .template-card .t-name { font-size: 11px; font-weight: 600; color: var(--text); }
+    .template-card .t-desc { font-size: 10px; color: var(--text-dim); margin-top: 3px; line-height: 1.3; }
+
+    .template-config { display: none; }
+    .template-config.active { display: block; }
+    .template-config .config-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 16px;
+    }
+    .template-config .config-title { font-size: 14px; font-weight: 700; color: var(--accent); }
+    .template-slots { display: flex; flex-direction: column; gap: 12px; margin-bottom: 16px; }
+    .template-slot label { display: block; font-size: 11px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; margin-bottom: 4px; }
+    .template-slot textarea {
+      width: 100%; padding: 8px 10px; background: var(--surface-2); border: 1px solid var(--border);
+      border-radius: 8px; color: var(--text); font-size: 13px; resize: vertical; min-height: 48px;
+    }
+    .template-slot textarea:focus { border-color: var(--accent); outline: none; }
+
+    .ipadapter-section {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+      padding: 12px 14px; margin-bottom: 14px;
+    }
+    .ipadapter-toggle {
+      display: flex; align-items: center; justify-content: space-between; cursor: pointer;
+      font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim);
+      user-select: none;
+    }
+    .ipadapter-body { display: none; margin-top: 12px; }
+    .ipadapter-body.open { display: block; }
+    .ipadapter-controls {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+      gap: 10px;
+    }
+    .ipadapter-controls label { display: block; font-size: 10px; color: var(--text-dim); text-transform: uppercase; margin-bottom: 3px; }
+    .ipadapter-controls select, .ipadapter-controls input {
+      width: 100%; padding: 6px 8px; background: var(--surface-2); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text); font-size: 12px;
+    }
+    .ref-image-note { font-size: 11px; color: var(--text-dim); margin-bottom: 8px; line-height: 1.5; }
+    .ref-image-note a { color: var(--accent); }
+
+    @media (max-width: 600px) {
+      .studio-page { padding: 16px 12px; }
+      .text-layers { grid-template-columns: 1fr; }
+      .template-grid { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); }
+    }
+  </style>
+</head>
+<body>
+<div class="studio-page">
+  <div class="studio-header">
+    <div>
+      <h2>Meme Forge</h2>
+      <div class="subtitle">Generate or upload · add text overlay · download</div>
+    </div>
+  </div>
+
+  <div class="tab-bar">
+    <button class="tab-btn active" onclick="switchTab('generate')">Generate Image</button>
+    <button class="tab-btn"        onclick="switchTab('upload')">Upload Image</button>
+    <button class="tab-btn"        onclick="switchTab('template')">✨ Meme Templates</button>
+  </div>
+
+  <!-- Generate tab -->
+  <div class="tab-panel active" id="tab-generate">
+    <div class="prompt-area">
+      <textarea id="prompt" placeholder="Describe the image…  e.g. dramatic cat staring at laptop screen, cinematic lighting"></textarea>
+    </div>
+    <div class="gen-controls">
+      <div>
+        <label>Width</label>
+        <input type="number" id="gen-width" value="1024" step="64" min="256" max="2048">
+      </div>
+      <div>
+        <label>Height</label>
+        <input type="number" id="gen-height" value="1024" step="64" min="256" max="2048">
+      </div>
+      <div>
+        <label>Steps</label>
+        <input type="number" id="gen-steps" value="25" min="10" max="60">
+      </div>
+      <div>
+        <label>Model</label>
+        <select id="model-select"><option value="">Default</option></select>
+      </div>
+    </div>
+    <button class="btn-primary" id="btn-generate" onclick="generate()">Generate</button>
+    <div class="progress-bar" id="progress-bar">
+      <div class="progress-fill" id="progress-fill"></div>
+    </div>
+    <div class="progress-label" id="progress-label">Starting…</div>
+  </div>
+
+  <!-- Upload tab -->
+  <div class="tab-panel" id="tab-upload">
+    <div class="drop-zone" id="drop-zone">
+      <div class="drop-icon">🖼️</div>
+      <p>Drop an image here, or click to browse</p>
+      <small>PNG, JPG, GIF, WebP</small>
+    </div>
+    <input type="file" id="file-input" accept="image/*" hidden>
+  </div>
+
+  <!-- Template tab -->
+  <div class="tab-panel" id="tab-template">
+    <div id="template-grid" class="template-grid">
+      <div style="color:var(--text-dim);font-size:13px;padding:20px 0">Loading templates…</div>
+    </div>
+
+    <div class="template-config overlay-section" id="template-config">
+      <div class="config-header">
+        <span class="config-title" id="template-config-title">Drake Approves/Rejects</span>
+        <button class="btn-secondary" onclick="clearTemplate()">✕ Clear</button>
+      </div>
+
+      <div class="template-slots" id="template-slots">
+        <!-- populated by selectTemplate() -->
+      </div>
+
+      <!-- IP-Adapter / Advanced -->
+      <div class="ipadapter-section">
+        <div class="ipadapter-toggle" onclick="toggleIpAdapter()">
+          <span>⚙ IP-Adapter &amp; Generation Settings</span>
+          <span id="ipadapter-chevron">▶</span>
+        </div>
+        <div class="ipadapter-body" id="ipadapter-body">
+          <p class="ref-image-note">
+            Drop a reference image in <code>static/images/meme-templates/</code> and set its filename in
+            <code>templates.json</code> to enable IP-Adapter conditioning.
+            Without a reference image the template uses prompt-only generation.
+          </p>
+          <div class="ipadapter-controls">
+            <div>
+              <label>IP-Adapter Strength</label>
+              <input type="number" id="tpl-ip-strength" value="0.85" min="0" max="1" step="0.05">
+            </div>
+            <div>
+              <label>Weight Type</label>
+              <select id="tpl-ip-wt">
+                <option value="composition">Composition</option>
+                <option value="style transfer">Style Transfer</option>
+                <option value="linear">Linear</option>
+                <option value="standard">Standard</option>
+              </select>
+            </div>
+            <div>
+              <label>IP Start</label>
+              <input type="number" id="tpl-ip-start" value="0.0" min="0" max="1" step="0.05">
+            </div>
+            <div>
+              <label>IP End</label>
+              <input type="number" id="tpl-ip-end" value="0.75" min="0" max="1" step="0.05">
+            </div>
+            <div>
+              <label>Steps</label>
+              <input type="number" id="tpl-steps" value="28" min="10" max="60">
+            </div>
+            <div>
+              <label>CFG</label>
+              <input type="number" id="tpl-cfg" value="6.5" min="1" max="20" step="0.5">
+            </div>
+            <div>
+              <label>Width</label>
+              <input type="number" id="tpl-width" value="768" min="256" max="2048" step="64">
+            </div>
+            <div>
+              <label>Height</label>
+              <input type="number" id="tpl-height" value="768" min="256" max="2048" step="64">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <button class="btn-primary" id="btn-meme-generate" onclick="generateMeme()">
+        ✨ Generate Meme Image
+      </button>
+      <div class="progress-bar" id="meme-progress-bar">
+        <div class="progress-fill" id="meme-progress-fill"></div>
+      </div>
+      <div class="progress-label" id="meme-progress-label">Generating…</div>
+    </div>
+  </div>
+
+  <!-- Canvas + overlay controls (hidden until image loaded) -->
+  <div id="canvas-section">
+    <div class="canvas-wrap">
+      <canvas id="meme-canvas"></canvas>
+    </div>
+
+    <div class="overlay-section">
+      <div class="overlay-section-title">Text Overlay</div>
+
+      <div class="text-layers">
+        <!-- Top text -->
+        <div class="text-layer">
+          <div class="layer-label">Top Text</div>
+          <textarea class="layer-textarea" id="top-text" placeholder="Top text…" oninput="redraw()"></textarea>
+          <div class="ctrl-row">
+            <div class="ctrl-group">
+              <label>Font</label>
+              <select id="top-font" onchange="redraw()">
+                <option value="Anton">Anton (Impact)</option>
+                <option value="Bangers">Bangers</option>
+                <option value="Oswald">Oswald</option>
+                <option value="Impact">Impact</option>
+                <option value="Arial Black">Arial Black</option>
+                <option value="Comic Sans MS">Comic Sans</option>
+                <option value="Georgia">Georgia</option>
+                <option value="Courier New">Courier</option>
+              </select>
+            </div>
+            <div class="ctrl-group">
+              <label>Size <span class="size-val" id="top-size-val">60</span></label>
+              <input type="range" id="top-size" min="16" max="160" value="60"
+                     oninput="document.getElementById('top-size-val').textContent=this.value; redraw()">
+            </div>
+            <div class="ctrl-group">
+              <label>Color</label>
+              <input type="color" id="top-color" value="#ffffff" oninput="redraw()">
+            </div>
+            <div class="ctrl-group">
+              <label>Outline</label>
+              <input type="color" id="top-stroke-color" value="#000000" oninput="redraw()">
+            </div>
+            <div class="ctrl-group">
+              <label>Outline W</label>
+              <input type="number" id="top-stroke-width" value="4" min="0" max="20" oninput="redraw()">
+            </div>
+          </div>
+          <div class="ctrl-row">
+            <div class="ctrl-group">
+              <label>Align</label>
+              <div class="align-btns">
+                <button class="align-btn"        data-prefix="top" data-align="left"   onclick="setAlign(this)" title="Left">&#8678;</button>
+                <button class="align-btn active" data-prefix="top" data-align="center" onclick="setAlign(this)" title="Center">&#8679;</button>
+                <button class="align-btn"        data-prefix="top" data-align="right"  onclick="setAlign(this)" title="Right">&#8680;</button>
+              </div>
+            </div>
+            <div class="ctrl-group">
+              <label>Y Offset</label>
+              <input type="number" id="top-y" value="20" min="-200" max="500" oninput="redraw()">
+            </div>
+            <label class="caps-toggle">
+              <input type="checkbox" id="top-caps" checked onchange="redraw()"> ALL CAPS
+            </label>
+          </div>
+        </div>
+
+        <!-- Bottom text -->
+        <div class="text-layer">
+          <div class="layer-label">Bottom Text</div>
+          <textarea class="layer-textarea" id="bot-text" placeholder="Bottom text…" oninput="redraw()"></textarea>
+          <div class="ctrl-row">
+            <div class="ctrl-group">
+              <label>Font</label>
+              <select id="bot-font" onchange="redraw()">
+                <option value="Anton">Anton (Impact)</option>
+                <option value="Bangers">Bangers</option>
+                <option value="Oswald">Oswald</option>
+                <option value="Impact">Impact</option>
+                <option value="Arial Black">Arial Black</option>
+                <option value="Comic Sans MS">Comic Sans</option>
+                <option value="Georgia">Georgia</option>
+                <option value="Courier New">Courier</option>
+              </select>
+            </div>
+            <div class="ctrl-group">
+              <label>Size <span class="size-val" id="bot-size-val">60</span></label>
+              <input type="range" id="bot-size" min="16" max="160" value="60"
+                     oninput="document.getElementById('bot-size-val').textContent=this.value; redraw()">
+            </div>
+            <div class="ctrl-group">
+              <label>Color</label>
+              <input type="color" id="bot-color" value="#ffffff" oninput="redraw()">
+            </div>
+            <div class="ctrl-group">
+              <label>Outline</label>
+              <input type="color" id="bot-stroke-color" value="#000000" oninput="redraw()">
+            </div>
+            <div class="ctrl-group">
+              <label>Outline W</label>
+              <input type="number" id="bot-stroke-width" value="4" min="0" max="20" oninput="redraw()">
+            </div>
+          </div>
+          <div class="ctrl-row">
+            <div class="ctrl-group">
+              <label>Align</label>
+              <div class="align-btns">
+                <button class="align-btn"        data-prefix="bot" data-align="left"   onclick="setAlign(this)" title="Left">&#8678;</button>
+                <button class="align-btn active" data-prefix="bot" data-align="center" onclick="setAlign(this)" title="Center">&#8679;</button>
+                <button class="align-btn"        data-prefix="bot" data-align="right"  onclick="setAlign(this)" title="Right">&#8680;</button>
+              </div>
+            </div>
+            <div class="ctrl-group">
+              <label>Y Offset</label>
+              <input type="number" id="bot-y" value="20" min="-200" max="500" oninput="redraw()">
+            </div>
+            <label class="caps-toggle">
+              <input type="checkbox" id="bot-caps" checked onchange="redraw()"> ALL CAPS
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div class="download-row">
+        <button class="btn-primary" onclick="downloadMeme()">Download PNG</button>
+        <button class="btn-secondary" onclick="clearImage()">Clear Image</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+  const state = {
+    image: null,
+    pollTimer: null,
+    currentJobId: null,
+    topAlign: 'center',
+    botAlign: 'center',
+  };
+
+  const canvas = document.getElementById('meme-canvas');
+  const ctx = canvas.getContext('2d');
+
+  // ── Tabs ─────────────────────────────────────────────────────────────────────
+
+  function switchTab(id) {
+    const ids = ['generate', 'upload', 'template'];
+    document.querySelectorAll('.tab-btn').forEach((b, i) => {
+      b.classList.toggle('active', ids[i] === id);
+    });
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    document.getElementById('tab-' + id).classList.add('active');
+  }
+
+  // ── Template tab ──────────────────────────────────────────────────────────────
+
+  let _templates = [];
+  let _activeTemplate = null;
+
+  async function loadTemplates() {
+    try {
+      const resp = await fetch('/api/meme/templates');
+      if (!resp.ok) return;
+      _templates = await resp.json();
+      renderTemplateGrid();
+    } catch (_) { /* leave loading message */ }
+  }
+
+  function renderTemplateGrid() {
+    const grid = document.getElementById('template-grid');
+    grid.textContent = '';
+    if (!_templates.length) {
+      const msg = document.createElement('div');
+      msg.style.cssText = 'color:var(--text-dim);font-size:13px;padding:20px 0';
+      msg.textContent = 'No templates found.';
+      grid.appendChild(msg);
+      return;
+    }
+    _templates.forEach(t => {
+      const card = document.createElement('div');
+      card.className = 'template-card';
+      card.id = 'tcard-' + t.id;
+      card.addEventListener('click', () => selectTemplate(t.id));
+
+      const emoji = document.createElement('div');
+      emoji.className = 't-emoji';
+      emoji.textContent = t.emoji || '\uD83D\uDDBC\uFE0F';
+
+      const name = document.createElement('div');
+      name.className = 't-name';
+      name.textContent = t.name;
+
+      const desc = document.createElement('div');
+      desc.className = 't-desc';
+      desc.textContent = t.description;
+
+      card.append(emoji, name, desc);
+      grid.appendChild(card);
+    });
+  }
+
+  function selectTemplate(id) {
+    _activeTemplate = _templates.find(t => t.id === id) || null;
+    if (!_activeTemplate) return;
+
+    document.querySelectorAll('.template-card').forEach(c => c.classList.remove('selected'));
+    const card = document.getElementById('tcard-' + id);
+    if (card) card.classList.add('selected');
+
+    document.getElementById('template-config-title').textContent = _activeTemplate.name;
+
+    const slotsEl = document.getElementById('template-slots');
+    slotsEl.textContent = '';
+    (_activeTemplate.panels || []).forEach(p => {
+      const wrap = document.createElement('div');
+      wrap.className = 'template-slot';
+
+      const lbl = document.createElement('label');
+      lbl.textContent = p.label;
+
+      const ta = document.createElement('textarea');
+      ta.id = 'tslot-' + p.slot;
+      ta.placeholder = p.label + '\u2026';
+      ta.addEventListener('input', () => syncSlotToOverlay(p.slot));
+
+      wrap.append(lbl, ta);
+      slotsEl.appendChild(wrap);
+    });
+
+    document.getElementById('tpl-ip-strength').value = _activeTemplate.ip_adapter_strength ?? 0.85;
+    document.getElementById('tpl-ip-wt').value       = _activeTemplate.ip_adapter_weight_type ?? 'composition';
+    document.getElementById('tpl-ip-start').value    = _activeTemplate.ip_adapter_start ?? 0.0;
+    document.getElementById('tpl-ip-end').value      = _activeTemplate.ip_adapter_end ?? 0.75;
+    document.getElementById('tpl-steps').value       = _activeTemplate.steps ?? 28;
+    document.getElementById('tpl-cfg').value         = _activeTemplate.cfg ?? 6.5;
+    document.getElementById('tpl-width').value       = _activeTemplate.width ?? 768;
+    document.getElementById('tpl-height').value      = _activeTemplate.height ?? 768;
+
+    document.getElementById('template-config').classList.add('active');
+  }
+
+  function syncSlotToOverlay(slot) {
+    const el  = document.getElementById('tslot-' + slot);
+    const val = el ? el.value : '';
+    const topEl = document.getElementById('top-text');
+    const botEl = document.getElementById('bot-text');
+    if (slot === 'top' && topEl) topEl.value = val;
+    if (slot === 'bot' && botEl) botEl.value = val;
+    document.fonts.ready.then(() => redraw());
+  }
+
+  function clearTemplate() {
+    _activeTemplate = null;
+    document.querySelectorAll('.template-card').forEach(c => c.classList.remove('selected'));
+    document.getElementById('template-config').classList.remove('active');
+    document.getElementById('template-slots').textContent = '';
+  }
+
+  function toggleIpAdapter() {
+    const body = document.getElementById('ipadapter-body');
+    const chev = document.getElementById('ipadapter-chevron');
+    body.classList.toggle('open');
+    chev.textContent = body.classList.contains('open') ? '\u25BC' : '\u25BA';
+  }
+
+  async function generateMeme() {
+    if (!_activeTemplate) { toast('Select a template first', true); return; }
+
+    const texts = {};
+    (_activeTemplate.panels || []).forEach(p => {
+      const el = document.getElementById('tslot-' + p.slot);
+      if (el) texts[p.slot] = el.value.trim();
+    });
+
+    const slotSummary = Object.entries(texts)
+      .filter(([, v]) => v)
+      .map(([k, v]) => k + ': "' + v + '"')
+      .join(', ');
+    const fullPrompt = _activeTemplate.prompt_template +
+      (slotSummary ? '. Context: ' + slotSummary : '');
+
+    const btn = document.getElementById('btn-meme-generate');
+    btn.disabled    = true;
+    btn.textContent = 'Generating\u2026';
+
+    try {
+      const body = {
+        template_id:            _activeTemplate.id,
+        prompt:                 fullPrompt,
+        negative_prompt:        _activeTemplate.negative_prompt || '',
+        width:                  parseInt(document.getElementById('tpl-width').value, 10),
+        height:                 parseInt(document.getElementById('tpl-height').value, 10),
+        steps:                  parseInt(document.getElementById('tpl-steps').value, 10),
+        cfg:                    parseFloat(document.getElementById('tpl-cfg').value),
+        ip_adapter_strength:    parseFloat(document.getElementById('tpl-ip-strength').value),
+        ip_adapter_weight_type: document.getElementById('tpl-ip-wt').value,
+        ip_adapter_start:       parseFloat(document.getElementById('tpl-ip-start').value),
+        ip_adapter_end:         parseFloat(document.getElementById('tpl-ip-end').value),
+        reference_image:        _activeTemplate.reference_image || null,
+      };
+
+      const resp = await fetch('/api/meme/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!resp.ok) throw new Error('Server error ' + resp.status);
+      const data = await resp.json();
+      startMemePolling(data.job_id, texts);
+    } catch (e) {
+      toast('Generate failed: ' + e.message, true);
+      btn.disabled    = false;
+      btn.textContent = '\u2728 Generate Meme Image';
+    }
+  }
+
+  function startMemePolling(jobId, texts) {
+    const pollTimer = setInterval(async () => {
+      try {
+        const resp = await fetch('/api/job/' + jobId);
+        if (!resp.ok) return;
+        const data = await resp.json();
+
+        if (data.status === 'running' || data.status === 'queued') {
+          document.getElementById('meme-progress-bar').classList.add('active');
+          document.getElementById('meme-progress-fill').style.width = (data.progress || 0) + '%';
+          document.getElementById('meme-progress-label').textContent = data.message || 'Generating\u2026';
+        } else if (data.status === 'complete') {
+          clearInterval(pollTimer);
+          document.getElementById('meme-progress-bar').classList.remove('active');
+          const btn = document.getElementById('btn-meme-generate');
+          btn.disabled    = false;
+          btn.textContent = '\u2728 Generate Meme Image';
+          if (data.output_url) {
+            loadImageFromUrl(data.output_url);
+            const topEl = document.getElementById('top-text');
+            const botEl = document.getElementById('bot-text');
+            if (texts.top && topEl) topEl.value = texts.top;
+            if (texts.bot && botEl) botEl.value = texts.bot;
+          }
+          toast('Meme image ready!');
+        } else if (data.status === 'error') {
+          clearInterval(pollTimer);
+          document.getElementById('meme-progress-bar').classList.remove('active');
+          const btn = document.getElementById('btn-meme-generate');
+          btn.disabled    = false;
+          btn.textContent = '\u2728 Generate Meme Image';
+          toast('Generation failed: ' + (data.error || 'unknown'), true);
+        }
+      } catch (_) { /* retry */ }
+    }, 800);
+  }
+
+  // Copilot globals
+  window.applyMemeTemplate = function(templateId, texts) {
+    switchTab('template');
+    const tpl = _templates.find(t => t.id === templateId);
+    if (!tpl) return { ok: false, error: 'Template not found: ' + templateId };
+    selectTemplate(templateId);
+    Object.entries(texts || {}).forEach(([slot, value]) => {
+      const el = document.getElementById('tslot-' + slot);
+      if (el) { el.value = value; syncSlotToOverlay(slot); }
+    });
+    return { ok: true, template: tpl.name, texts };
+  };
+
+  window.generateMemeFromCopilot = generateMeme;
+
+  window.listMemeTemplates = function() {
+    return _templates.map(t => ({ id: t.id, name: t.name, panels: t.panels.map(p => p.slot) }));
+  };
+
+  // ── Alignment ─────────────────────────────────────────────────────────────────
+
+  function setAlign(btn) {
+    const prefix = btn.dataset.prefix;
+    const align  = btn.dataset.align;
+    state[prefix + 'Align'] = align;
+    btn.closest('.align-btns').querySelectorAll('.align-btn').forEach(b => {
+      b.classList.toggle('active', b.dataset.align === align);
+    });
+    redraw();
+  }
+
+  // ── Canvas drawing ────────────────────────────────────────────────────────────
+
+  function getLayer(prefix) {
+    return {
+      text:        document.getElementById(prefix + '-text').value,
+      font:        document.getElementById(prefix + '-font').value,
+      size:        parseInt(document.getElementById(prefix + '-size').value, 10),
+      color:       document.getElementById(prefix + '-color').value,
+      strokeColor: document.getElementById(prefix + '-stroke-color').value,
+      strokeWidth: parseInt(document.getElementById(prefix + '-stroke-width').value, 10) || 0,
+      align:       state[prefix + 'Align'],
+      caps:        document.getElementById(prefix + '-caps').checked,
+      yOffset:     parseInt(document.getElementById(prefix + '-y').value, 10) || 0,
+    };
+  }
+
+  function drawLayer(cfg, isBottom) {
+    const raw   = cfg.caps ? cfg.text.toUpperCase() : cfg.text;
+    const lines = raw.split('\n').filter(l => l.trim() !== '');
+    if (lines.length === 0) return;
+
+    const lineHeight = cfg.size * 1.2;
+    const padding    = 20;
+
+    ctx.font      = `bold ${cfg.size}px "${cfg.font}", Impact, "Arial Black", sans-serif`;
+    ctx.textAlign = cfg.align;
+    ctx.lineJoin  = 'round';
+
+    const x = cfg.align === 'left'  ? padding
+             : cfg.align === 'right' ? canvas.width - padding
+             : canvas.width / 2;
+
+    function drawLine(line, y) {
+      if (cfg.strokeWidth > 0) {
+        ctx.strokeStyle = cfg.strokeColor;
+        ctx.lineWidth   = cfg.strokeWidth * 2;
+        ctx.strokeText(line, x, y);
+      }
+      ctx.fillStyle = cfg.color;
+      ctx.fillText(line, x, y);
+    }
+
+    if (isBottom) {
+      ctx.textBaseline = 'bottom';
+      const startY = canvas.height - padding - cfg.yOffset;
+      [...lines].reverse().forEach((line, i) => drawLine(line, startY - i * lineHeight));
+    } else {
+      ctx.textBaseline = 'top';
+      const startY = padding + cfg.yOffset;
+      lines.forEach((line, i) => drawLine(line, startY + i * lineHeight));
+    }
+  }
+
+  function redraw() {
+    if (!state.image) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(state.image, 0, 0);
+    drawLayer(getLayer('top'), false);
+    drawLayer(getLayer('bot'), true);
+  }
+
+  // ── Image loading ─────────────────────────────────────────────────────────────
+
+  function loadImageFromUrl(url) {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      state.image   = img;
+      canvas.width  = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      document.getElementById('canvas-section').style.display = 'block';
+      redraw();
+    };
+    img.onerror = () => toast('Failed to load image', true);
+    img.src = url;
+  }
+
+  function loadImageFromFile(file) {
+    const reader = new FileReader();
+    reader.onload = e => loadImageFromUrl(e.target.result);
+    reader.readAsDataURL(file);
+  }
+
+  function clearImage() {
+    state.image = null;
+    document.getElementById('canvas-section').style.display = 'none';
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  }
+
+  // ── Generate ──────────────────────────────────────────────────────────────────
+
+  async function generate() {
+    const prompt = document.getElementById('prompt').value.trim();
+    if (!prompt) { toast('Enter a prompt first', true); return; }
+
+    const btn = document.getElementById('btn-generate');
+    btn.disabled    = true;
+    btn.textContent = 'Generating…';
+
+    const fd = new FormData();
+    fd.append('prompt',  prompt);
+    fd.append('width',   document.getElementById('gen-width').value);
+    fd.append('height',  document.getElementById('gen-height').value);
+    fd.append('steps',   document.getElementById('gen-steps').value);
+    fd.append('model',   document.getElementById('model-select').value);
+    fd.append('backend', 'comfyui');
+
+    try {
+      const resp = await fetch('/api/generate', { method: 'POST', body: fd });
+      if (!resp.ok) throw new Error('Server error ' + resp.status);
+      const data = await resp.json();
+      state.currentJobId = data.job_id;
+      startPolling(data.job_id);
+    } catch (e) {
+      toast('Generate failed: ' + e.message, true);
+      btn.disabled    = false;
+      btn.textContent = 'Generate';
+    }
+  }
+
+  function startPolling(jobId) {
+    if (state.pollTimer) clearInterval(state.pollTimer);
+    state.pollTimer = setInterval(async () => {
+      try {
+        const resp = await fetch('/api/job/' + jobId);
+        if (!resp.ok) return;
+        const data = await resp.json();
+
+        if (data.status === 'running' || data.status === 'queued') {
+          showProgress(data.progress || 0, data.message || 'Generating…');
+        } else if (data.status === 'complete') {
+          clearInterval(state.pollTimer);
+          hideProgress();
+          const btn = document.getElementById('btn-generate');
+          btn.disabled    = false;
+          btn.textContent = 'Generate';
+          loadImageFromUrl(data.output_url);
+          toast('Image ready!');
+        } else if (data.status === 'error') {
+          clearInterval(state.pollTimer);
+          hideProgress();
+          const btn = document.getElementById('btn-generate');
+          btn.disabled    = false;
+          btn.textContent = 'Generate';
+          toast('Generation failed: ' + (data.error || 'unknown'), true);
+        }
+      } catch (_) { /* retry next tick */ }
+    }, 800);
+  }
+
+  function showProgress(pct, msg) {
+    const bar = document.getElementById('progress-bar');
+    bar.classList.add('active');
+    document.getElementById('progress-fill').style.width = pct + '%';
+    document.getElementById('progress-label').textContent = msg;
+  }
+
+  function hideProgress() {
+    document.getElementById('progress-bar').classList.remove('active');
+  }
+
+  // ── Download ──────────────────────────────────────────────────────────────────
+
+  function downloadMeme() {
+    if (!state.image) { toast('No image loaded', true); return; }
+    const link     = document.createElement('a');
+    link.download  = 'meme.png';
+    link.href      = canvas.toDataURL('image/png');
+    link.click();
+  }
+
+  // ── Toast ─────────────────────────────────────────────────────────────────────
+
+  let toastTimer = null;
+  function toast(msg, isError = false) {
+    const el      = document.getElementById('toast');
+    el.textContent = msg;
+    el.className  = 'visible' + (isError ? ' error' : '');
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { el.className = ''; }, 3000);
+  }
+
+  // ── Drag & drop / file picker ─────────────────────────────────────────────────
+
+  const dropZone  = document.getElementById('drop-zone');
+  const fileInput = document.getElementById('file-input');
+
+  dropZone.addEventListener('click', () => fileInput.click());
+
+  dropZone.addEventListener('dragover', e => {
+    e.preventDefault();
+    dropZone.classList.add('drag-over');
+  });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.classList.remove('drag-over');
+    const file = e.dataTransfer.files[0];
+    if (file && file.type.startsWith('image/')) {
+      loadImageFromFile(file);
+      switchTab('generate');
+    }
+  });
+
+  fileInput.addEventListener('change', e => {
+    if (e.target.files[0]) loadImageFromFile(e.target.files[0]);
+  });
+
+  // ── Init ──────────────────────────────────────────────────────────────────────
+
+  (async function init() {
+    loadTemplates();
+    try {
+      const resp = await fetch('/api/sprites/models');
+      if (!resp.ok) return;
+      const data   = await resp.json();
+      const models = Array.isArray(data) ? data : (data.models || []);
+      if (models.length === 0) return;
+
+      const sel = document.getElementById('model-select');
+      sel.textContent = ''; // clear existing options safely
+
+      models.forEach(name => {
+        const opt   = document.createElement('option');
+        opt.value   = String(name);
+        opt.textContent = String(name);
+        sel.appendChild(opt);
+      });
+    } catch (_) { /* leave default option */ }
+  })();
+</script>
+</body>
+</html>

@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Connecting JoyID…</title>
+  <style>
+    body { background:#0f1117; color:#8b8fa3; font-family:system-ui;
+           display:flex; align-items:center; justify-content:center;
+           height:100vh; margin:0; font-size:.9rem; flex-direction:column; gap:12px; }
+    .spinner { width:28px; height:28px; border:3px solid #2e3340;
+               border-top-color:#4ecdc4; border-radius:50%; animation:spin .8s linear infinite; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="spinner"></div>
+  <p id="msg">Completing sign in…</p>
+  <script type="module">
+    import { isJoyIDCallback, joyidHandleCallback, getJoyIDPending, clearJoyIDPending }
+      from '/static/js/joyid-connector.js';
+
+    const msg = document.getElementById('msg');
+
+    if (isJoyIDCallback()) {
+      try {
+        const result = await joyidHandleCallback();
+        const pending = getJoyIDPending();
+        clearJoyIDPending();
+        sessionStorage.setItem('joyid_result', JSON.stringify(result));
+        msg.textContent = '✓ Signed in — returning…';
+        const returnTo = pending?.returnTo || '/settings';
+        setTimeout(() => location.replace(returnTo), 300);
+      } catch(e) {
+        msg.textContent = '⚠ ' + (e.message || 'Authentication failed');
+        setTimeout(() => location.replace('/settings'), 2000);
+      }
+    } else if (window.opener) {
+      msg.textContent = '✓ Signed — closing…';
+      setTimeout(() => window.close(), 500);
+    } else {
+      location.replace('/settings');
+    }
+  </script>
+</body>
+</html>

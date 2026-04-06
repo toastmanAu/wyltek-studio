@@ -2,8 +2,10 @@
 """Wyltek Studio — local-first AI creative studio."""
 
 import asyncio
+import base64
 import json
 import os
+import tempfile
 import time
 import uuid
 from datetime import datetime
@@ -94,6 +96,126 @@ async def tts_page():
 @app.get("/studio/music")
 async def music_page():
     return FileResponse("static/studio/music.html")
+
+
+@app.get("/studio/video")
+async def video_page():
+    return FileResponse("static/studio/video.html")
+
+
+@app.get("/studio/meme")
+async def meme_page():
+    return FileResponse("static/studio/meme.html")
+
+
+@app.get("/api/meme/templates")
+async def api_meme_templates():
+    """Return meme template definitions from templates.json."""
+    templates_path = Path("static/images/meme-templates/templates.json")
+    if templates_path.exists():
+        async with aiofiles.open(templates_path) as f:
+            return JSONResponse(json.loads(await f.read()))
+    return JSONResponse([])
+
+
+@app.post("/api/meme/generate")
+async def api_meme_generate(request: Request):
+    """Generate a meme image using a template with optional IP-Adapter conditioning."""
+    import storage as store
+
+    data = await request.json()
+    template_id  = data.get("template_id", "")
+    prompt       = data.get("prompt", "").strip()
+    neg_prompt   = data.get("negative_prompt", "")
+    model        = data.get("model", "")
+    width        = int(data.get("width",  768))
+    height       = int(data.get("height", 768))
+    steps        = int(data.get("steps",  28))
+    cfg          = float(data.get("cfg",  6.5))
+    ip_strength  = float(data.get("ip_adapter_strength", 0.0))
+    ip_wt        = data.get("ip_adapter_weight_type", "composition")
+    ip_start     = float(data.get("ip_adapter_start", 0.0))
+    ip_end       = float(data.get("ip_adapter_end", 0.75))
+    ref_image    = data.get("reference_image", None)   # server-side static path
+
+    if not prompt:
+        return JSONResponse({"error": "prompt required"}, status_code=400)
+
+    job_id     = str(uuid.uuid4())[:8]
+    output_dir = str(Path("storage/unsorted") / datetime.now().strftime("%Y-%m-%d") / "images")
+
+    jobs[job_id] = {
+        "status": "queued", "progress": 0,
+        "params": {"type": "meme_gen", "template_id": template_id, "prompt": prompt},
+    }
+
+    async def _run_meme_gen():
+        jobs[job_id]["status"] = "running"
+        await broadcast({"type": "job_update", "job_id": job_id,
+                         "status": "running", "progress": 0})
+        try:
+            comfyui = registry.get_backend("comfyui")
+
+            async def on_progress(pct, msg=""):
+                jobs[job_id]["progress"] = pct
+                await broadcast({"type": "job_update", "job_id": job_id,
+                                 "status": "running", "progress": pct, "message": msg})
+
+            # Resolve reference image to an absolute path ComfyUI can read
+            ref_paths = []
+            if ref_image:
+                ref_abs = Path(ref_image.lstrip("/"))
+                if ref_abs.exists():
+                    ref_paths.append(str(ref_abs))
+
+            meta = await comfyui.generate_sprites({
+                "prompt":                   prompt,
+                "model":                    model or "juggernautXL_v9",
+                "negative_prompt":          neg_prompt,
+                "batch_size":               1,
+                "steps":                    steps,
+                "cfg":                      cfg,
+                "width":                    width,
+                "height":                   height,
+                "seed":                     data.get("seed", -1),
+                "lora_strength":            float(data.get("lora_strength", 0.0)),
+                "ip_adapter_strength":      ip_strength if ref_paths else 0.0,
+                "ip_adapter_weight_type":   ip_wt,
+                "ip_adapter_start":         ip_start,
+                "ip_adapter_end":           ip_end,
+                "reference_images":         ref_paths,
+            }, output_dir, on_progress)
+
+            import shutil
+            urls = []
+            for i, fpath in enumerate(meta.get("files", [])):
+                dest = store.asset_path(f"{job_id}_{i}", "image", ".png")
+                shutil.copy2(fpath, str(dest))
+                urls.append(f"/storage/{job_id}_{i}.png")
+                Path(fpath).unlink(missing_ok=True)
+
+            output_url = urls[0] if urls else None
+            jobs[job_id].update({
+                "status": "complete", "progress": 100,
+                "output_url": output_url, "urls": urls,
+            })
+            await broadcast({"type": "job_update", "job_id": job_id,
+                             "status": "complete", "progress": 100,
+                             "output_url": output_url, "urls": urls})
+        except Exception as e:
+            jobs[job_id].update({"status": "error", "error": str(e)})
+            await broadcast({"type": "job_update", "job_id": job_id,
+                             "status": "error", "error": str(e)})
+
+    job_queue.submit_background(_run_meme_gen(), lane="gpu", job_id=f"meme-{job_id}")
+    return {"job_id": job_id}
+
+
+@app.get("/joyid-callback")
+@app.get("/joyid-callback.html")
+async def joyid_callback_page():
+    return FileResponse("static/joyid-callback.html")
+
 
 
 # --- Settings API ---
@@ -547,6 +669,7 @@ async def op_prompt(request: Request):
     data = await request.json()
     user_prompt = data.get("prompt", "").strip()
     target_model = data.get("model", "")
+    mode = data.get("mode", "image")  # "image" or "video"
 
     if not user_prompt:
         return JSONResponse({"error": "No prompt provided"}, status_code=400)
@@ -554,7 +677,41 @@ async def op_prompt(request: Request):
     ollama_url = opt_config.get("ollama_url", "http://localhost:11434")
     ollama_model = opt_config.get("model", "qwen2.5:14b")
 
-    system_prompt = f"""You are an expert Stable Diffusion prompt engineer. The user will give you an image generation prompt. Your job is to enhance it for maximum quality.
+    json_format = '{{"enhanced_prompt": "...", "negative_prompt": "...", "changes_made": "brief explanation of what you improved"}}'
+
+    if mode == "sprite":
+        system_prompt = f"""You are an expert pixel art sprite prompt engineer. The user will give you a game sprite concept. Your job is to enhance it for AI-generated pixel art.
+
+Rules:
+- Add pixel art style tokens (16-bit, retro, game asset, sprite sheet style)
+- Specify the view angle (top-down, side-view, isometric, front-facing)
+- Describe colors, shading, and outline style explicitly
+- Keep the subject simple and centered — single character or object
+- Mention transparent background for game-ready output
+- Avoid complex scenes, multiple subjects, or photorealistic descriptors
+- Be concise — SD 1.5 prompts work best under 75 tokens
+
+Respond ONLY with valid JSON (no markdown, no code fences):
+{json_format}"""
+    elif mode == "video":
+        system_prompt = f"""You are an expert AnimateDiff video prompt engineer. The user will give you a text-to-video prompt. Your job is to enhance it for maximum quality animated output.
+
+The target model is: AnimateDiff (SD 1.5 based motion synthesis)
+
+Rules:
+- Describe the MOTION explicitly (walking, flowing, swaying, rotating, zooming)
+- Add temporal cues (slow, gentle, dynamic, sweeping)
+- Include scene composition and lighting that works well in motion
+- Keep subjects simple — AnimateDiff works best with 1-2 focal subjects
+- Avoid complex multi-character scenes or rapid scene changes
+- Add style descriptors that translate well to animation (cinematic, smooth, fluid)
+- Suggest a negative prompt to avoid common video artifacts (flickering, morphing, jitter)
+- Be concise — SD prompts work best under 75 tokens
+
+Respond ONLY with valid JSON (no markdown, no code fences):
+{json_format}"""
+    else:
+        system_prompt = f"""You are an expert Stable Diffusion prompt engineer. The user will give you an image generation prompt. Your job is to enhance it for maximum quality.
 
 The target generation model is: {target_model or 'unknown'}
 
@@ -566,12 +723,12 @@ Rules:
 - Be concise — SD prompts work best under 75 tokens
 
 Respond ONLY with valid JSON (no markdown, no code fences):
-{{"enhanced_prompt": "...", "negative_prompt": "...", "changes_made": "brief explanation of what you improved"}}"""
+{json_format}"""
 
     import re
     import httpx
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(
                 f"{ollama_url}/api/generate",
                 json={
@@ -579,7 +736,7 @@ Respond ONLY with valid JSON (no markdown, no code fences):
                     "prompt": user_prompt,
                     "system": system_prompt,
                     "stream": False,
-                    "options": {"temperature": 0.3},
+                    "options": {"temperature": 0.3, "num_gpu": 0},
                 },
             )
             if resp.status_code != 200:
@@ -599,7 +756,7 @@ Respond ONLY with valid JSON (no markdown, no code fences):
                 }
             return JSONResponse({"error": "Failed to parse LLM response", "raw": response_text}, status_code=500)
     except httpx.TimeoutException:
-        return JSONResponse({"error": "Ollama timed out (30s)"}, status_code=504)
+        return JSONResponse({"error": "Ollama timed out (120s)"}, status_code=504)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -852,6 +1009,52 @@ async def api_move_asset(project_id: str, request: Request):
     return JSONResponse({"error": "Asset not found"}, status_code=404)
 
 
+@app.post("/api/projects/{project_id}/upload")
+async def api_upload_asset(project_id: str,
+                           files: list[UploadFile] = File(...)):
+    """Upload one or more files directly into a project."""
+    import storage as store
+    pdir = store.project_dir(project_id)
+    if not pdir.exists():
+        return JSONResponse({"error": "Project not found"}, status_code=404)
+
+    uploaded = []
+    for f in files:
+        ext = Path(f.filename).suffix.lower()
+        if ext in (".wav", ".mp3", ".ogg", ".flac"):
+            asset_type = "audio"
+        elif ext in (".mp4", ".webm", ".mov"):
+            asset_type = "video"
+        else:
+            asset_type = "image"
+
+        subdir = store.ASSET_DIRS.get(asset_type, "assets")
+        dest_dir = pdir / subdir
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        # Use a unique name to avoid collisions
+        file_id = f"{uuid.uuid4().hex[:8]}{ext}"
+        dest = dest_dir / file_id
+
+        async with aiofiles.open(str(dest), "wb") as out:
+            content = await f.read()
+            await out.write(content)
+
+        # Write a minimal sidecar
+        sidecar = {"original_name": f.filename, "uploaded": datetime.now().isoformat()}
+        with open(dest.with_suffix(".json"), "w") as sf:
+            json.dump(sidecar, sf, indent=2)
+
+        uploaded.append({
+            "filename": file_id,
+            "type": asset_type,
+            "url": f"/storage/{file_id}",
+            "original_name": f.filename,
+        })
+
+    return {"uploaded": uploaded, "count": len(uploaded)}
+
+
 @app.get("/api/projects/{project_id}/timeline")
 async def api_get_timeline(project_id: str):
     """Get project timeline."""
@@ -1021,6 +1224,136 @@ async def music_generate(request: Request):
         }
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# --- Video Generation API ---
+
+@app.get("/api/video/status")
+async def api_video_status():
+    """Check GPU availability and supported video models.
+
+    NOTE: torch.cuda.is_available() may be False in this process because
+    TTS engines set CUDA_VISIBLE_DEVICES="" at import. Video generation
+    runs via ComfyUI (separate process) which has full GPU access.
+    We query ComfyUI system_stats directly for GPU info.
+    """
+    import aiohttp
+
+    gpu_available = False
+    gpu_name = None
+    vram_total = None
+    vram_gb = 0
+
+    # Query ComfyUI for actual GPU info
+    comfyui_url = config.get("backends", {}).get("comfyui", {}).get("url", "http://localhost:8188")
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+            async with session.get(f"{comfyui_url}/system_stats") as resp:
+                if resp.status == 200:
+                    stats = await resp.json()
+                    devices = stats.get("devices", [])
+                    for dev in devices:
+                        if dev.get("type") == "cuda":
+                            gpu_available = True
+                            gpu_name = dev.get("name", "").split(" : ")[0].replace("cuda:0 ", "")
+                            vram_bytes = dev.get("vram_total", 0)
+                            vram_gb = vram_bytes / (1024**3)
+                            vram_total = f"{vram_gb:.1f} GB"
+                            break
+    except Exception:
+        pass  # ComfyUI not running — fall back to no GPU
+
+    # Check if AnimateDiff motion model is installed (v2 preferred, v3 also works)
+    ad_models_dir = Path("/data/ComfyUI/models/animatediff_models")
+    animatediff_installed = (
+        (ad_models_dir / "mm_sd_v15_v2.ckpt").exists()
+        or (ad_models_dir / "v3_sd15_mm.ckpt").exists()
+    )
+    animatediff_ready = vram_gb >= 7 and animatediff_installed  # 8GB cards report ~7.6 usable
+
+    models = [
+        {"id": "animatediff", "available": animatediff_ready, "min_vram": 8,
+         "installed": animatediff_installed},
+        {"id": "svd", "available": False, "min_vram": 12, "installed": False},
+        {"id": "cogvideox", "available": False, "min_vram": 16, "installed": False},
+    ]
+
+    return {
+        "gpu_available": gpu_available,
+        "gpu_name": gpu_name,
+        "vram_total": vram_total,
+        "models_ready": sum(1 for m in models if m["available"]),
+        "models": models,
+    }
+
+
+@app.post("/api/video/generate")
+async def api_video_generate(request: Request):
+    """Generate a short video clip via AnimateDiff through ComfyUI."""
+    import storage as store
+
+    data = await request.json()
+    model = data.get("model")
+    prompt = data.get("prompt", "")
+
+    if not model or not prompt:
+        return JSONResponse({"error": "model and prompt required"}, status_code=400)
+
+    if model != "animatediff":
+        return JSONResponse({"error": f"{model} not yet supported"}, status_code=501)
+
+    # Check AnimateDiff model + ComfyUI available (GPU check via ComfyUI, not local torch)
+    ad_dir = Path("/data/ComfyUI/models/animatediff_models")
+    if not ((ad_dir / "mm_sd_v15_v2.ckpt").exists() or (ad_dir / "v3_sd15_mm.ckpt").exists()):
+        return JSONResponse({"error": "AnimateDiff motion model not installed"}, status_code=503)
+
+    job_id = str(uuid.uuid4())[:8]
+    output_path = str(store.asset_path(job_id, "video", ".mp4"))
+    jobs[job_id] = {
+        "status": "queued", "progress": 0,
+        "params": {"type": "video_gen", "model": model, "prompt": prompt},
+    }
+
+    async def _run_video_gen():
+        jobs[job_id]["status"] = "running"
+        await broadcast({"type": "job_update", "job_id": job_id,
+                         "status": "running", "progress": 0})
+        try:
+            comfyui = registry.get_backend("comfyui")
+
+            async def on_progress(pct, msg=""):
+                jobs[job_id]["progress"] = pct
+                await broadcast({"type": "job_update", "job_id": job_id,
+                                 "status": "running", "progress": pct, "message": msg})
+
+            meta = await comfyui.generate_video({
+                "prompt": prompt,
+                "negative_prompt": data.get("negative_prompt",
+                                            "low quality, blurry, distorted, watermark"),
+                "width": data.get("width", 512),
+                "height": data.get("height", 512),
+                "duration": data.get("duration", 4),
+                "steps": data.get("steps", 20),
+                "cfg": data.get("cfg", 7.0),
+                "seed": data.get("seed", -1),
+                "fps": data.get("fps", 8),
+            }, output_path, on_progress)
+
+            jobs[job_id].update({
+                "status": "complete", "progress": 100,
+                "output_url": f"/storage/{job_id}.mp4",
+                **meta,
+            })
+            await broadcast({"type": "job_update", "job_id": job_id,
+                             "status": "complete", "progress": 100,
+                             "output_url": f"/storage/{job_id}.mp4"})
+        except Exception as e:
+            jobs[job_id].update({"status": "error", "error": str(e)})
+            await broadcast({"type": "job_update", "job_id": job_id,
+                             "status": "error", "error": str(e)})
+
+    job_queue.submit_background(_run_video_gen(), lane="gpu", job_id=f"vidgen-{job_id}")
+    return {"job_id": job_id}
 
 
 # --- TTS API ---

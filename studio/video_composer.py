@@ -204,21 +204,25 @@ async def _render_clip(image_path: str | Path, output_path: str,
     kb_effect = kb.get("effect", "none")
 
     # Build filter chain
-    # First upscale to 2x for Ken Burns headroom, then zoompan, then scale down
+    # For Ken Burns: feed a single frame to zoompan which controls duration via d=
+    # For static: loop the image for the clip duration
     if kb_effect != "none" and kb_effect in KEN_BURNS:
         zp = KEN_BURNS[kb_effect]
         vf = (f"scale=3840:2160:force_original_aspect_ratio=decrease,"
               f"pad=3840:2160:(ow-iw)/2:(oh-ih)/2:black,"
               f"zoompan={zp}:d={frames}:s={w}x{h}:fps={fps},"
               f"format=yuv420p")
+        # Single image input (no loop) — zoompan generates all frames from it
+        input_args = ["-i", str(image_path)]
     else:
         vf = (f"scale={w}:{h}:force_original_aspect_ratio=decrease,"
               f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:black,"
               f"format=yuv420p")
+        input_args = ["-loop", "1", "-t", str(duration), "-i", str(image_path)]
 
     cmd = [
-        "ffmpeg", "-y", "-loop", "1", "-t", str(duration),
-        "-i", str(image_path),
+        "ffmpeg", "-y",
+        *input_args,
         "-vf", vf,
         "-c:v", "libx264", "-preset", "fast", "-crf", "23",
         "-pix_fmt", "yuv420p", "-r", str(fps),
