@@ -1,0 +1,47 @@
+{
+  "name": "Hip-Hop Kit",
+  "description": "Boom bap drums, deep bass, and soulful melodies for classic hip-hop production.",
+  "bpm_range": [
+    80,
+    100
+  ],
+  "genre_tags": [
+    "hip-hop",
+    "boom-bap",
+    "rap"
+  ],
+  "samples": {
+    "kick": {
+      "file": "kick.wav",
+      "type": "oneshot"
+    },
+    "snare": {
+      "file": "snare.wav",
+      "type": "oneshot"
+    },
+    "hihat": {
+      "file": "hihat.wav",
+      "type": "oneshot"
+    },
+    "openhat": {
+      "file": "openhat.wav",
+      "type": "oneshot"
+    },
+    "bass": {
+      "file": "bass.wav",
+      "type": "loop"
+    },
+    "melody": {
+      "file": "melody.wav",
+      "type": "loop"
+    },
+    "pad": {
+      "file": "pad.wav",
+      "type": "loop"
+    },
+    "fx": {
+      "file": "fx.wav",
+      "type": "oneshot"
+    }
+  }
+}

@@ -1,0 +1,70 @@
+{
+  "name": "Hip-Hop",
+  "bpm": 90,
+  "time_sig": "4/4",
+  "default_pack": "hip-hop-kit",
+  "structure": [
+    { "section": "intro",  "bars": 4  },
+    { "section": "verse",  "bars": 16 },
+    { "section": "chorus", "bars": 8  },
+    { "section": "verse",  "bars": 16 },
+    { "section": "chorus", "bars": 8  },
+    { "section": "outro",  "bars": 4  }
+  ],
+  "slots": {
+    "kick": {
+      "pattern":  [1,0,0,0,1,0,0,0],
+      "type":     "oneshot",
+      "velocity": 1.0,
+      "sections": ["intro","verse","chorus","outro"]
+    },
+    "snare": {
+      "pattern":  [0,0,1,0,0,0,1,0],
+      "type":     "oneshot",
+      "velocity": 0.9,
+      "sections": ["intro","verse","chorus","outro"]
+    },
+    "hihat": {
+      "pattern":  [1,1,1,1,1,1,1,1],
+      "type":     "oneshot",
+      "velocity": 0.7,
+      "sections": ["intro","verse","chorus","outro"]
+    },
+    "openhat": {
+      "pattern":  [0,0,0,0,0,0,0,1],
+      "type":     "oneshot",
+      "velocity": 0.8,
+      "sections": ["chorus"]
+    },
+    "bass": {
+      "pattern":  null,
+      "type":     "loop",
+      "velocity": 0.85,
+      "sections": ["verse","chorus"]
+    },
+    "melody": {
+      "pattern":  null,
+      "type":     "loop",
+      "velocity": 0.75,
+      "sections": ["verse","chorus"]
+    },
+    "pad": {
+      "pattern":  null,
+      "type":     "loop",
+      "velocity": 0.6,
+      "sections": ["chorus","outro"]
+    },
+    "fx": {
+      "pattern":  null,
+      "type":     "oneshot",
+      "trigger":  "section_start",
+      "velocity": 0.8,
+      "sections": ["chorus"]
+    }
+  },
+  "mix": {
+    "master_volume":  0.85,
+    "fade_in_bars":   2,
+    "fade_out_bars":  2
+  }
+}

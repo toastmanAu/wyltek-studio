@@ -1,0 +1,47 @@
+{
+  "name": "Electronic Kit",
+  "description": "Punchy drums, synth bass, and arpeggiated melodies for house and techno.",
+  "bpm_range": [
+    120,
+    140
+  ],
+  "genre_tags": [
+    "house",
+    "techno",
+    "electronic"
+  ],
+  "samples": {
+    "kick": {
+      "file": "kick.wav",
+      "type": "oneshot"
+    },
+    "snare": {
+      "file": "snare.wav",
+      "type": "oneshot"
+    },
+    "hihat": {
+      "file": "hihat.wav",
+      "type": "oneshot"
+    },
+    "openhat": {
+      "file": "openhat.wav",
+      "type": "oneshot"
+    },
+    "bass": {
+      "file": "bass.wav",
+      "type": "loop"
+    },
+    "melody": {
+      "file": "melody.wav",
+      "type": "loop"
+    },
+    "pad": {
+      "file": "pad.wav",
+      "type": "loop"
+    },
+    "fx": {
+      "file": "fx.wav",
+      "type": "oneshot"
+    }
+  }
+}

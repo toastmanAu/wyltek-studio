@@ -1,0 +1,10 @@
+{
+  "name": "User Pack",
+  "description": "Your personal sample collection. Drop WAV files here and update this file.",
+  "bpm_range": [
+    60,
+    200
+  ],
+  "genre_tags": [],
+  "samples": {}
+}

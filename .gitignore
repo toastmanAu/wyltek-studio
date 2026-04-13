@@ -9,7 +9,14 @@ node_modules/
 storage/
 outputs/
 uploads/
-data/
+# Exclude most of data/ but keep shipped assets
+data/*
+!data/templates/
+!data/sample-packs/
+data/sample-packs/*
+!data/sample-packs/*/
+data/sample-packs/*/*
+!data/sample-packs/*/pack.json
 
 # Engine binaries & models (downloaded, not committed)
 engines/
