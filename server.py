@@ -66,6 +66,7 @@ app = FastAPI(title="Wyltek Studio", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 app.mount("/outputs", StaticFiles(directory="outputs"), name="outputs")
 app.mount("/audio", StaticFiles(directory="outputs/audio"), name="audio")
+app.mount("/data/sample-packs", StaticFiles(directory="data/sample-packs"), name="sample-packs")
 
 
 @app.get("/")
@@ -106,6 +107,357 @@ async def video_page():
 @app.get("/studio/meme")
 async def meme_page():
     return FileResponse("static/studio/meme.html")
+
+
+@app.get("/studio/frames")
+async def frames_page():
+    return FileResponse("static/studio/frames.html")
+
+
+@app.get("/studio/image-tools")
+async def image_tools_page():
+    return FileResponse("static/studio/image-tools.html")
+
+
+@app.get("/studio/audio")
+async def audio_page():
+    return FileResponse("static/studio/audio.html")
+
+
+@app.get("/studio/beats")
+async def beats_page():
+    return FileResponse("static/studio/beats.html")
+
+
+@app.post("/api/audio/extract")
+async def api_audio_extract(
+    video: UploadFile = File(...),
+    format: str = Form("mp3"),
+    quality: str = Form("192k"),
+) -> JSONResponse:
+    """Extract audio track from an uploaded video file using ffmpeg."""
+    import storage as store
+
+    allowed_formats = {"mp3", "wav", "flac", "ogg"}
+    if format not in allowed_formats:
+        return JSONResponse({"error": f"Unsupported format: {format}"}, status_code=400)
+
+    suffix = Path(video.filename or "upload").suffix or ".mp4"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp_in:
+        tmp_in.write(await video.read())
+        tmp_in_path = Path(tmp_in.name)
+
+    out_stem = f"audio-{uuid.uuid4().hex[:8]}"
+    out_path = store.unsorted_dir() / f"{out_stem}.{format}"
+
+    # Build ffmpeg args as a list — no shell, no injection risk.
+    # format is validated against an allowlist above.
+    try:
+        cmd = ["ffmpeg", "-y", "-i", str(tmp_in_path)]
+        if format == "mp3":
+            cmd += ["-q:a", "0", "-b:a", quality]
+        elif format == "ogg":
+            cmd += ["-c:a", "libvorbis", "-b:a", quality]
+        elif format == "flac":
+            cmd += ["-c:a", "flac"]
+        # wav: default pcm_s16le, no extra codec flags needed
+        cmd += ["-vn", str(out_path)]
+
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+
+        if proc.returncode != 0:
+            return JSONResponse(
+                {"error": "ffmpeg failed", "detail": stderr.decode()[-500:]},
+                status_code=500,
+            )
+    finally:
+        tmp_in_path.unlink(missing_ok=True)
+
+    size_kb = out_path.stat().st_size // 1024
+    return JSONResponse({
+        "path": str(out_path),
+        "filename": out_path.name,
+        "format": format,
+        "size_kb": size_kb,
+    })
+
+
+@app.post("/api/audio/cut")
+async def api_audio_cut(
+    audio: UploadFile = File(...),
+    start: float = Form(0.0),
+    end: float = Form(...),
+) -> JSONResponse:
+    """Trim an audio file to the given start/end times (seconds) using ffmpeg."""
+    import storage as store
+
+    if end <= start:
+        return JSONResponse({"error": "end must be after start"}, status_code=400)
+    if start < 0:
+        return JSONResponse({"error": "start must be >= 0"}, status_code=400)
+
+    suffix = Path(audio.filename or "audio.mp3").suffix or ".mp3"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp_in:
+        tmp_in.write(await audio.read())
+        tmp_in_path = Path(tmp_in.name)
+
+    out_stem = f"cut-{uuid.uuid4().hex[:8]}"
+    out_path = store.unsorted_dir() / f"{out_stem}{suffix}"
+
+    # -ss before -i is fast stream seek; -t limits duration.
+    # -c copy avoids re-encode — instant cuts for mp3/wav/flac.
+    try:
+        duration = end - start
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-y",
+            "-ss", str(start),
+            "-t", str(duration),
+            "-i", str(tmp_in_path),
+            "-c", "copy",
+            str(out_path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+
+        if proc.returncode != 0:
+            return JSONResponse(
+                {"error": "ffmpeg failed", "detail": stderr.decode()[-500:]},
+                status_code=500,
+            )
+    finally:
+        tmp_in_path.unlink(missing_ok=True)
+
+    size_kb = out_path.stat().st_size // 1024
+    return JSONResponse({
+        "path": str(out_path),
+        "filename": out_path.name,
+        "duration": duration,
+        "size_kb": size_kb,
+    })
+
+
+@app.get("/api/audio/serve")
+async def api_audio_serve(path: str) -> FileResponse:
+    """Serve a processed audio file by absolute path, restricted to storage."""
+    p = Path(path).resolve()
+    try:
+        _assert_under_storage(p)
+    except PermissionError:
+        return JSONResponse({"error": "Access denied"}, status_code=403)
+    if not p.exists():
+        return JSONResponse({"error": "Not found"}, status_code=404)
+    return FileResponse(str(p))
+
+
+_REMBG_MODELS = {
+    "u2net", "u2netp", "u2net_human_seg",
+    "isnet-general-use", "birefnet-general", "silueta",
+}
+
+_REMBG_BIN = Path("/data/venvs/rembg/bin/rembg")
+
+
+def _assert_under_storage(p: Path) -> None:
+    import storage as store
+    if not str(p.resolve()).startswith(str(store.STORAGE_ROOT.resolve())):
+        raise PermissionError("Path outside storage root")
+
+
+@app.post("/api/frame/grab")
+async def api_frame_grab(request: Request):
+    """Save a base64-encoded PNG frame to unsorted storage and return the path."""
+    import storage as store
+
+    data = await request.json()
+    b64: str = data.get("image_b64", "")
+    timestamp: float = float(data.get("timestamp", 0.0))
+
+    if not b64:
+        return JSONResponse({"error": "No image data"}, status_code=400)
+
+    img_bytes = base64.b64decode(b64)
+    ts_str = f"{timestamp:.3f}".replace(".", "s")
+    filename = f"frame-{ts_str}-{uuid.uuid4().hex[:6]}.png"
+    out_path = store.unsorted_dir() / filename
+    out_path.write_bytes(img_bytes)
+
+    return JSONResponse({"path": str(out_path), "filename": filename})
+
+
+@app.get("/api/frame/serve")
+async def api_frame_serve(path: str):
+    """Serve a saved image by absolute path, restricted to the storage directory."""
+    p = Path(path).resolve()
+    try:
+        _assert_under_storage(p)
+    except PermissionError:
+        return JSONResponse({"error": "Access denied"}, status_code=403)
+    if not p.exists():
+        return JSONResponse({"error": "Not found"}, status_code=404)
+    return FileResponse(str(p))
+
+
+@app.post("/api/image/bg-remove")
+async def api_image_bg_remove(request: Request):
+    """Remove background from an image using rembg (local, no network)."""
+    import storage as store
+
+    if not _REMBG_BIN.exists():
+        return JSONResponse({"error": "rembg not installed at /data/venvs/rembg/"}, status_code=503)
+
+    data = await request.json()
+    model: str = data.get("model", "u2net")
+    alpha_matting: bool = bool(data.get("alpha_matting", False))
+
+    if model not in _REMBG_MODELS:
+        return JSONResponse({"error": f"Unknown model: {model}"}, status_code=400)
+
+    # Resolve input: server path or base64
+    tmp_path: Path | None = None
+    if "path" in data:
+        in_path = Path(data["path"]).resolve()
+        try:
+            _assert_under_storage(in_path)
+        except PermissionError:
+            return JSONResponse({"error": "Access denied"}, status_code=403)
+        if not in_path.exists():
+            return JSONResponse({"error": "Source file not found"}, status_code=404)
+    elif "image_b64" in data:
+        img_bytes = base64.b64decode(data["image_b64"])
+        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        tmp.write(img_bytes)
+        tmp.close()
+        tmp_path = Path(tmp.name)
+        in_path = tmp_path
+    else:
+        return JSONResponse({"error": "No image source provided"}, status_code=400)
+
+    out_filename = f"{in_path.stem}-nobg-{uuid.uuid4().hex[:6]}.png"
+    out_path = store.unsorted_dir() / out_filename
+
+    # Build command — using exec (not shell=True) so no injection risk
+    cmd = [str(_REMBG_BIN), "i", "-m", model]
+    if alpha_matting:
+        cmd.append("--alpha-matting")
+    cmd += [str(in_path), str(out_path)]
+
+    t0 = time.time()
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        elapsed_ms = int((time.time() - t0) * 1000)
+
+        # rembg exits 0 even on CUDA warnings; success = output file exists
+        if not out_path.exists():
+            lines = stderr.decode(errors="replace").strip().splitlines()
+            last = lines[-1] if lines else "rembg produced no output"
+            return JSONResponse({"error": last}, status_code=500)
+
+        result_url = f"/api/frame/serve?path={out_path}"
+        return JSONResponse({
+            "result_url": result_url,
+            "filename": out_filename,
+            "elapsed_ms": elapsed_ms,
+        })
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+    finally:
+        if tmp_path and tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+
+
+_SAM_MODEL_PATH = Path.home() / "ComfyUI/models/sams/sam_vit_l_0b3195.pth"
+_sam_predictor = None  # loaded lazily, kept in memory
+
+
+def _load_sam():
+    global _sam_predictor
+    if _sam_predictor is not None:
+        return _sam_predictor
+    import torch
+    from segment_anything import sam_model_registry, SamPredictor
+    sam = sam_model_registry["vit_l"](checkpoint=str(_SAM_MODEL_PATH))
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    sam.to(device=device)
+    _sam_predictor = SamPredictor(sam)
+    return _sam_predictor
+
+
+@app.post("/api/image/sam-segment")
+async def api_image_sam_segment(request: Request):
+    """Click-to-segment using SAM ViT-L. Returns a B&W mask PNG as base64."""
+    import io
+    import numpy as np
+
+    if not _SAM_MODEL_PATH.exists():
+        return JSONResponse({"error": "SAM model not found at ~/ComfyUI/models/sams/"}, status_code=503)
+
+    data = await request.json()
+    click_x: int = int(data.get("x", 0))
+    click_y: int = int(data.get("y", 0))
+
+    # Resolve image
+    tmp_path: Path | None = None
+    if "path" in data:
+        in_path = Path(data["path"]).resolve()
+        try:
+            _assert_under_storage(in_path)
+        except PermissionError:
+            return JSONResponse({"error": "Access denied"}, status_code=403)
+        if not in_path.exists():
+            return JSONResponse({"error": "File not found"}, status_code=404)
+    elif "image_b64" in data:
+        img_bytes = base64.b64decode(data["image_b64"])
+        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        tmp.write(img_bytes)
+        tmp.close()
+        tmp_path = Path(tmp.name)
+        in_path = tmp_path
+    else:
+        return JSONResponse({"error": "No image source"}, status_code=400)
+
+    try:
+        # Run SAM in a thread so we don't block the event loop
+        def _run_sam() -> str:
+            from PIL import Image as PILImage
+            img_pil = PILImage.open(in_path).convert("RGB")
+            img_np = np.array(img_pil)
+
+            predictor = _load_sam()
+            predictor.set_image(img_np)
+
+            masks, scores, _ = predictor.predict(
+                point_coords=np.array([[click_x, click_y]]),
+                point_labels=np.array([1]),
+                multimask_output=True,
+            )
+            # Pick the mask with the highest score
+            best_mask = masks[int(np.argmax(scores))]  # H×W bool
+
+            # Encode as grayscale PNG
+            mask_img = PILImage.fromarray((best_mask * 255).astype(np.uint8), mode="L")
+            buf = io.BytesIO()
+            mask_img.save(buf, format="PNG")
+            return base64.b64encode(buf.getvalue()).decode()
+
+        mask_b64 = await asyncio.get_event_loop().run_in_executor(None, _run_sam)
+        return JSONResponse({"mask_b64": mask_b64})
+
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+    finally:
+        if tmp_path and tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
 
 
 @app.get("/api/meme/templates")
@@ -441,46 +793,54 @@ async def _probe_comfyui(url: str) -> dict | None:
 
 
 @app.get("/api/gallery")
-async def get_gallery():
-    """Return list of generated images with metadata (cached)."""
+async def get_gallery(type: str = "image"):
+    """Return list of generated assets with metadata (cached).
+
+    Query param `type` filters by asset type: image (default), audio, or all.
+    """
+    cache_key = f"gallery_{type}"
     now = time.monotonic()
-    if _gallery_cache["items"] is not None and now - _gallery_cache["ts"] < GALLERY_TTL:
-        return _gallery_cache["items"]
+    if _gallery_cache.get(cache_key) is not None and now - _gallery_cache["ts"] < GALLERY_TTL:
+        return _gallery_cache[cache_key]
 
     import storage as store
     # Gallery pulls from unsorted (recent quick generations)
     # plus the old outputs/ dir for backwards compat during migration
     items = []
-    for item in store.list_unsorted(limit=50):
-        if item["type"] == "image":
-            items.append({
-                "filename": item["filename"],
-                "url": item["url"],
-                "created": item["created"],
-                "meta": item.get("meta", {}),
-            })
+    for item in store.list_unsorted(limit=100):
+        if type != "all" and item["type"] != type:
+            continue
+        items.append({
+            "filename": item["filename"],
+            "url": item["url"],
+            "type": item["type"],
+            "created": item["created"],
+            "meta": item.get("meta", {}),
+        })
 
-    # Also check legacy outputs/ dir
-    legacy_dir = Path(config["server"]["output_dir"])
-    if legacy_dir.exists():
-        for img in sorted(legacy_dir.glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True):
-            if any(i["filename"] == img.name for i in items):
-                continue
-            meta_path = img.with_suffix(".json")
-            meta = {}
-            if meta_path.exists():
-                with open(meta_path) as f:
-                    meta = json.load(f)
-            items.append({
-                "filename": img.name,
-                "url": f"/outputs/{img.name}",
-                "created": datetime.fromtimestamp(img.stat().st_mtime).isoformat(),
-                "meta": meta,
-            })
+    # Also check legacy outputs/ dir (images only)
+    if type in ("image", "all"):
+        legacy_dir = Path(config["server"]["output_dir"])
+        if legacy_dir.exists():
+            for img in sorted(legacy_dir.glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True):
+                if any(i["filename"] == img.name for i in items):
+                    continue
+                meta_path = img.with_suffix(".json")
+                meta = {}
+                if meta_path.exists():
+                    with open(meta_path) as f:
+                        meta = json.load(f)
+                items.append({
+                    "filename": img.name,
+                    "url": f"/outputs/{img.name}",
+                    "type": "image",
+                    "created": datetime.fromtimestamp(img.stat().st_mtime).isoformat(),
+                    "meta": meta,
+                })
 
     items.sort(key=lambda x: x["created"], reverse=True)
     result = items[:50]
-    _gallery_cache.update({"items": result, "ts": now})
+    _gallery_cache.update({cache_key: result, "ts": now})
     return result
 
 
@@ -998,15 +1358,22 @@ async def api_project_assets(project_id: str):
 
 @app.post("/api/projects/{project_id}/move")
 async def api_move_asset(project_id: str, request: Request):
-    """Move an asset into a project."""
+    """Move or copy an asset into a project."""
     import storage as store
     data = await request.json()
     filename = data.get("filename", "")
     if not filename:
         return JSONResponse({"error": "filename required"}, status_code=400)
-    if store.move_asset(filename, project_id):
-        return {"ok": True}
-    return JSONResponse({"error": "Asset not found"}, status_code=404)
+    copy = data.get("copy", False)
+    # Support batch: filename can be a list
+    filenames = filename if isinstance(filename, list) else [filename]
+    moved = 0
+    for fn in filenames:
+        if store.move_asset(fn, project_id, copy=copy):
+            moved += 1
+    if moved == 0:
+        return JSONResponse({"error": "No assets found"}, status_code=404)
+    return {"ok": True, "count": moved}
 
 
 @app.post("/api/projects/{project_id}/upload")
@@ -1226,6 +1593,129 @@ async def music_generate(request: Request):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+# --- Beat Builder API ---
+
+@app.get("/api/beats/packs")
+async def beats_list_packs():
+    from studio import sample_packs
+    return sample_packs.list_packs()
+
+
+@app.get("/api/beats/packs/{pack_id}/samples")
+async def beats_list_samples(pack_id: str):
+    from studio import sample_packs
+    return sample_packs.list_samples(pack_id)
+
+
+@app.get("/api/beats/templates")
+async def beats_list_templates():
+    from studio import beat_builder
+    return beat_builder.list_templates()
+
+
+@app.post("/api/beats/preview")
+async def beats_preview(request: Request):
+    from studio import beat_builder
+    import storage as store
+    data = await request.json()
+    template_id = data.get("template", "hip-hop")
+    overrides = data.get("overrides", {})
+    bpm = int(data.get("bpm", 0))
+    job_id = str(uuid.uuid4())[:8]
+    output_path = str(store.asset_path(job_id, "audio", ".wav"))
+    try:
+        result = beat_builder.build_track(
+            template_id, overrides, bpm=bpm,
+            output_path=output_path, preview_bars=8,
+        )
+        return {"url": f"/storage/{job_id}.wav", **result}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/beats/build")
+async def beats_build(request: Request):
+    from studio import beat_builder
+    import storage as store
+    data = await request.json()
+    template_id = data.get("template", "hip-hop")
+    overrides = data.get("overrides", {})
+    bpm = int(data.get("bpm", 0))
+    job_id = str(uuid.uuid4())[:8]
+    output_path = str(store.asset_path(job_id, "audio", ".wav"))
+    async def _do():
+        return beat_builder.build_track(
+            template_id, overrides, bpm=bpm, output_path=output_path,
+        )
+    try:
+        result = await job_queue.submit(_do(), lane="cpu", job_id=f"beat-{job_id}")
+        return {"job_id": job_id, "url": f"/storage/{job_id}.wav", **result}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/beats/enhance")
+async def beats_enhance(request: Request):
+    engine = _get_music_engine()
+    if not engine:
+        return JSONResponse({"error": "MusicGen not available"}, status_code=503)
+    import storage as store
+    data = await request.json()
+    source_url = data.get("track_url", "")
+    prompt = data.get("prompt", "").strip()
+    duration = min(float(data.get("duration", 30)), 30)
+    if not source_url:
+        return JSONResponse({"error": "track_url required"}, status_code=400)
+    if not prompt:
+        return JSONResponse({"error": "prompt required"}, status_code=400)
+    source_filename = source_url.split("/")[-1]
+    source_path = store.resolve_asset(source_filename)
+    if not source_path:
+        return JSONResponse({"error": "Source track not found"}, status_code=404)
+    job_id = str(uuid.uuid4())[:8]
+    output_path = str(store.asset_path(job_id, "audio", ".wav"))
+    async def _do():
+        import torch
+        import torchaudio
+        model = engine._get_model()
+        sr = model.sample_rate
+        wav, orig_sr = torchaudio.load(str(source_path))
+        if orig_sr != sr:
+            wav = torchaudio.functional.resample(wav, orig_sr, sr)
+        max_samples = int(duration * sr)
+        wav = wav[:, :max_samples]
+        model.set_generation_params(duration=duration)
+        with torch.no_grad():
+            result = model.generate_with_chroma(
+                descriptions=[prompt],
+                melody_wavs=wav.unsqueeze(0),
+                melody_sample_rate=sr,
+            )
+        audio = result[0].cpu()
+        torchaudio.save(output_path, audio, sr)
+        return {
+            "duration": round(audio.shape[-1] / sr, 2),
+            "file_size": os.path.getsize(output_path),
+        }
+    try:
+        result = await job_queue.submit(_do(), lane="cpu", job_id=f"enhance-{job_id}")
+        return {"job_id": job_id, "url": f"/storage/{job_id}.wav", **result}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/beats/upload-sample")
+async def beats_upload_sample(
+    file: UploadFile = File(...),
+    slot: str = Form("kick"),
+):
+    from studio import sample_packs
+    content = await file.read()
+    filename = file.filename or f"{slot}.wav"
+    result = sample_packs.save_user_sample(content, filename, slot)
+    return result
+
+
 # --- Video Generation API ---
 
 @app.get("/api/video/status")
@@ -1302,10 +1792,19 @@ async def api_video_generate(request: Request):
     if model != "animatediff":
         return JSONResponse({"error": f"{model} not yet supported"}, status_code=501)
 
-    # Check AnimateDiff model + ComfyUI available (GPU check via ComfyUI, not local torch)
+    # Check AnimateDiff motion model is installed (any of the supported variants)
     ad_dir = Path("/data/ComfyUI/models/animatediff_models")
-    if not ((ad_dir / "mm_sd_v15_v2.ckpt").exists() or (ad_dir / "v3_sd15_mm.ckpt").exists()):
-        return JSONResponse({"error": "AnimateDiff motion model not installed"}, status_code=503)
+    motion_model = data.get("motion_model", "mm_sd_v15_v2.ckpt")
+    supported_motion = {
+        "mm_sd_v15_v2.ckpt",
+        "v3_sd15_mm.ckpt",
+        "animatediff_lightning_4step_comfyui.safetensors",
+        "animatediff_lightning_8step_comfyui.safetensors",
+    }
+    if motion_model not in supported_motion:
+        return JSONResponse({"error": f"Unsupported motion_model: {motion_model}"}, status_code=400)
+    if not (ad_dir / motion_model).exists():
+        return JSONResponse({"error": f"Motion model {motion_model} not installed"}, status_code=503)
 
     job_id = str(uuid.uuid4())[:8]
     output_path = str(store.asset_path(job_id, "video", ".mp4"))
@@ -1337,6 +1836,7 @@ async def api_video_generate(request: Request):
                 "cfg": data.get("cfg", 7.0),
                 "seed": data.get("seed", -1),
                 "fps": data.get("fps", 8),
+                "motion_model": motion_model,
             }, output_path, on_progress)
 
             jobs[job_id].update({
@@ -1358,10 +1858,39 @@ async def api_video_generate(request: Request):
 
 # --- TTS API ---
 
+async def _normalise_to_wav(src: Path, dst: Path) -> tuple[bool, str]:
+    """Convert any audio/video file to mono 22050 Hz 16-bit PCM WAV.
+
+    Returns (success, stderr_tail). Uses the same subprocess pattern as
+    api_audio_extract — argument list only, no shell interpretation.
+    """
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(src),
+        "-vn",
+        "-ac", "1",
+        "-ar", "22050",
+        "-sample_fmt", "s16",
+        "-f", "wav",
+        str(dst),
+    ]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    return proc.returncode == 0, stderr.decode(errors="ignore")[-500:]
+
+
 @app.post("/api/tts/clone-voice")
 async def upload_clone_voice(voice_name: str = Form(...),
                              audio: UploadFile = File(...)):
-    """Upload a WAV reference for XTTS voice cloning."""
+    """Upload an audio reference for XTTS voice cloning.
+
+    Accepts any common format (WAV, MP3, M4A, OGG, FLAC, WebM, etc.) and
+    normalises to mono 22050 Hz 16-bit PCM WAV — XTTS v2's preferred input.
+    """
     voices_dir = Path(__file__).parent / "engines" / "xtts_voices"
     voices_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1372,11 +1901,44 @@ async def upload_clone_voice(voice_name: str = Form(...),
     if not safe_name:
         return JSONResponse({"error": "Invalid voice name"}, status_code=400)
 
-    dest = voices_dir / f"{safe_name}.wav"
-    async with aiofiles.open(dest, "wb") as f:
-        await f.write(await audio.read())
+    # Keep the original extension on the temp file so ffmpeg can auto-detect format
+    src_suffix = Path(audio.filename or "upload").suffix or ".bin"
+    with tempfile.NamedTemporaryFile(suffix=src_suffix, delete=False) as tmp_in:
+        tmp_in.write(await audio.read())
+        tmp_in_path = Path(tmp_in.name)
 
-    return {"ok": True, "voice_id": f"clone_{safe_name}", "name": voice_name}
+    dest = voices_dir / f"{safe_name}.wav"
+
+    try:
+        ok, detail = await _normalise_to_wav(tmp_in_path, dest)
+        if not ok:
+            dest.unlink(missing_ok=True)
+            return JSONResponse(
+                {"error": "Audio conversion failed", "detail": detail},
+                status_code=400,
+            )
+    finally:
+        tmp_in_path.unlink(missing_ok=True)
+
+    # Report rough duration so the UI can flag clips that are too short
+    import wave
+    duration = 0.0
+    try:
+        with wave.open(str(dest), "rb") as wf:
+            frames = wf.getnframes()
+            rate = wf.getframerate()
+            if rate:
+                duration = round(frames / rate, 2)
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "voice_id": f"clone_{safe_name}",
+        "name": voice_name,
+        "duration": duration,
+        "size_kb": dest.stat().st_size // 1024,
+    }
 
 
 @app.get("/api/tts/engines")

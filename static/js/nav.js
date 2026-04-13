@@ -8,6 +8,10 @@
     { href: '/studio/music', icon: '&#127925;', label: 'Music Studio', id: 'music' },
     { href: '/studio/video', icon: '&#127909;', label: 'Video Studio', id: 'video' },
     { href: '/studio/meme',    icon: '&#128514;', label: 'Meme Forge',   id: 'meme' },
+    { href: '/studio/frames',  icon: '&#127916;', label: 'Frame Cutter', id: 'frames' },
+    { href: '/studio/image-tools', icon: '&#9986;', label: 'Image Tools', id: 'image-tools' },
+    { href: '/studio/audio', icon: '&#127911;', label: 'Audio Tools', id: 'audio' },
+    { href: '/studio/beats', icon: '&#127928;', label: 'Beat Builder', id: 'beats' },
     { section: 'Manage' },
     { href: '/files',      icon: '&#128194;', label: 'Files',      id: 'files' },
     { section: 'Produce' },
@@ -20,8 +24,12 @@
   const path = window.location.pathname;
   let activeId = 'generate';
   if (path.startsWith('/studio/meme')) activeId = 'meme';
+  else if (path.startsWith('/studio/frames')) activeId = 'frames';
+  else if (path.startsWith('/studio/image-tools')) activeId = 'image-tools';
   else if (path.startsWith('/studio/video')) activeId = 'video';
   else if (path.startsWith('/studio/music')) activeId = 'music';
+  else if (path.startsWith('/studio/beats')) activeId = 'beats';
+  else if (path.startsWith('/studio/audio')) activeId = 'audio';
   else if (path.startsWith('/studio/tts')) activeId = 'tts';
   else if (path.startsWith('/projects')) activeId = 'projects';
   else if (path.startsWith('/files')) activeId = 'files';
