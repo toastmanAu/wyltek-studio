@@ -1,0 +1,921 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Wyltek Studio — Beat Builder</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="stylesheet" href="/static/css/nav.css">
+  <script src="/static/js/nav.js"></script>
+  <script src="/static/js/project-picker.js"></script>
+  <style>
+    .beats-page {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 32px 24px;
+    }
+    .beats-page h2 { margin-bottom: 4px; }
+    .beats-subtitle {
+      color: var(--text-dim);
+      font-size: 13px;
+      margin-bottom: 28px;
+    }
+
+    /* Section headings */
+    .section-label {
+      font-size: 11px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      margin-bottom: 10px;
+    }
+
+    /* Template cards */
+    .template-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 10px;
+      margin-bottom: 28px;
+    }
+    .template-card {
+      padding: 14px 16px;
+      background: var(--surface);
+      border: 2px solid var(--border);
+      border-radius: var(--radius);
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .template-card:hover { border-color: var(--accent-hover); }
+    .template-card.selected {
+      border-color: var(--accent);
+      background: var(--accent-dim);
+    }
+    .template-card-name {
+      font-weight: 600;
+      font-size: 14px;
+      margin-bottom: 4px;
+    }
+    .template-card-bpm {
+      font-size: 12px;
+      color: var(--text-dim);
+    }
+
+    /* Slot grid */
+    .slot-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 10px;
+      margin-bottom: 28px;
+    }
+    .slot-card {
+      padding: 14px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+    .slot-card-name {
+      font-weight: 600;
+      font-size: 13px;
+      margin-bottom: 2px;
+    }
+    .slot-card-source {
+      font-size: 11px;
+      color: var(--text-dim);
+      margin-bottom: 10px;
+      min-height: 14px;
+    }
+    .slot-actions {
+      display: flex;
+      gap: 6px;
+    }
+    .btn-slot {
+      flex: 1;
+      padding: 6px 0;
+      font-size: 12px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      color: var(--text);
+      transition: border-color 0.15s, color 0.15s;
+    }
+    .btn-slot:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* Structure visualizer */
+    .structure-bar {
+      display: flex;
+      height: 36px;
+      border-radius: var(--radius-sm);
+      overflow: hidden;
+      margin-bottom: 28px;
+      border: 1px solid var(--border);
+    }
+    .structure-section {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 600;
+      color: rgba(255,255,255,0.85);
+      letter-spacing: 0.04em;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      padding: 0 4px;
+    }
+
+    /* BPM control */
+    .bpm-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+    .bpm-row label {
+      font-size: 11px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+    }
+    .bpm-row input[type="number"] {
+      width: 80px;
+      padding: 8px 10px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      font-size: 14px;
+    }
+    .bpm-row input[type="number"]:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+
+    /* Action buttons */
+    .action-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 20px;
+    }
+    .btn-primary {
+      padding: 10px 22px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: var(--radius-sm);
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-secondary {
+      padding: 10px 22px;
+      background: var(--surface-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      font-size: 14px;
+      cursor: pointer;
+      transition: border-color 0.15s;
+    }
+    .btn-secondary:hover { border-color: var(--accent); }
+    .btn-secondary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* Enhance area */
+    .enhance-area {
+      display: none;
+      margin-bottom: 20px;
+      padding: 16px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+    .enhance-area.visible { display: block; }
+    .enhance-area textarea {
+      width: 100%;
+      min-height: 70px;
+      padding: 10px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      font-size: 13px;
+      resize: vertical;
+      margin-bottom: 10px;
+      box-sizing: border-box;
+    }
+    .enhance-area textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+
+    /* Result area */
+    .result-area {
+      display: none;
+      margin-bottom: 24px;
+      padding: 16px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+    .result-area.visible { display: block; }
+    .result-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+    .result-header strong { font-size: 14px; }
+    .result-area audio { width: 100%; margin-bottom: 10px; }
+    .result-meta {
+      display: flex;
+      gap: 16px;
+      font-size: 12px;
+      color: var(--text-dim);
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+    }
+    .btn-send {
+      padding: 5px 14px;
+      font-size: 12px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      background: var(--surface-2);
+      color: var(--accent);
+      border: 1px solid var(--accent);
+    }
+    .btn-send:hover { background: var(--accent-dim); }
+
+    /* Swap Modal */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.6);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+    }
+    .modal-overlay.visible { display: flex; }
+    .modal-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      width: min(560px, 94vw);
+      max-height: 80vh;
+      display: flex;
+      flex-direction: column;
+    }
+    .modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+    }
+    .modal-header h3 { margin: 0; font-size: 16px; }
+    .btn-modal-close {
+      background: none;
+      border: none;
+      color: var(--text-dim);
+      font-size: 20px;
+      cursor: pointer;
+      line-height: 1;
+      padding: 0 4px;
+    }
+    .btn-modal-close:hover { color: var(--text); }
+    .modal-body {
+      padding: 16px 20px;
+      overflow-y: auto;
+      flex: 1;
+    }
+    .pack-section {
+      margin-bottom: 18px;
+    }
+    .pack-section-name {
+      font-weight: 600;
+      font-size: 13px;
+      margin-bottom: 6px;
+    }
+    .sample-option {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 10px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: background 0.1s;
+    }
+    .sample-option:hover { background: var(--surface-2); }
+    .sample-option.selected { background: var(--accent-dim); }
+    .sample-option-name { font-size: 13px; flex: 1; }
+    .btn-audition {
+      padding: 3px 10px;
+      font-size: 11px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      color: var(--text-dim);
+      cursor: pointer;
+    }
+    .btn-audition:hover { border-color: var(--accent); color: var(--accent); }
+    .upload-section {
+      margin-top: 12px;
+      padding-top: 14px;
+      border-top: 1px solid var(--border);
+    }
+    .upload-section-label {
+      font-size: 12px;
+      color: var(--text-dim);
+      display: block;
+      margin-bottom: 8px;
+    }
+    .upload-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .upload-row input[type="file"] {
+      font-size: 12px;
+      color: var(--text-dim);
+      flex: 1 1 180px;
+    }
+
+    /* Spinner */
+    .spinner {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Toast */
+    .saved-msg {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%) translateY(16px);
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 10px 20px;
+      border-radius: var(--radius);
+      font-size: 13px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s, transform 0.2s;
+      z-index: 9999;
+    }
+    .saved-msg.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+
+    @media (max-width: 640px) {
+      .beats-page { padding: 16px 12px; }
+      .template-grid { grid-template-columns: repeat(2, 1fr); }
+      .slot-grid { grid-template-columns: repeat(2, 1fr); }
+      .action-row { flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <div class="beats-page">
+    <h2>Beat Builder</h2>
+    <p class="beats-subtitle">Assemble genre-based beats from sample packs, preview and build full tracks.</p>
+
+    <!-- Genre templates -->
+    <div class="section-label">Genre Template</div>
+    <div class="template-grid" id="template-grid">
+      <div style="color:var(--text-dim);font-size:13px">Loading templates...</div>
+    </div>
+
+    <!-- Sample slots -->
+    <div class="section-label">Sample Slots</div>
+    <div class="slot-grid" id="slot-grid">
+      <div style="color:var(--text-dim);font-size:13px">Select a template to see slots.</div>
+    </div>
+
+    <!-- Structure visualizer -->
+    <div class="section-label">Arrangement Structure</div>
+    <div class="structure-bar" id="structure-bar">
+      <div class="structure-section" style="flex:1;background:var(--surface-2);color:var(--text-dim)">No template selected</div>
+    </div>
+
+    <!-- BPM control -->
+    <div class="bpm-row">
+      <label for="bpm-input">BPM</label>
+      <input type="number" id="bpm-input" min="40" max="300" value="120">
+    </div>
+
+    <!-- Action buttons -->
+    <div class="action-row">
+      <button class="btn-primary" id="btn-preview">Preview (8 bars)</button>
+      <button class="btn-primary" id="btn-build">Build Full Track</button>
+      <button class="btn-secondary" id="btn-enhance-toggle">AI Enhance</button>
+    </div>
+
+    <!-- Enhance area -->
+    <div class="enhance-area" id="enhance-area">
+      <div class="section-label" style="margin-bottom:8px">AI Enhancement Prompt</div>
+      <textarea id="enhance-prompt" placeholder="Describe changes — e.g. add reverb, make it more aggressive, lo-fi filter..."></textarea>
+      <button class="btn-primary" id="btn-enhance-go">Generate AI Version</button>
+    </div>
+
+    <!-- Result area -->
+    <div class="result-area" id="result-area">
+      <div class="result-header">
+        <strong id="result-title">Result</strong>
+        <button class="btn-send" id="btn-send">Send to Project</button>
+      </div>
+      <audio id="result-audio" controls></audio>
+      <div class="result-meta" id="result-meta"></div>
+    </div>
+  </div>
+
+  <!-- Swap Modal -->
+  <div class="modal-overlay" id="swap-modal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3 id="modal-title">Swap Sample</h3>
+        <button class="btn-modal-close" id="btn-modal-close">&#x2715;</button>
+      </div>
+      <div class="modal-body" id="modal-body">
+        <!-- Filled dynamically via DOM methods -->
+      </div>
+    </div>
+  </div>
+
+  <div class="saved-msg" id="toast-msg"></div>
+
+  <script>
+    // ── State ──────────────────────────────────────────────────────────────────
+    let templates = [];
+    let packs = [];
+    let selectedTemplate = null;
+    let slotOverrides = {};
+    let currentAudioUrl = null;
+    let previewPlayer = null;
+    let swapSlot = null;
+
+    const SLOTS = ['kick', 'snare', 'hihat', 'openhat', 'bass', 'melody', 'pad', 'fx'];
+
+    const SECTION_COLORS = {
+      intro:  '#6366f1',
+      verse:  '#8b5cf6',
+      chorus: '#ec4899',
+      outro:  'rgba(99,102,241,0.7)',
+    };
+
+    // ── Helpers ────────────────────────────────────────────────────────────────
+    function clearChildren(el) {
+      while (el.firstChild) el.removeChild(el.firstChild);
+    }
+
+    function makeEl(tag, opts) {
+      const el = document.createElement(tag);
+      if (opts) {
+        if (opts.className) el.className = opts.className;
+        if (opts.textContent !== undefined) el.textContent = opts.textContent;
+        if (opts.style) Object.assign(el.style, opts.style);
+        if (opts.title) el.title = opts.title;
+      }
+      return el;
+    }
+
+    // ── Toast ──────────────────────────────────────────────────────────────────
+    function toast(msg) {
+      const el = document.getElementById('toast-msg');
+      el.textContent = msg;
+      el.classList.add('show');
+      setTimeout(() => el.classList.remove('show'), 3000);
+    }
+
+    // ── Init ───────────────────────────────────────────────────────────────────
+    async function init() {
+      try {
+        const [tRes, pRes] = await Promise.all([
+          fetch('/api/beats/templates'),
+          fetch('/api/beats/packs'),
+        ]);
+        templates = await tRes.json();
+        packs = await pRes.json();
+      } catch (e) {
+        toast('Failed to load data: ' + e.message);
+        templates = [];
+        packs = [];
+      }
+      renderTemplates();
+    }
+
+    // ── Templates ──────────────────────────────────────────────────────────────
+    function renderTemplates() {
+      const grid = document.getElementById('template-grid');
+      clearChildren(grid);
+
+      if (templates.length === 0) {
+        grid.appendChild(makeEl('div', {
+          textContent: 'No templates available.',
+          style: { color: 'var(--text-dim)', fontSize: '13px' },
+        }));
+        return;
+      }
+
+      templates.forEach(tpl => {
+        const card = makeEl('div', { className: 'template-card' });
+        if (selectedTemplate === tpl.id) card.classList.add('selected');
+
+        card.appendChild(makeEl('div', { className: 'template-card-name', textContent: tpl.name }));
+        card.appendChild(makeEl('div', { className: 'template-card-bpm', textContent: tpl.bpm + ' BPM' }));
+        card.addEventListener('click', () => selectTemplate(tpl.id));
+        grid.appendChild(card);
+      });
+    }
+
+    function selectTemplate(id) {
+      selectedTemplate = id;
+      slotOverrides = {};
+      const tpl = templates.find(t => t.id === id);
+      if (tpl) {
+        document.getElementById('bpm-input').value = tpl.bpm;
+      }
+      renderTemplates();
+      renderSlots();
+      renderStructure();
+    }
+
+    // ── Slots ──────────────────────────────────────────────────────────────────
+    function getSlotSource(slot) {
+      if (slotOverrides[slot]) return slotOverrides[slot];
+      const tpl = templates.find(t => t.id === selectedTemplate);
+      if (!tpl || !tpl.slots) return null;
+      return tpl.slots[slot] || null;
+    }
+
+    function getSlotPackName(slot) {
+      const src = getSlotSource(slot);
+      if (!src || !src.pack) return '';
+      const pack = packs.find(p => p.id === src.pack);
+      return pack ? pack.name : src.pack;
+    }
+
+    function renderSlots() {
+      const grid = document.getElementById('slot-grid');
+      clearChildren(grid);
+
+      if (!selectedTemplate) {
+        grid.appendChild(makeEl('div', {
+          textContent: 'Select a template to see slots.',
+          style: { color: 'var(--text-dim)', fontSize: '13px' },
+        }));
+        return;
+      }
+
+      SLOTS.forEach(slot => {
+        const card = makeEl('div', { className: 'slot-card' });
+
+        const label = slot.charAt(0).toUpperCase() + slot.slice(1);
+        card.appendChild(makeEl('div', { className: 'slot-card-name', textContent: label }));
+        card.appendChild(makeEl('div', {
+          className: 'slot-card-source',
+          textContent: getSlotPackName(slot) || 'No sample',
+        }));
+
+        const actions = makeEl('div', { className: 'slot-actions' });
+
+        const btnPlay = makeEl('button', { className: 'btn-slot', textContent: 'Play' });
+        btnPlay.addEventListener('click', () => auditionSlot(slot));
+
+        const btnSwap = makeEl('button', { className: 'btn-slot', textContent: 'Swap' });
+        btnSwap.addEventListener('click', () => openSwapModal(slot));
+
+        actions.appendChild(btnPlay);
+        actions.appendChild(btnSwap);
+        card.appendChild(actions);
+        grid.appendChild(card);
+      });
+    }
+
+    function auditionSlot(slot) {
+      const src = getSlotSource(slot);
+      if (!src || !src.file) {
+        toast('No sample assigned to ' + slot);
+        return;
+      }
+      if (previewPlayer) previewPlayer.pause();
+      const packId = src.pack || '';
+      previewPlayer = new Audio('/data/sample-packs/' + packId + '/' + src.file);
+      previewPlayer.play().catch(() => toast('Could not play sample'));
+    }
+
+    // ── Structure ──────────────────────────────────────────────────────────────
+    function renderStructure() {
+      const bar = document.getElementById('structure-bar');
+      clearChildren(bar);
+
+      const tpl = templates.find(t => t.id === selectedTemplate);
+      if (!tpl || !tpl.structure || tpl.structure.length === 0) {
+        const empty = makeEl('div', {
+          className: 'structure-section',
+          textContent: 'No structure',
+          style: { flex: '1', background: 'var(--surface-2)', color: 'var(--text-dim)' },
+        });
+        bar.appendChild(empty);
+        return;
+      }
+
+      const total = tpl.structure.reduce((sum, s) => sum + (s.bars || 1), 0);
+
+      tpl.structure.forEach(section => {
+        const bars = section.bars || 1;
+        const part = makeEl('div', {
+          className: 'structure-section',
+          textContent: section.type,
+          title: section.type + ' (' + bars + ' bars)',
+          style: {
+            flex: String(bars / total),
+            background: SECTION_COLORS[section.type] || '#555',
+          },
+        });
+        bar.appendChild(part);
+      });
+    }
+
+    // ── Build / Preview ────────────────────────────────────────────────────────
+    function buildPayload() {
+      const overrides = Object.keys(slotOverrides).length ? slotOverrides : undefined;
+      return {
+        template: selectedTemplate,
+        overrides: overrides,
+        bpm: parseInt(document.getElementById('bpm-input').value, 10),
+      };
+    }
+
+    async function doBuild(mode) {
+      if (!selectedTemplate) {
+        toast('Select a genre template first');
+        return;
+      }
+
+      const isPreview = mode === 'preview';
+      const btn = document.getElementById(isPreview ? 'btn-preview' : 'btn-build');
+      const origText = btn.textContent;
+      btn.disabled = true;
+
+      const spinner = makeEl('span', { className: 'spinner' });
+      clearChildren(btn);
+      btn.appendChild(spinner);
+      btn.appendChild(document.createTextNode(isPreview ? 'Previewing...' : 'Building...'));
+
+      const endpoint = isPreview ? '/api/beats/preview' : '/api/beats/build';
+
+      try {
+        const resp = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(buildPayload()),
+        });
+        const data = await resp.json();
+        if (data.error) throw new Error(data.error);
+
+        currentAudioUrl = data.url;
+        showResult(data, isPreview ? 'Preview' : 'Full Track');
+        toast(isPreview ? 'Preview ready!' : 'Track built!');
+      } catch (e) {
+        toast('Build failed: ' + e.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = origText;
+      }
+    }
+
+    function showResult(data, label) {
+      const area = document.getElementById('result-area');
+      area.classList.add('visible');
+
+      document.getElementById('result-title').textContent = label;
+
+      const audio = document.getElementById('result-audio');
+      audio.src = data.url + '?t=' + Date.now();
+      audio.dataset.filename = data.url.split('/').pop();
+      audio.play().catch(() => {});
+
+      const meta = document.getElementById('result-meta');
+      clearChildren(meta);
+
+      const fields = [
+        ['Duration', data.duration ? data.duration + 's' : '--'],
+        ['BPM', data.bpm ? String(data.bpm) : '--'],
+        ['Size', data.file_size ? (data.file_size / 1024).toFixed(0) + ' KB' : '--'],
+        ['Template', data.template || '--'],
+      ];
+      fields.forEach(([k, v]) => {
+        meta.appendChild(makeEl('span', { textContent: k + ': ' + v }));
+      });
+    }
+
+    // ── AI Enhance ─────────────────────────────────────────────────────────────
+    function toggleEnhance() {
+      document.getElementById('enhance-area').classList.toggle('visible');
+    }
+
+    async function doEnhance() {
+      if (!currentAudioUrl) {
+        toast('Build or preview a track first');
+        return;
+      }
+      const prompt = document.getElementById('enhance-prompt').value.trim();
+      if (!prompt) {
+        toast('Enter a style prompt for the AI');
+        return;
+      }
+
+      const btn = document.getElementById('btn-enhance-go');
+      const origText = btn.textContent;
+      btn.disabled = true;
+
+      const spinner = makeEl('span', { className: 'spinner' });
+      clearChildren(btn);
+      btn.appendChild(spinner);
+      btn.appendChild(document.createTextNode('Enhancing...'));
+
+      try {
+        const resp = await fetch('/api/beats/enhance', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            track_url: currentAudioUrl,
+            prompt: prompt,
+            duration: null,
+          }),
+        });
+        const data = await resp.json();
+        if (data.error) throw new Error(data.error);
+
+        currentAudioUrl = data.url;
+        showResult(data, 'AI Enhanced Track');
+        toast('AI enhancement complete!');
+      } catch (e) {
+        toast('Enhance failed: ' + e.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = origText;
+      }
+    }
+
+    // ── Send to Project ────────────────────────────────────────────────────────
+    function sendToProject() {
+      const audio = document.getElementById('result-audio');
+      const filename = audio.dataset.filename;
+      if (!filename) { toast('No track to send'); return; }
+      ProjectPicker.init(toast);
+      ProjectPicker.show(filename);
+    }
+
+    // ── Swap Modal ─────────────────────────────────────────────────────────────
+    function openSwapModal(slot) {
+      swapSlot = slot;
+      const label = slot.charAt(0).toUpperCase() + slot.slice(1);
+      document.getElementById('modal-title').textContent = 'Swap ' + label + ' Sample';
+
+      const body = document.getElementById('modal-body');
+      clearChildren(body);
+
+      const hasPacks = packs.some(p => p.samples && p.samples[slot]);
+      if (!hasPacks) {
+        body.appendChild(makeEl('p', {
+          textContent: 'No packs have a sample for this slot yet. Upload one below.',
+          style: { color: 'var(--text-dim)', fontSize: '13px' },
+        }));
+      }
+
+      packs.forEach(pack => {
+        if (!pack.samples || !pack.samples[slot]) return;
+
+        const section = makeEl('div', { className: 'pack-section' });
+        section.appendChild(makeEl('div', { className: 'pack-section-name', textContent: pack.name }));
+
+        const sampleInfo = pack.samples[slot];
+        const currentSrc = getSlotSource(slot);
+        const isSelected = currentSrc && (
+          slotOverrides[slot]
+            ? slotOverrides[slot].pack === pack.id
+            : currentSrc.pack === pack.id
+        );
+
+        const option = makeEl('div', { className: 'sample-option' + (isSelected ? ' selected' : '') });
+
+        const nameSpan = makeEl('span', {
+          className: 'sample-option-name',
+          textContent: sampleInfo.file || slot,
+        });
+
+        const btnAud = makeEl('button', { className: 'btn-audition', textContent: 'Listen' });
+        btnAud.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (previewPlayer) previewPlayer.pause();
+          previewPlayer = new Audio('/data/sample-packs/' + pack.id + '/' + sampleInfo.file);
+          previewPlayer.play().catch(() => toast('Could not play sample'));
+        });
+
+        option.appendChild(nameSpan);
+        option.appendChild(btnAud);
+        option.addEventListener('click', () => {
+          slotOverrides[slot] = { pack: pack.id, file: sampleInfo.file, type: sampleInfo.type };
+          closeSwapModal();
+          renderSlots();
+          toast(label + ' updated to ' + pack.name);
+        });
+
+        section.appendChild(option);
+        body.appendChild(section);
+      });
+
+      // Upload own section
+      const uploadSection = makeEl('div', { className: 'upload-section' });
+      uploadSection.appendChild(makeEl('span', {
+        className: 'upload-section-label',
+        textContent: 'Upload your own sample for this slot',
+      }));
+
+      const uploadRow = makeEl('div', { className: 'upload-row' });
+
+      const fileInput = document.createElement('input');
+      fileInput.type = 'file';
+      fileInput.accept = 'audio/*,.wav,.mp3,.aiff,.flac,.ogg';
+
+      const uploadBtn = makeEl('button', { className: 'btn-secondary', textContent: 'Upload' });
+      uploadBtn.style.fontSize = '12px';
+      uploadBtn.style.padding = '6px 14px';
+      uploadBtn.addEventListener('click', () => uploadSample(slot, fileInput, uploadBtn));
+
+      uploadRow.appendChild(fileInput);
+      uploadRow.appendChild(uploadBtn);
+      uploadSection.appendChild(uploadRow);
+      body.appendChild(uploadSection);
+
+      document.getElementById('swap-modal').classList.add('visible');
+    }
+
+    function closeSwapModal() {
+      document.getElementById('swap-modal').classList.remove('visible');
+      swapSlot = null;
+    }
+
+    async function uploadSample(slot, fileInput, btn) {
+      const file = fileInput.files[0];
+      if (!file) { toast('Choose a file first'); return; }
+
+      btn.disabled = true;
+      btn.textContent = 'Uploading...';
+
+      try {
+        const fd = new FormData();
+        fd.append('file', file);
+        fd.append('slot', slot);
+
+        const resp = await fetch('/api/beats/upload-sample', { method: 'POST', body: fd });
+        const data = await resp.json();
+        if (data.error) throw new Error(data.error);
+
+        const pRes = await fetch('/api/beats/packs');
+        packs = await pRes.json();
+
+        slotOverrides[slot] = { pack: data.pack_id, file: data.file, type: data.type };
+        closeSwapModal();
+        renderSlots();
+        toast('Sample uploaded and applied!');
+      } catch (e) {
+        toast('Upload failed: ' + e.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Upload';
+      }
+    }
+
+    // ── Event wiring ───────────────────────────────────────────────────────────
+    document.getElementById('btn-preview').addEventListener('click', () => doBuild('preview'));
+    document.getElementById('btn-build').addEventListener('click', () => doBuild('build'));
+    document.getElementById('btn-enhance-toggle').addEventListener('click', toggleEnhance);
+    document.getElementById('btn-enhance-go').addEventListener('click', doEnhance);
+    document.getElementById('btn-send').addEventListener('click', sendToProject);
+    document.getElementById('btn-modal-close').addEventListener('click', closeSwapModal);
+    document.getElementById('swap-modal').addEventListener('click', (e) => {
+      if (e.target === e.currentTarget) closeSwapModal();
+    });
+
+    // ── Boot ───────────────────────────────────────────────────────────────────
+    init();
+  </script>
+</body>
+</html>
