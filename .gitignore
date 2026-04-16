@@ -21,3 +21,6 @@ data/sample-packs/*/*
 
 # Engine binaries & models (downloaded, not committed)
 engines/
+
+# Git worktrees
+.worktrees/
