@@ -5,8 +5,8 @@ import os
 import wave
 from pathlib import Path
 
-# Kokoro must run on CPU to avoid GPU contention with ComfyUI
-os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
+# TTS engines use device="cpu" explicitly in their model init.
+# Do NOT set CUDA_VISIBLE_DEVICES — it poisons GPU access for MusicGen.
 
 VOICES = [
     {"id": "af_heart", "name": "Heart", "language": "en-US", "gender": "female"},

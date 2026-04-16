@@ -4,8 +4,8 @@ import asyncio
 import os
 from pathlib import Path
 
-# Force CPU
-os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
+# TTS engines use device="cpu" explicitly in their model init.
+# Do NOT set CUDA_VISIBLE_DEVICES — it poisons GPU access for MusicGen.
 
 # Bark speaker presets
 VOICES = [

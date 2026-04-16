@@ -1519,6 +1519,7 @@ async def api_list_unsorted():
     return store.list_unsorted(limit=100)
 
 
+@app.head("/storage/{filename:path}")
 @app.get("/storage/{filename:path}")
 async def serve_storage_file(filename: str):
     """Serve any file from storage by filename (searches projects + unsorted)."""
@@ -1547,6 +1548,42 @@ def _get_music_engine():
     return _music_engine
 
 
+COMFYUI_URL = "http://localhost:8188"
+
+
+async def _free_comfyui():
+    """Ask ComfyUI to unload models and free VRAM."""
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            await client.post(
+                f"{COMFYUI_URL}/free",
+                json={"unload_models": True, "free_memory": True},
+            )
+    except Exception:
+        pass  # ComfyUI might not be running
+
+
+@app.post("/api/gpu/claim-music")
+async def gpu_claim_music():
+    """Free ComfyUI VRAM and load MusicGen to GPU."""
+    await _free_comfyui()
+    engine = _get_music_engine()
+    if not engine:
+        return JSONResponse({"error": "MusicGen not available"}, status_code=503)
+    engine.preload()
+    device = getattr(engine, "_device", "unknown")
+    return {"ok": True, "device": device}
+
+
+@app.post("/api/gpu/release-music")
+async def gpu_release_music():
+    """Unload MusicGen from GPU so other apps can use VRAM."""
+    engine = _get_music_engine()
+    if engine:
+        engine._unload_model()
+    return {"ok": True}
+
+
 @app.get("/api/music/status")
 async def music_status():
     """Check if music generation is available."""
@@ -1558,7 +1595,7 @@ async def music_status():
 
 @app.post("/api/music/generate")
 async def music_generate(request: Request):
-    """Generate music from a text prompt."""
+    """Generate music from a text prompt. Returns immediately with job_id; poll /api/job/{id}."""
     engine = _get_music_engine()
     if not engine:
         return JSONResponse({"error": "Music generation not available"}, status_code=503)
@@ -1577,20 +1614,25 @@ async def music_generate(request: Request):
     import storage as store
     output_path = str(store.asset_path(job_id, "audio", ".wav"))
 
-    async def _do():
-        return await engine.generate(prompt, output_path, duration,
-                                     model_id or None, mode=mode)
+    jobs[job_id] = {"status": "queued", "progress": 0, "type": "music"}
 
-    try:
-        meta = await job_queue.submit(_do(), lane="cpu", job_id=f"music-{job_id}")
-        return {
-            "job_id": job_id,
-            "url": f"/storage/{job_id}.wav",
-            "prompt": prompt,
-            **meta,
-        }
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+    async def _do():
+        try:
+            jobs[job_id]["status"] = "running"
+            meta = await engine.generate(prompt, output_path, duration,
+                                         model_id or None, mode=mode)
+            jobs[job_id].update({
+                "status": "complete", "progress": 100,
+                "url": f"/storage/{job_id}.wav",
+                "prompt": prompt,
+                **meta,
+            })
+        except Exception as e:
+            jobs[job_id].update({"status": "error", "error": str(e)})
+
+    asyncio.create_task(_do())
+
+    return {"job_id": job_id, "status": "queued"}
 
 
 # --- Beat Builder API ---
@@ -1677,7 +1719,7 @@ async def beats_enhance(request: Request):
     async def _do():
         import torch
         import torchaudio
-        model = engine._get_model()
+        model = engine._get_model("facebook/musicgen-melody")
         sr = model.sample_rate
         wav, orig_sr = torchaudio.load(str(source_path))
         if orig_sr != sr:
@@ -2226,6 +2268,9 @@ def _backend_type(name: str) -> str:
 
 
 if __name__ == "__main__":
+    import sys
     load_config()
+    # --dev flag enables hot-reload (breaks CUDA — use only for frontend work)
+    use_reload = "--dev" in sys.argv
     uvicorn.run("server:app", host=config["server"]["host"],
-                port=config["server"]["port"], reload=True)
+                port=config["server"]["port"], reload=use_reload)

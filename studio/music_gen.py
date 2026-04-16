@@ -4,9 +4,6 @@ import asyncio
 import os
 from pathlib import Path
 
-# Force CPU to avoid GPU contention with ComfyUI
-os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
-
 
 class MusicGenEngine:
     name = "musicgen"
@@ -44,13 +41,48 @@ class MusicGenEngine:
     def modes(self) -> list[dict]:
         return [dict(m) for m in self.MODES]
 
+    def preload(self, model_id: str = None):
+        """Load model on the main thread so CUDA context is initialized.
+
+        Call this once at startup — worker threads will then reuse the
+        model and its CUDA context without needing to re-init.
+        """
+        return self._get_model(model_id)
+
     def _get_model(self, model_id: str = None):
         model_id = model_id or self.default_model
         if self._model is None or self._model_id != model_id:
+            import torch
             from audiocraft.models import MusicGen
-            self._model = MusicGen.get_pretrained(model_id)
+            device = "cpu"
+            if torch.cuda.is_available():
+                free_vram = torch.cuda.mem_get_info()[0] / 1024**2
+                mid = model_id or ""
+                if "melody" in mid:
+                    needed = 6000
+                elif "medium" in mid:
+                    needed = 4000
+                else:
+                    needed = 1500
+                if free_vram > needed:
+                    device = "cuda"
+                else:
+                    print(f"[MusicGen] Only {free_vram:.0f}MB free VRAM, need {needed}MB — using CPU")
+            print(f"[MusicGen] Loading {model_id} on {device}")
+            self._model = MusicGen.get_pretrained(model_id, device=device)
             self._model_id = model_id
+            self._device = device
         return self._model
+
+    def _unload_model(self):
+        """Free GPU VRAM after generation so ComfyUI can use it."""
+        if self._model is not None:
+            import torch
+            del self._model
+            self._model = None
+            self._model_id = None
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     async def generate(self, prompt: str, output_path: str,
                        duration: float = 15.0, model_id: str = None,
@@ -63,19 +95,45 @@ class MusicGenEngine:
             import numpy as np
             import soundfile as sf
 
-            model = self._get_model(model_id)
+            try:
+                model = self._get_model(model_id)
+            except torch.cuda.OutOfMemoryError:
+                # GPU OOM on load — fall back to CPU
+                print("[MusicGen] GPU OOM on load, falling back to CPU")
+                self._unload_model()
+                from audiocraft.models import MusicGen
+                self._model = MusicGen.get_pretrained(model_id or self.default_model, device="cpu")
+                self._model_id = model_id or self.default_model
+                self._device = "cpu"
+                model = self._model
+            except Exception as e:
+                raise RuntimeError(f"Failed to load MusicGen model: {e}")
+
             sample_rate = model.sample_rate
 
-            if mode == "single" or duration <= self.CHUNK_DURATION:
-                return self._generate_single(model, prompt, output_path,
-                                             min(duration, self.CHUNK_DURATION), sample_rate)
-            elif mode == "continuation":
-                return self._generate_continuation(model, prompt, output_path,
-                                                   duration, sample_rate)
-            elif mode == "loop":
-                return self._generate_loop(model, prompt, output_path,
-                                           duration, sample_rate)
-            else:
+            try:
+                if mode == "single" or duration <= self.CHUNK_DURATION:
+                    return self._generate_single(model, prompt, output_path,
+                                                 min(duration, self.CHUNK_DURATION), sample_rate)
+                elif mode == "continuation":
+                    return self._generate_continuation(model, prompt, output_path,
+                                                       duration, sample_rate)
+                elif mode == "loop":
+                    return self._generate_loop(model, prompt, output_path,
+                                               duration, sample_rate)
+                else:
+                    return self._generate_single(model, prompt, output_path,
+                                                 min(duration, self.CHUNK_DURATION), sample_rate)
+            except torch.cuda.OutOfMemoryError:
+                # GPU OOM during generation — reload on CPU and retry
+                print("[MusicGen] GPU OOM during generation, retrying on CPU")
+                self._unload_model()
+                from audiocraft.models import MusicGen
+                self._model = MusicGen.get_pretrained(model_id or self.default_model, device="cpu")
+                self._model_id = model_id or self.default_model
+                self._device = "cpu"
+                model = self._model
+                sample_rate = model.sample_rate
                 return self._generate_single(model, prompt, output_path,
                                              min(duration, self.CHUNK_DURATION), sample_rate)
 
@@ -95,58 +153,81 @@ class MusicGenEngine:
         return self._make_result(audio, sample_rate, output_path, "single")
 
     def _generate_continuation(self, model, prompt, output_path, duration, sample_rate):
-        """Chain segments — each chunk seeds from the tail of the previous."""
+        """Chain segments — each chunk seeds from the tail of the previous.
+
+        Memory-efficient: only keeps the seed tensor on GPU (3s of audio),
+        accumulates output as a single numpy buffer on CPU.
+        """
         import torch
         import numpy as np
         import soundfile as sf
 
-        chunks = []
-        remaining = duration
-        prev_wav = None
+        overlap_samples = int(self.OVERLAP * sample_rate)
+        max_samples = int(duration * sample_rate)
 
-        while remaining > 0:
+        # Pre-allocate output buffer
+        result = np.zeros(max_samples, dtype=np.float32)
+        write_pos = 0
+        remaining = duration
+        seed_tensor = None  # small GPU tensor — only OVERLAP seconds
+        chunk_num = 0
+
+        while remaining > 0 and write_pos < max_samples:
             chunk_dur = min(self.CHUNK_DURATION, remaining)
             model.set_generation_params(duration=chunk_dur)
+            chunk_num += 1
+            print(f"[MusicGen] Continuation chunk {chunk_num}, {chunk_dur:.0f}s, {remaining:.0f}s remaining")
 
             with torch.no_grad():
-                if prev_wav is None:
+                if seed_tensor is None:
                     wav = model.generate([prompt])
                 else:
-                    # Use last OVERLAP seconds as conditioning for next chunk
-                    seed_samples = int(self.OVERLAP * sample_rate)
-                    seed = prev_wav[:, -seed_samples:].unsqueeze(0)
                     wav = model.generate_continuation(
-                        seed, sample_rate, [prompt]
+                        seed_tensor, sample_rate, [prompt]
                     )
 
-            prev_wav = wav[0]
+            # Extract seed for next chunk (small slice, stays on GPU)
+            seed_tensor = wav[0, :, -int(self.OVERLAP * sample_rate):].unsqueeze(0)
+
+            # Move audio to CPU numpy immediately, free GPU tensor
             audio_chunk = self._wav_to_numpy(wav[0])
+            del wav
+            torch.cuda.empty_cache()
 
-            if chunks:
-                # Crossfade: merge tail of previous with head of new
-                overlap_samples = int(self.OVERLAP * sample_rate)
-                overlap_samples = min(overlap_samples, len(chunks[-1]), len(audio_chunk))
-                fade_out = np.linspace(1, 0, overlap_samples)
-                fade_in = np.linspace(0, 1, overlap_samples)
-                # Trim overlap from previous chunk's tail, blend, then append rest of new chunk
-                prev_tail = chunks[-1][-overlap_samples:] * fade_out
-                new_head = audio_chunk[:overlap_samples] * fade_in
-                mixed = prev_tail + new_head
-                chunks[-1] = chunks[-1][:-overlap_samples]  # trim tail
-                chunks.append(mixed)
-                chunks.append(audio_chunk[overlap_samples:])  # rest of new chunk
+            if write_pos == 0:
+                # First chunk — write directly
+                n = min(len(audio_chunk), max_samples)
+                result[:n] = audio_chunk[:n]
+                write_pos = n
             else:
-                chunks.append(audio_chunk)
+                # Crossfade with existing tail
+                xfade_len = min(overlap_samples, write_pos, len(audio_chunk))
+                fade_out = np.linspace(1, 0, xfade_len, dtype=np.float32)
+                fade_in = np.linspace(0, 1, xfade_len, dtype=np.float32)
 
+                # Blend overlap region in-place
+                xfade_start = write_pos - xfade_len
+                result[xfade_start:write_pos] *= fade_out
+                result[xfade_start:write_pos] += audio_chunk[:xfade_len] * fade_in
+
+                # Append remainder
+                new_audio = audio_chunk[xfade_len:]
+                n = min(len(new_audio), max_samples - write_pos)
+                result[write_pos:write_pos + n] = new_audio[:n]
+                write_pos += n
+
+            del audio_chunk
             remaining -= chunk_dur
 
-        full_audio = np.concatenate(chunks) if len(chunks) > 1 else chunks[0]
-        # Trim to exact requested duration
-        max_samples = int(duration * sample_rate)
-        full_audio = full_audio[:max_samples]
+        # Trim to actual written length
+        result = result[:write_pos]
 
-        sf.write(output_path, full_audio, sample_rate)
-        return self._make_result(full_audio, sample_rate, output_path, "continuation")
+        # Clean up seed tensor
+        del seed_tensor
+        torch.cuda.empty_cache()
+
+        sf.write(output_path, result, sample_rate)
+        return self._make_result(result, sample_rate, output_path, "continuation")
 
     def _generate_loop(self, model, prompt, output_path, duration, sample_rate):
         """Generate a seamless loop — crossfade end back into beginning."""
@@ -162,6 +243,8 @@ class MusicGenEngine:
             wav = model.generate([prompt])
 
         base_audio = self._wav_to_numpy(wav[0])
+        del wav
+        torch.cuda.empty_cache()
 
         # Create seamless loop by crossfading tail into head
         fade_samples = int(self.OVERLAP * sample_rate)

@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="/static/css/style.css">
   <link rel="stylesheet" href="/static/css/nav.css">
   <script src="/static/js/nav.js"></script>
+  <script src="/static/js/project-picker.js"></script>
   <style>
     .music-page { max-width: 800px; margin: 0 auto; padding: 32px 24px; }
     .music-page h2 { margin-bottom: 4px; }
@@ -153,7 +154,10 @@
         </div>
 
         <div class="result" id="result">
-          <strong>Generated Track</strong>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+            <strong>Generated Track</strong>
+            <button id="btn-send-music" style="padding:4px 12px;font-size:11px;border-radius:6px;cursor:pointer;background:var(--surface-2);color:var(--accent);border:1px solid var(--accent);display:none" onclick="sendMusicToProject()">Send to Project</button>
+          </div>
           <audio id="result-audio" controls></audio>
           <div class="result-meta" id="result-meta"></div>
         </div>
@@ -202,6 +206,18 @@
         modeSelect.appendChild(opt);
       });
       updateModeInfo();
+
+      // Claim GPU — unload ComfyUI, load MusicGen to CUDA
+      toast('Loading MusicGen to GPU...');
+      try {
+        const claim = await fetch('/api/gpu/claim-music', { method: 'POST' });
+        const result = await claim.json();
+        if (result.ok) {
+          toast('MusicGen ready on ' + (result.device || 'GPU'));
+        }
+      } catch (e) {
+        toast('GPU claim failed — will use CPU');
+      }
     }
 
     function updateModeInfo() {
@@ -239,9 +255,7 @@
       btn.disabled = true;
       const dur = parseInt(document.getElementById('music-duration').value);
       const mode = document.getElementById('music-mode').value;
-      let timeEst = dur <= 30 ? '30-90 seconds' : `${Math.ceil(dur / 30)}-${Math.ceil(dur / 30) * 2} minutes`;
-      document.getElementById('gen-msg').textContent =
-        `Generating ${dur}s ${mode} track... Estimated: ${timeEst} on CPU.`;
+      document.getElementById('gen-msg').textContent = 'Submitting...';
       document.getElementById('generating').style.display = 'block';
       document.getElementById('result').classList.remove('active');
 
@@ -252,34 +266,86 @@
           body: JSON.stringify({
             prompt,
             model: document.getElementById('music-model').value,
-            mode: document.getElementById('music-mode').value,
-            duration: parseInt(document.getElementById('music-duration').value),
+            mode: mode,
+            duration: dur,
           }),
         });
         const data = await resp.json();
         if (data.error) throw new Error(data.error);
 
-        document.getElementById('result').classList.add('active');
-        const audio = document.getElementById('result-audio');
-        audio.src = data.url + '?t=' + Date.now();
-        audio.play();
-
-        document.getElementById('result-meta').innerHTML = `
-          <span>Duration: ${data.duration}s</span>
-          <span>Model: ${data.model.split('/').pop()}</span>
-          <span>Size: ${(data.file_size / 1024).toFixed(0)} KB</span>
-        `;
-        toast('Track generated!');
+        // Poll for completion
+        pollMusicJob(data.job_id);
       } catch (e) {
         toast('Generation failed: ' + e.message);
-      } finally {
         btn.disabled = false;
         document.getElementById('generating').style.display = 'none';
       }
     }
 
+    function pollMusicJob(jobId) {
+      let elapsed = 0;
+      const poll = setInterval(async () => {
+        elapsed += 2;
+        try {
+          const resp = await fetch('/api/job/' + jobId);
+          const data = await resp.json();
+
+          if (data.status === 'running' || data.status === 'queued') {
+            document.getElementById('gen-msg').textContent =
+              data.status === 'queued' ? 'Queued...' : 'Generating... (' + elapsed + 's)';
+          } else if (data.status === 'complete') {
+            clearInterval(poll);
+            document.getElementById('result').classList.add('active');
+            const audio = document.getElementById('result-audio');
+            audio.src = data.url + '?t=' + Date.now();
+            audio.dataset.filename = data.url.split('/').pop();
+            audio.play().catch(function() {});
+
+            document.getElementById('btn-send-music').style.display = 'inline-block';
+
+            const meta = document.getElementById('result-meta');
+            meta.textContent = '';
+            var items = [
+              'Duration: ' + (data.duration || '?') + 's',
+              'Model: ' + ((data.model || '').split('/').pop() || '?'),
+              'Size: ' + ((data.file_size || 0) / 1024).toFixed(0) + ' KB',
+            ];
+            items.forEach(function(text) {
+              var span = document.createElement('span');
+              span.textContent = text;
+              meta.appendChild(span);
+            });
+
+            toast('Track generated!');
+            document.getElementById('btn-gen').disabled = false;
+            document.getElementById('generating').style.display = 'none';
+          } else if (data.status === 'error') {
+            clearInterval(poll);
+            toast('Generation failed: ' + (data.error || 'unknown error'));
+            document.getElementById('btn-gen').disabled = false;
+            document.getElementById('generating').style.display = 'none';
+          }
+        } catch (e) {
+          // Network blip — keep polling, don't give up
+        }
+      }, 2000);
+    }
+
+    function sendMusicToProject() {
+      const audio = document.getElementById('result-audio');
+      const filename = audio.dataset.filename;
+      if (!filename) { toast('Generate a track first'); return; }
+      ProjectPicker.init(toast);
+      ProjectPicker.show(filename);
+    }
+
     document.getElementById('music-prompt').addEventListener('keydown', (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') generateMusic();
+    });
+
+    // Release GPU when leaving the page so ComfyUI can reclaim VRAM
+    window.addEventListener('beforeunload', () => {
+      navigator.sendBeacon('/api/gpu/release-music');
     });
 
     init();

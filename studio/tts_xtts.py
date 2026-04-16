@@ -4,20 +4,87 @@ import asyncio
 import os
 from pathlib import Path
 
-# Force CPU
-os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
+# TTS engines use device="cpu" explicitly in their model init.
+# Do NOT set CUDA_VISIBLE_DEVICES — it poisons GPU access for MusicGen.
+
+# Coqui TTS prompts for CPML (non-commercial) licence acceptance on first load.
+# Server has no stdin, so the interactive input() call raises EOFError.
+# Setting this env var before the TTS.api import auto-accepts the non-commercial
+# licence. NOTE: CPML forbids commercial use — see https://coqui.ai/cpml
+os.environ.setdefault("COQUI_TOS_AGREED", "1")
+
+# Compatibility shim for transformers 5.x
+#
+# coqui-tts 0.27.5 declares `transformers>=4.57` but its code still imports
+# `isin_mps_friendly` from `transformers.pytorch_utils`, a helper that was
+# present in the 4.x line and removed in the 5.x rewrite. We're pinned to
+# transformers 5.x system-wide (unsloth / Bark / Kokoro / MusicGen all use it),
+# so downgrading is not an option. Instead we reinject the missing symbol as
+# a thin wrapper over torch.isin. On CPU (which XTTS is forced onto) the MPS
+# branch is never hit, so the wrapper is behaviourally identical to the 4.x
+# original. If coqui-tts 0.28+ drops the import, this shim becomes a no-op.
+try:
+    import transformers.pytorch_utils as _tpu
+    if not hasattr(_tpu, "isin_mps_friendly"):
+        import torch as _torch
+
+        def _isin_mps_friendly(elements, test_elements):
+            # transformers 4.x implementation: torch.isin crashes on MPS for
+            # some dtypes, so they fall back to broadcasting. We don't use MPS
+            # here, but we keep the branch for parity.
+            if elements.device.type == "mps":
+                return (elements.unsqueeze(-1) == test_elements).any(dim=-1)
+            return _torch.isin(elements, test_elements)
+
+        _tpu.isin_mps_friendly = _isin_mps_friendly
+except ImportError:
+    # transformers not yet importable — the real import inside coqui-tts will
+    # fail with a clearer error downstream.
+    pass
 
 VOICES_DIR = Path(__file__).parent.parent / "engines" / "xtts_voices"
 
-# Built-in speaker presets from XTTS
-BUILTIN_VOICES = [
-    {"id": "xtts_female_1", "name": "XTTS Female 1", "language": "en", "gender": "female"},
-    {"id": "xtts_male_1", "name": "XTTS Male 1", "language": "en", "gender": "male"},
-]
+# XTTS v2 ships 58 built-in speakers. Their embeddings live in speakers_xtts.pth
+# inside the Coqui model cache. We read the speaker names at voices() time
+# without loading the full model, so startup stays cheap.
+_XTTS_SPEAKERS_PTH = (
+    Path.home()
+    / ".local" / "share" / "tts"
+    / "tts_models--multilingual--multi-dataset--xtts_v2"
+    / "speakers_xtts.pth"
+)
+
+# Cache the speaker list — reading the pth is cheap but not free, and voices()
+# is called on every /api/tts/engines request.
+_builtin_speakers_cache: list[str] | None = None
+
+
+def _load_builtin_speakers() -> list[str]:
+    """Return the list of XTTS v2 built-in speaker names, or [] if unavailable.
+
+    The speakers pth only exists after the model has been downloaded at least
+    once (happens on first generate() call). If missing, we return an empty
+    list — the UI will fall back to clones only.
+    """
+    global _builtin_speakers_cache
+    if _builtin_speakers_cache is not None:
+        return _builtin_speakers_cache
+    if not _XTTS_SPEAKERS_PTH.exists():
+        return []
+    try:
+        import torch
+        data = torch.load(str(_XTTS_SPEAKERS_PTH), weights_only=False, map_location="cpu")
+        if isinstance(data, dict):
+            _builtin_speakers_cache = sorted(data.keys())
+            return _builtin_speakers_cache
+    except Exception:
+        pass
+    return []
 
 
 class XTTSEngine:
     name = "xtts"
+    supports_cloning = True
 
     def __init__(self, config: dict = None):
         self._tts = None
@@ -36,7 +103,16 @@ class XTTSEngine:
         return self._tts
 
     def voices(self) -> list[dict]:
-        result = list(BUILTIN_VOICES)
+        result = []
+
+        # Built-in speakers — 58 of them once the model has been downloaded
+        for speaker in _load_builtin_speakers():
+            result.append({
+                "id": speaker,
+                "name": speaker,
+                "language": "en",
+                "gender": "builtin",
+            })
 
         # Discover custom cloned voices (WAV files in xtts_voices/)
         VOICES_DIR.mkdir(parents=True, exist_ok=True)

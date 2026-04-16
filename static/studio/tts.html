@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="/static/css/style.css">
   <link rel="stylesheet" href="/static/css/nav.css">
   <script src="/static/js/nav.js"></script>
+  <script src="/static/js/project-picker.js"></script>
   <style>
     .studio-page {
       max-width: 900px;
@@ -219,6 +220,68 @@
       margin: 24px 0;
     }
 
+    /* Voice cloning upload */
+    .clone-section {
+      margin: 16px 0;
+      padding: 14px 16px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+    .clone-section h4 {
+      margin: 0 0 4px;
+      font-size: 14px;
+    }
+    .clone-section p.hint {
+      margin: 0 0 12px;
+      font-size: 12px;
+      color: var(--text-dim);
+    }
+    .clone-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .clone-row input[type="text"] {
+      flex: 1 1 180px;
+      padding: 8px 10px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-size: 13px;
+    }
+    .clone-row input[type="text"]:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    .clone-row input[type="file"] {
+      flex: 1 1 220px;
+      font-size: 12px;
+      color: var(--text-dim);
+    }
+    .btn-clone {
+      padding: 8px 16px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .btn-clone:hover { background: var(--accent-hover); }
+    .btn-clone:disabled { opacity: 0.5; cursor: not-allowed; }
+    .clone-status {
+      margin-top: 10px;
+      font-size: 12px;
+      color: var(--text-dim);
+      min-height: 14px;
+    }
+    .clone-status.error { color: #ff6b6b; }
+    .clone-status.success { color: var(--accent); }
+
     @media (max-width: 768px) {
       .studio-page { padding: 16px 12px; }
       .control-group select, .control-group input[type="range"] { min-width: 0; width: 100%; }
@@ -264,6 +327,23 @@
       </div>
     </div>
 
+    <!-- Voice cloning — shown only for engines that support it -->
+    <div class="clone-section" id="clone-section" style="display:none">
+      <h4>Clone a new voice</h4>
+      <p class="hint">
+        Upload any audio file (WAV, MP3, M4A, OGG, FLAC, or video). 6–20 seconds of
+        clean speech works best — no music, no background noise. The server
+        normalises the audio to mono 22050 Hz WAV automatically. Zero-shot — no training.
+      </p>
+      <div class="clone-row">
+        <input type="text" id="clone-name" placeholder="Voice name (e.g. phill)" maxlength="32">
+        <input type="file" id="clone-file"
+               accept="audio/*,video/*,.wav,.mp3,.m4a,.ogg,.flac,.webm,.mp4">
+        <button class="btn-clone" id="btn-clone-upload">Upload & Clone</button>
+      </div>
+      <div class="clone-status" id="clone-status"></div>
+    </div>
+
     <!-- Actions -->
     <div class="tts-actions">
       <button class="btn-speak" id="btn-speak">Generate Speech</button>
@@ -272,7 +352,10 @@
 
     <!-- Single result -->
     <div class="tts-result" id="tts-result">
-      <strong>Result</strong>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+        <strong>Result</strong>
+        <button class="btn-outline" id="btn-send-tts" style="padding:4px 12px;font-size:11px;border-radius:6px;cursor:pointer;background:var(--surface-2);color:var(--accent);border:1px solid var(--accent);display:none" onclick="sendTtsToProject()">Send to Project</button>
+      </div>
       <audio id="tts-audio" controls></audio>
       <div class="tts-meta" id="tts-meta"></div>
     </div>
@@ -296,6 +379,15 @@
       el.textContent = msg;
       el.classList.add('show');
       setTimeout(() => el.classList.remove('show'), 3000);
+    }
+
+    // --- Send to Project ---
+    function sendTtsToProject() {
+      const audio = document.getElementById('tts-audio');
+      const filename = audio.dataset.filename;
+      if (!filename) { toast('Generate audio first'); return; }
+      ProjectPicker.init(toast);
+      ProjectPicker.show(filename);
     }
 
     // --- Init ---
@@ -323,6 +415,7 @@
       });
 
       updateVoices();
+      updateCloneSection();
       updateCharCount();
     }
 
@@ -344,6 +437,85 @@
     function updateCharCount() {
       document.getElementById('char-count').textContent =
         document.getElementById('tts-text').value.length;
+    }
+
+    function updateCloneSection() {
+      const engineName = document.getElementById('tts-engine').value;
+      const engine = engines.find(e => e.name === engineName);
+      const section = document.getElementById('clone-section');
+      section.style.display = engine && engine.supports_cloning ? 'block' : 'none';
+    }
+
+    async function refreshEngines() {
+      const resp = await fetch('/api/tts/engines');
+      engines = await resp.json();
+      updateVoices();
+    }
+
+    async function uploadClone() {
+      const name = document.getElementById('clone-name').value.trim();
+      const fileInput = document.getElementById('clone-file');
+      const file = fileInput.files[0];
+      const statusEl = document.getElementById('clone-status');
+      statusEl.className = 'clone-status';
+      statusEl.textContent = '';
+
+      if (!name) {
+        statusEl.className = 'clone-status error';
+        statusEl.textContent = 'Enter a voice name first.';
+        return;
+      }
+      if (!file) {
+        statusEl.className = 'clone-status error';
+        statusEl.textContent = 'Choose a WAV file to upload.';
+        return;
+      }
+
+      const btn = document.getElementById('btn-clone-upload');
+      btn.disabled = true;
+      btn.textContent = 'Uploading...';
+      statusEl.textContent = 'Uploading reference audio...';
+
+      try {
+        const fd = new FormData();
+        fd.append('voice_name', name);
+        fd.append('audio', file);
+        const resp = await fetch('/api/tts/clone-voice', { method: 'POST', body: fd });
+        const data = await resp.json();
+        if (!resp.ok || data.error) {
+          throw new Error(data.error || `Upload failed (${resp.status})`);
+        }
+
+        await refreshEngines();
+
+        // Auto-select the new clone in the voice dropdown
+        const voiceSelect = document.getElementById('tts-voice');
+        const newId = data.voice_id;
+        let found = false;
+        for (const opt of voiceSelect.options) {
+          if (opt.value === newId) {
+            voiceSelect.value = newId;
+            found = true;
+            break;
+          }
+        }
+
+        const dur = data.duration ? ` (${data.duration}s)` : '';
+        const tooShort = data.duration && data.duration < 5;
+        statusEl.className = 'clone-status ' + (tooShort ? 'error' : 'success');
+        const shortWarn = tooShort ? ' — clip is short, cloning quality may suffer.' : '';
+        statusEl.textContent = (found
+          ? `Cloned "${data.name}"${dur} — selected as current voice.${shortWarn} Hit Generate Speech to try it.`
+          : `Cloned "${data.name}"${dur}. Pick "${newId}" from the Voice dropdown.${shortWarn}`);
+        document.getElementById('clone-name').value = '';
+        fileInput.value = '';
+      } catch (e) {
+        statusEl.className = 'clone-status error';
+        statusEl.textContent = 'Upload failed: ' + e.message;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Upload & Clone';
+      }
     }
 
     // --- Generate single ---
@@ -373,7 +545,11 @@
         result.classList.add('active');
         const audio = document.getElementById('tts-audio');
         audio.src = data.url + '?t=' + Date.now();
+        audio.dataset.filename = data.url.split('/').pop();
         audio.play();
+
+        const sendBtn = document.getElementById('btn-send-tts');
+        sendBtn.style.display = 'inline-block';
 
         document.getElementById('tts-meta').innerHTML = `
           <span>Duration: ${data.duration}s</span>
@@ -463,7 +639,11 @@
     }
 
     // --- Events ---
-    document.getElementById('tts-engine').addEventListener('change', updateVoices);
+    document.getElementById('tts-engine').addEventListener('change', () => {
+      updateVoices();
+      updateCloneSection();
+    });
+    document.getElementById('btn-clone-upload').addEventListener('click', uploadClone);
     document.getElementById('tts-text').addEventListener('input', updateCharCount);
     document.getElementById('tts-speed').addEventListener('input', (e) => {
       document.getElementById('speed-val').textContent = parseFloat(e.target.value).toFixed(1) + 'x';

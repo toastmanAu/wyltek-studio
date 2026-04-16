@@ -8,6 +8,7 @@ _engines: dict[str, "TTSEngine"] = {}
 
 class TTSEngine(Protocol):
     name: str
+    supports_cloning: bool  # True if engine accepts reference WAVs via /api/tts/clone-voice
 
     def voices(self) -> list[dict]:
         """Return available voices: [{id, name, language, gender}]"""
@@ -34,6 +35,7 @@ def list_engines() -> list[dict]:
         result.append({
             "name": name,
             "voices": engine.voices(),
+            "supports_cloning": getattr(engine, "supports_cloning", False),
         })
     return result
 

@@ -181,9 +181,17 @@
           <option value="768x512">768x512 (3:2)</option>
         </select>
       </div>
+      <div id="motion-model-wrap">
+        <label>Motion Model</label>
+        <select id="motion-model">
+          <option value="mm_sd_v15_v2.ckpt" selected>AnimateDiff v15 v2 (20 steps, balanced)</option>
+          <option value="animatediff_lightning_4step_comfyui.safetensors">Lightning 4-step (fast, ~4× speedup)</option>
+          <option value="animatediff_lightning_8step_comfyui.safetensors">Lightning 8-step (faster, sharper)</option>
+        </select>
+      </div>
       <div>
         <label>Steps</label>
-        <input type="number" id="steps" min="10" max="40" value="20">
+        <input type="number" id="steps" min="4" max="40" value="20">
       </div>
       <div>
         <label>CFG</label>
@@ -251,6 +259,44 @@
 
     let selectedModel = null;
     let currentJobId = null;
+
+    // Lightning variants force steps + CFG server-side. Reflect that in the UI
+    // by locking the inputs and showing the forced values, so users aren't
+    // surprised when their 30-step / CFG 7 values get ignored.
+    const LIGHTNING_PRESETS = {
+      'animatediff_lightning_4step_comfyui.safetensors': { steps: 4, cfg: 1.0 },
+      'animatediff_lightning_8step_comfyui.safetensors': { steps: 8, cfg: 1.0 },
+    };
+    let _savedSteps = null, _savedCfg = null;
+
+    function onMotionModelChange() {
+      const mm = document.getElementById('motion-model').value;
+      const stepsEl = document.getElementById('steps');
+      const cfgEl = document.getElementById('cfg');
+      const preset = LIGHTNING_PRESETS[mm];
+
+      if (preset) {
+        // Save user values once on first lock so we can restore on switch-back.
+        if (!stepsEl.disabled) {
+          _savedSteps = stepsEl.value;
+          _savedCfg = cfgEl.value;
+        }
+        stepsEl.value = preset.steps;
+        cfgEl.value = preset.cfg;
+        stepsEl.disabled = true;
+        cfgEl.disabled = true;
+        stepsEl.title = 'Locked: Lightning variants require this exact step count';
+        cfgEl.title = 'Locked: Lightning variants require CFG 1.0';
+      } else if (stepsEl.disabled) {
+        // Switching back to a non-Lightning model — restore prior values.
+        stepsEl.disabled = false;
+        cfgEl.disabled = false;
+        if (_savedSteps !== null) stepsEl.value = _savedSteps;
+        if (_savedCfg !== null) cfgEl.value = _savedCfg;
+        stepsEl.title = '';
+        cfgEl.title = '';
+      }
+    }
 
     function toast(msg) {
       const el = document.getElementById('toast-msg');
@@ -329,6 +375,9 @@
           }
           selectedModel = m.id;
           renderModels();
+          // Motion model picker is AnimateDiff-only — hide for SVD/CogVideoX.
+          document.getElementById('motion-model-wrap').style.display =
+            (m.id === 'animatediff') ? '' : 'none';
         };
         container.appendChild(card);
       });
@@ -363,6 +412,7 @@
             cfg: parseFloat(document.getElementById('cfg').value),
             seed: parseInt(document.getElementById('seed').value),
             fps: parseInt(document.getElementById('fps').value),
+            motion_model: document.getElementById('motion-model').value,
           }),
         });
         const data = await resp.json();
@@ -484,6 +534,7 @@
       if (e.ctrlKey && e.key === 'Enter') generateVideo();
     });
 
+    document.getElementById('motion-model').addEventListener('change', onMotionModelChange);
     checkStatus();
     checkOpStatus();
   </script>
