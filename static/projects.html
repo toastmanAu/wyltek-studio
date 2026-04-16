@@ -221,11 +221,62 @@
     .quick-action .qa-label { font-size: 13px; font-weight: 600; }
     .quick-action .qa-desc { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
 
+    /* Gallery import modal */
+    .gallery-modal-overlay {
+      display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+      z-index: 1000; align-items: center; justify-content: center;
+    }
+    .gallery-modal-overlay.active { display: flex; }
+    .gallery-modal {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+      width: 90vw; max-width: 800px; max-height: 80vh; display: flex; flex-direction: column;
+    }
+    .gm-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 20px; border-bottom: 1px solid var(--border);
+    }
+    .gm-header h3 { margin: 0; font-size: 16px; }
+    .gm-close { background: none; border: none; color: var(--text-dim); font-size: 20px; cursor: pointer; }
+    .gm-close:hover { color: var(--text); }
+    .gm-body { padding: 16px 20px; overflow-y: auto; flex: 1; }
+    .gm-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+      gap: 8px;
+    }
+    .gm-item {
+      position: relative; border-radius: 8px; overflow: hidden; cursor: pointer;
+      border: 2px solid transparent; aspect-ratio: 1;
+    }
+    .gm-item:hover { border-color: var(--accent); }
+    .gm-item.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+    .gm-item img { width: 100%; height: 100%; object-fit: cover; }
+    .gm-check {
+      position: absolute; top: 4px; right: 4px; width: 22px; height: 22px;
+      border-radius: 50%; background: var(--accent); color: #fff;
+      display: none; align-items: center; justify-content: center;
+      font-size: 13px; font-weight: bold;
+    }
+    .gm-item.selected .gm-check { display: flex; }
+    .gm-footer {
+      padding: 12px 20px; border-top: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .gm-count { font-size: 13px; color: var(--text-dim); }
+    .gm-import-btn {
+      padding: 8px 20px; font-size: 13px; font-weight: 600;
+      background: var(--accent); color: #fff; border: none;
+      border-radius: 6px; cursor: pointer;
+    }
+    .gm-import-btn:hover { background: var(--accent-hover); }
+    .gm-import-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .gm-empty { text-align: center; padding: 40px; color: var(--text-dim); font-size: 13px; }
+
     @media (max-width: 768px) {
       .proj-page { padding: 12px; }
       .proj-grid { grid-template-columns: 1fr !important; }
       .quick-actions { grid-template-columns: 1fr !important; }
       .asset-pool-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)) !important; }
+      .gm-grid { grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); }
     }
   </style>
 </head>
@@ -276,10 +327,10 @@
           <div class="qa-label">Upload Files</div>
           <div class="qa-desc">Import screenshots, images, or audio</div>
         </div>
-        <div class="quick-action" onclick="window.location.href='/files'">
-          <div class="qa-icon">&#128194;</div>
-          <div class="qa-label">Import from Files</div>
-          <div class="qa-desc">Move unsorted assets into this project</div>
+        <div class="quick-action" onclick="openGalleryImport()">
+          <div class="qa-icon">&#127912;</div>
+          <div class="qa-label">Import from Gallery</div>
+          <div class="qa-desc">Copy generated images into this project</div>
         </div>
       </div>
       <input type="file" id="upload-input" multiple accept="image/*,audio/*,video/*" style="display:none" onchange="uploadFiles(this.files)">
@@ -395,6 +446,27 @@
             <a id="render-download" href="#" download style="color:var(--accent);font-size:13px">Download MP4</a>
           </div>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Gallery import modal -->
+  <div class="gallery-modal-overlay" id="gallery-modal">
+    <div class="gallery-modal">
+      <div class="gm-header">
+        <h3>Import from Gallery</h3>
+        <button class="gm-close" onclick="closeGalleryImport()">&times;</button>
+      </div>
+      <div style="padding:8px 20px 0;display:flex;gap:4px">
+        <button class="pool-tab active" id="gm-tab-image" onclick="filterGalleryModal('image',this)">Images</button>
+        <button class="pool-tab" id="gm-tab-audio" onclick="filterGalleryModal('audio',this)">Audio</button>
+      </div>
+      <div class="gm-body">
+        <div class="gm-grid" id="gm-grid"></div>
+      </div>
+      <div class="gm-footer">
+        <span class="gm-count" id="gm-count">0 selected</span>
+        <button class="gm-import-btn" id="gm-import-btn" disabled onclick="importSelected()">Import Selected</button>
       </div>
     </div>
   </div>
@@ -835,6 +907,136 @@
       }
       document.getElementById('upload-input').value = '';
     }
+
+    // --- Gallery import ---
+    let gallerySelection = new Set();
+    let galleryFilter = 'image';
+
+    async function openGalleryImport() {
+      gallerySelection.clear();
+      galleryFilter = 'image';
+      document.getElementById('gm-tab-image').classList.add('active');
+      document.getElementById('gm-tab-audio').classList.remove('active');
+      document.getElementById('gallery-modal').classList.add('active');
+      updateImportCount();
+      await loadGalleryGrid();
+    }
+
+    function filterGalleryModal(type, btn) {
+      galleryFilter = type;
+      gallerySelection.clear();
+      updateImportCount();
+      document.querySelectorAll('#gallery-modal .pool-tab').forEach(t => t.classList.remove('active'));
+      btn.classList.add('active');
+      loadGalleryGrid();
+    }
+
+    async function loadGalleryGrid() {
+      const grid = document.getElementById('gm-grid');
+      grid.textContent = 'Loading...';
+
+      try {
+        const items = await (await fetch('/api/gallery?type=' + galleryFilter)).json();
+        grid.textContent = '';
+
+        if (items.length === 0) {
+          const empty = document.createElement('div');
+          empty.className = 'gm-empty';
+          empty.textContent = galleryFilter === 'audio'
+            ? 'No audio clips yet. Generate TTS or music first!'
+            : 'No images in gallery. Generate some first!';
+          grid.appendChild(empty);
+          return;
+        }
+
+        items.forEach(item => {
+          const el = document.createElement('div');
+          el.className = 'gm-item';
+          el.dataset.filename = item.filename;
+
+          if (galleryFilter === 'audio') {
+            el.style.cssText += 'display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--surface-2);';
+            const icon = document.createElement('div');
+            icon.style.cssText = 'font-size:28px;margin-bottom:4px;';
+            icon.textContent = '\u266b';
+            el.appendChild(icon);
+            const label = document.createElement('div');
+            label.style.cssText = 'font-size:9px;color:var(--text-dim);text-align:center;padding:0 4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;width:100%;';
+            label.textContent = item.meta?.voice || item.filename.replace(/\.[^.]+$/, '');
+            el.appendChild(label);
+          } else {
+            const img = document.createElement('img');
+            img.src = item.url;
+            img.alt = item.filename;
+            el.appendChild(img);
+          }
+
+          const check = document.createElement('div');
+          check.className = 'gm-check';
+          check.textContent = '\u2713';
+          el.appendChild(check);
+
+          el.onclick = () => {
+            if (gallerySelection.has(item.filename)) {
+              gallerySelection.delete(item.filename);
+              el.classList.remove('selected');
+            } else {
+              gallerySelection.add(item.filename);
+              el.classList.add('selected');
+            }
+            updateImportCount();
+          };
+          grid.appendChild(el);
+        });
+      } catch (e) {
+        grid.textContent = '';
+        const err = document.createElement('div');
+        err.className = 'gm-empty';
+        err.textContent = 'Failed to load gallery';
+        grid.appendChild(err);
+      }
+    }
+
+    function closeGalleryImport() {
+      document.getElementById('gallery-modal').classList.remove('active');
+    }
+
+    function updateImportCount() {
+      const n = gallerySelection.size;
+      document.getElementById('gm-count').textContent = n === 1 ? '1 selected' : n + ' selected';
+      document.getElementById('gm-import-btn').disabled = n === 0;
+    }
+
+    async function importSelected() {
+      if (!state.activeProject || gallerySelection.size === 0) return;
+      const btn = document.getElementById('gm-import-btn');
+      btn.disabled = true;
+      btn.textContent = 'Importing...';
+
+      try {
+        const resp = await fetch('/api/projects/' + state.activeProject + '/move', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ filename: [...gallerySelection], copy: true }),
+        });
+        const data = await resp.json();
+        if (data.error) throw new Error(data.error);
+        toast('Imported ' + data.count + ' file(s)');
+        state.assets = await (await fetch('/api/projects/' + state.activeProject + '/assets')).json();
+        renderPool();
+        closeGalleryImport();
+      } catch (e) {
+        toast('Import failed: ' + e.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Import Selected';
+      }
+    }
+
+    // Close modal on overlay click
+    document.getElementById('gallery-modal').addEventListener('click', function(e) {
+      if (e.target === e.currentTarget) closeGalleryImport();
+    });
 
     // --- Init ---
     loadProjects();
