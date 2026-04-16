@@ -243,8 +243,8 @@ def update_project(project_id: str, updates: dict) -> dict | None:
 
 # --- Asset operations ---
 
-def move_asset(filename: str, to_project: str) -> bool:
-    """Move an asset from unsorted (or another project) into a project."""
+def move_asset(filename: str, to_project: str, copy: bool = False) -> bool:
+    """Move (or copy) an asset from unsorted (or another project) into a project."""
     # Find the file
     source = resolve_asset(filename)
     if not source:
@@ -272,12 +272,13 @@ def move_asset(filename: str, to_project: str) -> bool:
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / source.name
 
-    shutil.move(str(source), str(dest))
+    transfer = shutil.copy2 if copy else shutil.move
+    transfer(str(source), str(dest))
 
-    # Also move JSON sidecar if it exists
+    # Also transfer JSON sidecar if it exists
     sidecar = source.with_suffix(".json")
     if sidecar.exists():
-        shutil.move(str(sidecar), str(dest.with_suffix(".json")))
+        transfer(str(sidecar), str(dest.with_suffix(".json")))
 
     return True
 

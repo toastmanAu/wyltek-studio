@@ -477,6 +477,7 @@ function bindEvents() {
   document.getElementById('btn-save').addEventListener('click', saveImage);
   document.getElementById('btn-copy-url').addEventListener('click', copyImageUrl);
   document.getElementById('btn-use-as-ref').addEventListener('click', useAsRef);
+  document.getElementById('btn-send-project').addEventListener('click', sendImageToProject);
 
   // Batch
   document.getElementById('btn-batch').addEventListener('click', startBatch);
@@ -717,6 +718,16 @@ function useAsRef() {
       setRefImage(idx, file);
       toast(`Added to reference slot ${idx + 1}`, 'success');
     });
+}
+
+// --- Send to Project ---
+
+function sendImageToProject() {
+  const img = document.getElementById('result-image');
+  if (!img.dataset.url) return;
+  const filename = img.dataset.url.split('/').pop();
+  ProjectPicker.init(toast);
+  ProjectPicker.show(filename);
 }
 
 // --- Scores display ---
