@@ -68,9 +68,13 @@ MODEL_DEFAULTS = {
         "steps": 4, "cfg": 1.0,
     },
     # --- Flux Dev GGUF ---
+    # NOTE: "cfg" here is remapped to FluxGuidance.guidance in the workflow
+    # builder — Flux-dev is guidance-distilled, so KSampler.cfg is forced to
+    # 1.0 and this value drives the FluxGuidance node instead. 3.5 is the
+    # Black Forest Labs reference value; 2.0 = looser/painterly, 5.0 = tighter.
     # NOTE: Flux Dev struggles with monochrome subjects on white backgrounds
     # (e.g. green frog). This is a Flux architecture limitation, not tunable
-    # via CFG. Schnell handles these subjects fine. Keep CFG at 3.5 which
+    # via guidance. Schnell handles these subjects fine. Keep guidance at 3.5 which
     # produces excellent results on varied-color subjects (dogs, cats, etc).
     "flux1-dev-Q4_0.gguf": {
         "sampler": "euler", "scheduler": "simple",
@@ -94,6 +98,28 @@ MODEL_DEFAULTS = {
         "sampler": "dpmpp_2m", "scheduler": "sgm_uniform",
         "steps": 28, "cfg": 5.0,
     },
+    # --- PixArt-Sigma (DiT, requires ExtraModels / PixArt loader node) ---
+    "pixart_sigma_xl_1024.safetensors": {
+        "sampler": "dpmpp_2m", "scheduler": "karras",
+        "steps": 20, "cfg": 4.5, "width": 1024, "height": 1024,
+    },
+}
+
+# Speed/distillation LoRAs override the base model's sampler/steps/cfg.
+# When one of these is active (params["lora_model"]), its settings take
+# precedence over MODEL_DEFAULTS. CLIP strength is reduced relative to
+# model strength because distillation LoRAs over-imprint on text encoding.
+LORA_DEFAULTS = {
+    "sdxl_lightning_4step_lora.safetensors": {
+        "sampler": "euler", "scheduler": "sgm_uniform",
+        "steps": 4, "cfg": 1.0,
+        "lora_strength_model": 1.0, "lora_strength_clip": 1.0,
+    },
+    "sdxl_lightning_8step_lora.safetensors": {
+        "sampler": "euler", "scheduler": "sgm_uniform",
+        "steps": 8, "cfg": 1.0,
+        "lora_strength_model": 1.0, "lora_strength_clip": 1.0,
+    },
 }
 
 
@@ -103,8 +129,6 @@ def _resolve_defaults(params: dict) -> dict:
     generic values get overridden by model-specific ones."""
     model = params.get("model", "")
     defaults = MODEL_DEFAULTS.get(model)
-    if not defaults:
-        return params
 
     params = dict(params)  # shallow copy so we don't mutate the original
 
@@ -113,20 +137,42 @@ def _resolve_defaults(params: dict) -> dict:
     # with the model's optimal settings.
     GENERIC = {"steps": {20, 25, 30}, "cfg_scale": {7.0}, "width": {1024}, "height": {1024}}
 
-    if "steps" in defaults and params.get("steps") in GENERIC["steps"]:
-        params["steps"] = defaults["steps"]
-    if "cfg" in defaults and params.get("cfg_scale") in GENERIC["cfg_scale"]:
-        params["cfg_scale"] = defaults["cfg"]
-    if "width" in defaults and params.get("width") in GENERIC["width"]:
-        params["width"] = defaults["width"]
-    if "height" in defaults and params.get("height") in GENERIC["height"]:
-        params["height"] = defaults["height"]
+    if defaults:
+        if "steps" in defaults and params.get("steps") in GENERIC["steps"]:
+            params["steps"] = defaults["steps"]
+        if "cfg" in defaults and params.get("cfg_scale") in GENERIC["cfg_scale"]:
+            params["cfg_scale"] = defaults["cfg"]
+        if "width" in defaults and params.get("width") in GENERIC["width"]:
+            params["width"] = defaults["width"]
+        if "height" in defaults and params.get("height") in GENERIC["height"]:
+            params["height"] = defaults["height"]
 
-    # Sampler and scheduler always come from model defaults (not user-settable yet)
-    if "sampler" in defaults:
-        params["_sampler"] = defaults["sampler"]
-    if "scheduler" in defaults:
-        params["_scheduler"] = defaults["scheduler"]
+        # Sampler and scheduler always come from model defaults (not user-settable yet)
+        if "sampler" in defaults:
+            params["_sampler"] = defaults["sampler"]
+        if "scheduler" in defaults:
+            params["_scheduler"] = defaults["scheduler"]
+
+    # Speed-LoRA override: a distillation LoRA like SDXL Lightning replaces
+    # the base model's sampler/steps/cfg regardless of which base is chosen.
+    # This runs AFTER model defaults so the LoRA wins the tie.
+    lora = params.get("lora_model", "")
+    lora_defaults = LORA_DEFAULTS.get(lora)
+    if lora_defaults:
+        # Steps and CFG are always forced — Lightning at steps=30/cfg=7 is garbage.
+        if "steps" in lora_defaults:
+            params["steps"] = lora_defaults["steps"]
+        if "cfg" in lora_defaults:
+            params["cfg_scale"] = lora_defaults["cfg"]
+        if "sampler" in lora_defaults:
+            params["_sampler"] = lora_defaults["sampler"]
+        if "scheduler" in lora_defaults:
+            params["_scheduler"] = lora_defaults["scheduler"]
+        # LoRA strengths: only set if the user hasn't overridden them.
+        if "lora_strength_model" in lora_defaults and "lora_strength_model" not in params and "lora_strength" not in params:
+            params["lora_strength_model"] = lora_defaults["lora_strength_model"]
+        if "lora_strength_clip" in lora_defaults and "lora_strength_clip" not in params:
+            params["lora_strength_clip"] = lora_defaults["lora_strength_clip"]
 
     return params
 
@@ -346,8 +392,27 @@ class ComfyUIBackend(BaseBackend):
         workflow["6"]["inputs"]["text"] = params["prompt"]
         workflow["7"]["inputs"]["text"] = params.get("negative_prompt",
                                                      "low quality, blurry, distorted, watermark")
-        workflow["3"]["inputs"]["steps"] = params.get("steps", 20)
-        workflow["3"]["inputs"]["cfg"] = params.get("cfg", 7.0)
+
+        # Motion model selection — defaults to v15_v2, accepts Lightning variants.
+        # Lightning forces euler/sgm_uniform/CFG 1.0 and pins step count to match
+        # the distilled variant (4-step or 8-step). User-provided steps are ignored
+        # for Lightning because off-spec values produce garbage.
+        motion_model = params.get("motion_model", "mm_sd_v15_v2.ckpt")
+        workflow["30"]["inputs"]["model_name"] = motion_model
+
+        if "lightning_4step" in motion_model:
+            workflow["3"]["inputs"]["steps"] = 4
+            workflow["3"]["inputs"]["cfg"] = 1.0
+            workflow["3"]["inputs"]["sampler_name"] = "euler"
+            workflow["3"]["inputs"]["scheduler"] = "sgm_uniform"
+        elif "lightning_8step" in motion_model:
+            workflow["3"]["inputs"]["steps"] = 8
+            workflow["3"]["inputs"]["cfg"] = 1.0
+            workflow["3"]["inputs"]["sampler_name"] = "euler"
+            workflow["3"]["inputs"]["scheduler"] = "sgm_uniform"
+        else:
+            workflow["3"]["inputs"]["steps"] = params.get("steps", 20)
+            workflow["3"]["inputs"]["cfg"] = params.get("cfg", 7.0)
 
         seed = params.get("seed", -1)
         if seed == -1:
@@ -501,7 +566,7 @@ class ComfyUIBackend(BaseBackend):
             }
             workflow["15"] = {
                 "class_type": "VAELoader",
-                "inputs": {"vae_name": "sdxl_vae.safetensors"},
+                "inputs": {"vae_name": "sdxl_vae_fp16_fix.safetensors"},
             }
             # Rewire LoRA to use GGUF model + separate CLIP
             workflow["20"]["inputs"]["model"] = ["4", 0]
@@ -691,18 +756,27 @@ class ComfyUIBackend(BaseBackend):
                 "class_type": "VAELoader",
                 "inputs": {"vae_name": "ae.safetensors"},
             }
+            # Flux-dev is guidance-distilled: KSampler.cfg MUST be 1.0, and the
+            # "guidance" value (what users think of as CFG) is injected via a
+            # FluxGuidance node on the positive conditioning. Running real CFG
+            # against a distilled model produces washed-out, low-contrast output.
+            workflow["22"] = {
+                "class_type": "FluxGuidance",
+                "inputs": {
+                    "conditioning": ["6", 0],
+                    "guidance": params.get("cfg_scale", 3.5) if not is_schnell else 3.5,
+                },
+            }
             workflow["3"]["inputs"]["model"] = ["4", 0]
             workflow["6"]["inputs"]["clip"] = ["14", 0]
             workflow["7"]["inputs"]["clip"] = ["14", 0]
+            workflow["3"]["inputs"]["positive"] = ["22", 0]
             workflow["8"]["inputs"]["vae"] = ["15", 0]
-            # Flux uses euler sampler, normal scheduler, low CFG
             workflow["3"]["inputs"]["sampler_name"] = "euler"
             workflow["3"]["inputs"]["scheduler"] = "simple"
+            workflow["3"]["inputs"]["cfg"] = 1.0
             if is_schnell:
                 workflow["3"]["inputs"]["steps"] = params.get("steps", 4)
-                workflow["3"]["inputs"]["cfg"] = 1.0  # Schnell ignores CFG
-            else:
-                workflow["3"]["inputs"]["cfg"] = params.get("cfg_scale", 3.5)
         elif is_sd3:
             # SD3 uses 16-channel latent space — needs Flux VAE (also 16-ch), not SDXL VAE (4-ch)
             workflow["4"] = {
@@ -741,7 +815,7 @@ class ComfyUIBackend(BaseBackend):
             }
             workflow["15"] = {
                 "class_type": "VAELoader",
-                "inputs": {"vae_name": "sdxl_vae.safetensors"},
+                "inputs": {"vae_name": "sdxl_vae_fp16_fix.safetensors"},
             }
             workflow["3"]["inputs"]["model"] = ["4", 0]
             workflow["6"]["inputs"]["clip"] = ["14", 0]
@@ -766,7 +840,7 @@ class ComfyUIBackend(BaseBackend):
             }
             workflow["15"] = {
                 "class_type": "VAELoader",
-                "inputs": {"vae_name": "sdxl_vae.safetensors"},
+                "inputs": {"vae_name": "sdxl_vae_fp16_fix.safetensors"},
             }
             # Rewire: KSampler model from GGUF UNet, CLIP from DualCLIPLoader, VAE from VAELoader
             workflow["3"]["inputs"]["model"] = ["4", 0]
@@ -781,31 +855,51 @@ class ComfyUIBackend(BaseBackend):
         lora_strength_model = float(params.get("lora_strength_model", params.get("lora_strength", 0.8)))
         lora_strength_clip = float(params.get("lora_strength_clip", lora_strength_model * 0.6))
         if lora_name:
-            # LoraLoader sits between model/clip source and KSampler/CLIP encoders
-            # Input: model + clip from loader → Output: modified model + clip
+            # Pick the right loader: GGUF models need LoraLoaderModelOnly,
+            # standard checkpoints use LoraLoader (which also modifies CLIP)
             model_source = workflow["3"]["inputs"]["model"]  # current model ref
             clip_source = workflow["6"]["inputs"]["clip"]    # current clip ref
-            workflow["20"] = {
-                "class_type": "LoraLoader",
-                "inputs": {
-                    "lora_name": lora_name,
-                    "strength_model": lora_strength_model,
-                    "strength_clip": lora_strength_clip,
-                    "model": model_source,
-                    "clip": clip_source,
-                },
-            }
-            # Rewire KSampler and CLIP encoders to use LoRA-modified outputs
-            workflow["3"]["inputs"]["model"] = ["20", 0]
-            workflow["6"]["inputs"]["clip"] = ["20", 1]
-            workflow["7"]["inputs"]["clip"] = ["20", 1]
+            if is_gguf:
+                # GGUF UNets don't work with standard LoraLoader — use
+                # LoraLoaderModelOnly which patches the model without
+                # needing a compatible CLIP output
+                workflow["20"] = {
+                    "class_type": "LoraLoaderModelOnly",
+                    "inputs": {
+                        "lora_name": lora_name,
+                        "strength_model": lora_strength_model,
+                        "model": model_source,
+                    },
+                }
+                # Only rewire the model — CLIP stays on the original source
+                workflow["3"]["inputs"]["model"] = ["20", 0]
+            else:
+                workflow["20"] = {
+                    "class_type": "LoraLoader",
+                    "inputs": {
+                        "lora_name": lora_name,
+                        "strength_model": lora_strength_model,
+                        "strength_clip": lora_strength_clip,
+                        "model": model_source,
+                        "clip": clip_source,
+                    },
+                }
+                # Rewire KSampler and CLIP encoders to use LoRA-modified outputs
+                workflow["3"]["inputs"]["model"] = ["20", 0]
+                workflow["6"]["inputs"]["clip"] = ["20", 1]
+                workflow["7"]["inputs"]["clip"] = ["20", 1]
 
         workflow["5"]["inputs"]["width"] = params.get("width", 1024)
         workflow["5"]["inputs"]["height"] = params.get("height", 1024)
         workflow["6"]["inputs"]["text"] = params["prompt"]
         workflow["7"]["inputs"]["text"] = params.get("negative_prompt", "")
         workflow["3"]["inputs"]["steps"] = params.get("steps", 30)
-        workflow["3"]["inputs"]["cfg"] = params.get("cfg_scale", 7.0)
+        # Distilled models (Flux-dev, Schnell, SDXL Lightning) require KSampler.cfg=1.0
+        # and have already set it correctly above. The user-facing cfg_scale is routed
+        # through FluxGuidance for Flux, or simply ignored for Schnell/Lightning. Don't
+        # clobber the invariant here.
+        if not is_flux:
+            workflow["3"]["inputs"]["cfg"] = params.get("cfg_scale", 7.0)
 
         # Apply resolved sampler/scheduler from model defaults
         if "_sampler" in params:
@@ -994,11 +1088,35 @@ class ComfyUIBackend(BaseBackend):
         if "sd15" in ip_model.lower():
             preset = "STANDARD (medium strength)"
 
-        # Load reference image
-        workflow["10"] = {
-            "class_type": "LoadImage",
-            "inputs": {"image": ref_images[0]},
-        }
+        # Load reference images — each gets its own LoadImage node
+        # Node IDs: 10, 110, 111, 112, ... for images 0, 1, 2, 3, ...
+        img_node_ids = []
+        for i, ref in enumerate(ref_images):
+            nid = "10" if i == 0 else str(110 + i - 1)
+            workflow[nid] = {
+                "class_type": "LoadImage",
+                "inputs": {"image": ref},
+            }
+            img_node_ids.append(nid)
+
+        # Batch multiple images together if more than one reference
+        if len(img_node_ids) > 1:
+            # Chain ImageBatch nodes: batch(img0, img1) -> batch(result, img2) -> ...
+            prev = [img_node_ids[0], 0]
+            for i in range(1, len(img_node_ids)):
+                batch_nid = str(120 + i - 1)
+                workflow[batch_nid] = {
+                    "class_type": "ImageBatch",
+                    "inputs": {
+                        "image1": prev,
+                        "image2": [img_node_ids[i], 0],
+                    },
+                }
+                prev = [batch_nid, 0]
+            image_source = prev
+        else:
+            image_source = [img_node_ids[0], 0]
+
         # Unified loader — auto-selects correct IP-Adapter + CLIP Vision
         model_source = workflow["3"]["inputs"]["model"]
         workflow["11"] = {
@@ -1008,13 +1126,13 @@ class ComfyUIBackend(BaseBackend):
                 "preset": preset,
             },
         }
-        # Apply IP-Adapter
+        # Apply IP-Adapter with batched images
         workflow["13"] = {
-            "class_type": "IPAdapter",
+            "class_type": "IPAdapterBatch",
             "inputs": {
                 "model": ["11", 0],
                 "ipadapter": ["11", 1],
-                "image": ["10", 0],
+                "image": image_source,
                 "weight": strength,
                 "start_at": start_at,
                 "end_at": end_at,
