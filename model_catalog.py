@@ -56,6 +56,13 @@ CATALOG = [
         "filename": "flux1-schnell-Q4_0.gguf",
         "size_mb": 6400, "category": "Image Generation", "type": "comfyui-unet",
     },
+    {
+        "id": "flux2-klein-4b", "name": "Flux.2 Klein 4B (4-step distilled, 24GB-class)",
+        "desc": "Next-gen Flux distilled. 4-step, CFG 1-1.5. Needs ~16GB VRAM. Uses Qwen3 text encoder.",
+        "url": "https://huggingface.co/black-forest-labs/FLUX.2-klein-base-4B/resolve/main/flux-2-klein-base-4b.safetensors",
+        "filename": "flux-2-klein-base-4b.safetensors",
+        "size_mb": 16000, "category": "Image Generation", "type": "comfyui-unet",
+    },
     # --- SDXL Full Checkpoints (→ ComfyUI/models/checkpoints/) ---
     {
         "id": "juggernaut-v9", "name": "Juggernaut XL v9 (full)",
@@ -69,6 +76,13 @@ CATALOG = [
         "desc": "Fast versatile model. Only 6-10 steps needed. Handles illustration, photo, fantasy.",
         "url": "https://huggingface.co/Lykon/dreamshaper-xl-v2-turbo/resolve/main/DreamShaperXL_Turbo_v2_1.safetensors",
         "filename": "dreamshaper-xl-v21.safetensors",
+        "size_mb": 6500, "category": "Image Generation", "type": "comfyui-checkpoint",
+    },
+    {
+        "id": "realvis-v5-fp16", "name": "RealVisXL V5 (fp16 full)",
+        "desc": "Full-precision RealVisXL V5. Best photorealism quality. ~6.5GB.",
+        "url": "https://huggingface.co/SG161222/RealVisXL_V5.0/resolve/main/RealVisXL_V5.0_fp16.safetensors",
+        "filename": "RealVisXL_V5.0_fp16.safetensors",
         "size_mb": 6500, "category": "Image Generation", "type": "comfyui-checkpoint",
     },
     # --- CLIP + VAE (required for GGUF models) ---
@@ -114,6 +128,51 @@ CATALOG = [
         "url": "https://huggingface.co/nerijs/pixel-art-xl/resolve/main/pixel-art-xl.safetensors",
         "filename": "pixel-art-xl.safetensors",
         "size_mb": 163, "category": "Style LoRAs", "type": "comfyui-lora",
+    },
+    {
+        "id": "lora-sdxl-lightning-4step", "name": "SDXL Lightning 4-step LoRA",
+        "desc": "ByteDance distillation LoRA. Apply to any SDXL base (Juggernaut, RealVis, etc.) to generate in 4 steps. CFG ~1-2, sampler euler, scheduler sgm_uniform.",
+        "url": "https://huggingface.co/ByteDance/SDXL-Lightning/resolve/main/sdxl_lightning_4step_lora.safetensors",
+        "filename": "sdxl_lightning_4step_lora.safetensors",
+        "size_mb": 394, "category": "Speed LoRAs", "type": "comfyui-lora",
+    },
+    {
+        "id": "lora-sdxl-lightning-8step", "name": "SDXL Lightning 8-step LoRA",
+        "desc": "Higher-quality variant of SDXL Lightning. 8 steps, better detail than 4-step. CFG ~1-2, euler, sgm_uniform.",
+        "url": "https://huggingface.co/ByteDance/SDXL-Lightning/resolve/main/sdxl_lightning_8step_lora.safetensors",
+        "filename": "sdxl_lightning_8step_lora.safetensors",
+        "size_mb": 394, "category": "Speed LoRAs", "type": "comfyui-lora",
+    },
+    # --- Improved VAE ---
+    {
+        "id": "sdxl-vae-fp16-fix", "name": "SDXL VAE (fp16-fix)",
+        "desc": "madebyollin's fp16-safe SDXL VAE. Fixes black-square / NaN artifacts when decoding at fp16 on consumer GPUs. Drop-in replacement for sdxl_vae.",
+        "url": "https://huggingface.co/madebyollin/sdxl-vae-fp16-fix/resolve/main/sdxl_vae.safetensors",
+        "filename": "sdxl_vae_fp16_fix.safetensors",
+        "size_mb": 335, "category": "Required Components", "type": "comfyui-vae",
+    },
+    # --- PixArt-Sigma (DiT, reuses T5-XXL + SDXL VAE) ---
+    {
+        "id": "pixart-sigma-1024", "name": "PixArt-Sigma XL 1024",
+        "desc": "0.6B DiT by PixArt-alpha. Excellent prompt following at very low VRAM. Reuses existing T5-XXL + SDXL VAE. Requires ComfyUI ExtraModels / PixArt loader node.",
+        "url": "https://huggingface.co/PixArt-alpha/PixArt-Sigma-XL-2-1024-MS/resolve/main/transformer/diffusion_pytorch_model.safetensors",
+        "filename": "pixart_sigma_xl_1024.safetensors",
+        "size_mb": 2440, "category": "Image Generation", "type": "comfyui-checkpoint",
+    },
+    # --- AnimateDiff Lightning (→ ComfyUI/models/animatediff_models/) ---
+    {
+        "id": "animatediff-lightning-4step", "name": "AnimateDiff Lightning 4-step",
+        "desc": "ByteDance distilled motion module. ~4x faster video generation. Pairs with any SD 1.5 checkpoint. Use with euler + sgm_uniform, CFG ~1.",
+        "url": "https://huggingface.co/ByteDance/AnimateDiff-Lightning/resolve/main/animatediff_lightning_4step_comfyui.safetensors",
+        "filename": "animatediff_lightning_4step_comfyui.safetensors",
+        "size_mb": 1700, "category": "Video Generation", "type": "comfyui-animatediff",
+    },
+    {
+        "id": "animatediff-lightning-8step", "name": "AnimateDiff Lightning 8-step",
+        "desc": "Higher-quality AnimateDiff Lightning. 8 steps, smoother motion than 4-step.",
+        "url": "https://huggingface.co/ByteDance/AnimateDiff-Lightning/resolve/main/animatediff_lightning_8step_comfyui.safetensors",
+        "filename": "animatediff_lightning_8step_comfyui.safetensors",
+        "size_mb": 1700, "category": "Video Generation", "type": "comfyui-animatediff",
     },
     # --- Piper TTS Voices ---
     {
@@ -167,12 +226,41 @@ CATALOG = [
         "pip_package": "suno-bark",
         "size_mb": 5000, "category": "TTS Engines", "type": "pip-package",
     },
+    # --- Video Generation ---
+    {
+        "id": "svd-xt", "name": "Stable Video Diffusion XT (img2vid)",
+        "desc": "Image-to-video. Generates 25-frame clips from a still image. Needs ~16GB VRAM.",
+        "url": "https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt/resolve/main/svd_xt_1_1.safetensors",
+        "filename": "svd_xt_1_1.safetensors",
+        "size_mb": 9500, "category": "Video Generation", "type": "comfyui-checkpoint",
+    },
+    {
+        "id": "wan21-t2v", "name": "Wan 2.1 T2V 1.3B (text-to-video)",
+        "desc": "Lightweight text-to-video. Works on 24GB-class cards. Diffusers format.",
+        "url": "https://huggingface.co/Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
+        "filename": "Wan2.1-T2V-1.3B",
+        "size_mb": 27000, "category": "Video Generation", "type": "comfyui-checkpoint",
+    },
     # --- Music Generation ---
     {
         "id": "music-audiocraft", "name": "MusicGen (text-to-music)",
-        "desc": "Generate royalty-free backing tracks from text descriptions. Small (300M) and Medium (1.5B) models.",
+        "desc": "Generate royalty-free backing tracks. With 24GB VRAM, large (3.3B) and melody variants now fit. Small/Medium also available.",
         "pip_package": "audiocraft",
         "size_mb": 3300, "category": "Music Generation", "type": "pip-package",
+    },
+    {
+        "id": "music-musicgen-large", "name": "MusicGen Large (3.3B, 24GB-class)",
+        "desc": "Largest MusicGen variant. 3.3B params, ~13GB at fp16. Auto-downloads on first use via audiocraft.",
+        "pip_package": "audiocraft",
+        "model_name": "facebook/musicgen-large",
+        "size_mb": 13000, "category": "Music Generation", "type": "pip-package",
+    },
+    {
+        "id": "music-musicgen-melody-large", "name": "MusicGen Melody Large (3.3B + melody conditioning)",
+        "desc": "MusicGen Large with melody conditioning. Generate music matching a reference melody. ~14GB.",
+        "pip_package": "audiocraft",
+        "model_name": "facebook/musicgen-melody-large",
+        "size_mb": 14000, "category": "Music Generation", "type": "pip-package",
     },
     # --- Ollama models ---
     {
@@ -208,6 +296,7 @@ DEST_MAP = {
     "comfyui-lora": "models/loras",
     "comfyui-vae": "models/vae",
     "comfyui-clip": "models/clip",
+    "comfyui-animatediff": "models/animatediff_models",
     "piper-voice": None,  # handled specially → engines/voices/
     "ollama": None,  # handled via ollama pull
 }
