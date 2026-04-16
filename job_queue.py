@@ -46,8 +46,20 @@ class JobQueue:
             lane: [] for lane in self.LANE_LIMITS
         }
 
-    async def submit(self, coro, lane: str = "gpu", job_id: str = ""):
-        """Submit a coroutine to a resource lane. Waits for slot, then runs."""
+    # Default timeout per lane (seconds)
+    LANE_TIMEOUTS = {
+        "gpu": 300,      # 5 min for GPU jobs (image gen)
+        "cpu": 180,      # 3 min for CPU jobs (TTS, music, beats)
+        "render": 600,   # 10 min for renders (long videos)
+    }
+
+    async def submit(self, coro, lane: str = "gpu", job_id: str = "",
+                     timeout: float = 0):
+        """Submit a coroutine to a resource lane. Waits for slot, then runs.
+
+        Args:
+            timeout: Max seconds for this job. 0 = use lane default.
+        """
         if lane not in self._semaphores:
             lane = "cpu"  # fallback
 
@@ -61,10 +73,16 @@ class JobQueue:
             job.started_at = datetime.now()
             self._running[lane].append(job)
 
+            job_timeout = timeout or self.LANE_TIMEOUTS.get(lane, 180)
             try:
-                return await coro
+                return await asyncio.wait_for(coro, timeout=job_timeout)
+            except asyncio.TimeoutError:
+                raise TimeoutError(
+                    f"Job {job_id} timed out after {job_timeout}s on {lane} lane"
+                )
             finally:
-                self._running[lane].remove(job)
+                if job in self._running[lane]:
+                    self._running[lane].remove(job)
 
     def submit_background(self, coro, lane: str = "gpu", job_id: str = ""):
         """Submit without awaiting — returns immediately, job runs when slot opens."""
