@@ -1,10 +1,25 @@
 # Wyltek Studio
 
-Local-first AI creative studio by [Wyltek Industries](https://github.com/toastmanAu). Generate images, enhance prompts with AI, create narration, and build video content — all running locally on your hardware.
-
-Upload reference images, describe what you want, pick your model and backend, and generate. Compare outputs across multiple backends side-by-side. Swap between local GPU inference and cloud APIs with one click.
+Local-first AI creative studio by [Wyltek Industries](https://github.com/toastmanAu). Generate images, cut frames from video, remove backgrounds, create narration, compose music, and build video content — all running on your own hardware, no cloud required.
 
 ![Python](https://img.shields.io/badge/python-3.10+-blue) ![License](https://img.shields.io/badge/license-MIT-green)
+
+## What's in the box
+
+| Studio | What it does |
+|--------|-------------|
+| **Image Generator** | Text-to-image across 15+ local and cloud models. Compare them side-by-side. |
+| **Frame Cutter** | Load any video file, scrub frame-by-frame, grab a frame as a PNG. No upload — reads from your filesystem directly. |
+| **Image Tools** | Remove backgrounds (rembg), select objects to remove/replace by brush, rectangle, lasso, or SAM click-to-segment. |
+| **TTS Studio** | Text-to-speech with Piper (7 voices, 40× realtime), Kokoro (11 voices), XTTS v2 (voice cloning), and Bark (expressive emotions). |
+| **Music Studio** | MusicGen text-to-music, single/continuation/loop modes up to 180s. |
+| **Video Studio** | AnimateDiff text-to-video via ComfyUI. 8fps, 2–6 second clips. |
+| **Meme Forge** | Meme generator with templates, text overlays, and optional IP-Adapter conditioning. |
+| **Projects** | Timeline compositor — drag clips, Ken Burns, xfade transitions, text overlays, narration + music mixing. |
+| **File Manager** | Project-based storage with unsorted bin. |
+| **Settings** | Configure backends, API keys, test connections. One-click model downloads. |
+
+---
 
 ## Model Comparison
 
@@ -26,118 +41,9 @@ Same prompt across different backends — all generated through Wyltek Studio:
 |:---:|:---:|:---:|
 | ![SD 1.5](docs/screenshots/castle-sd15.png) | ![Juggernaut](docs/screenshots/castle-juggernaut.png) | ![Gemini](docs/screenshots/castle-gemini.png) |
 
-> *"a single boat upon a calm lake"*
-
-| SD 1.5 (local) | SDXL Q4 (local) | Juggernaut XL (local) |
-|:---:|:---:|:---:|
-| ![SD 1.5](docs/screenshots/boat-sd15.png) | ![SDXL](docs/screenshots/boat-sdxl.png) | ![Juggernaut](docs/screenshots/boat-juggernaut.png) |
-
-| RealVisXL V4 (local) | Nano Banana (cloud) | Nano Banana Pro (cloud) |
-|:---:|:---:|:---:|
-| ![RealVis](docs/screenshots/boat-realvis.png) | ![NanoBanana](docs/screenshots/boat-nanobanaana.png) | ![NanoBananaPro](docs/screenshots/boat-nanobananapro.png) |
-
-> *"lightning striking over water at night"*
-
-| SD 1.5 (local) | SDXL Q4 (local) | Juggernaut XL (local) |
-|:---:|:---:|:---:|
-| ![SD 1.5](docs/screenshots/lightning-sd15.png) | ![SDXL](docs/screenshots/lightning-sdxl.png) | ![Juggernaut](docs/screenshots/lightning-juggernaut.png) |
-
-| RealVisXL V4 (local) | Nano Banana Pro (cloud) |
-|:---:|:---:|
-| ![RealVis](docs/screenshots/lightning-realvis.png) | ![NanoBananaPro](docs/screenshots/lightning-nanobananapro.png) |
-
-> *"A cozy Japanese ramen shop at night, steam rising from bowls, warm lantern light, rain outside, detailed interior, anime style"*
-
-| Flux.1 Dev Q4 (local) | Flux.1 Schnell Q4 (local) | Juggernaut XL v9 (local) |
-|:---:|:---:|:---:|
-| ![Flux Q4](docs/screenshots/ramen-flux-q4.png) | ![Schnell](docs/screenshots/ramen-schnell.png) | ![Juggernaut](docs/screenshots/ramen-juggernaut.png) |
-
-| DreamShaper XL Turbo (local) | RealVisXL V4 Q4 (local) | SDXL Base (local) |
-|:---:|:---:|:---:|
-| ![DreamShaper](docs/screenshots/ramen-dreamshaper.png) | ![RealVis](docs/screenshots/ramen-realvis-gguf.png) | ![SDXL](docs/screenshots/ramen-sdxl-base.png) |
-
-| Juggernaut XI Q4 (local) | SDXL Lightning (local) | SD 1.5 (local, 512x512) |
-|:---:|:---:|:---:|
-| ![Juggernaut GGUF](docs/screenshots/ramen-juggernaut-gguf.png) | ![Lightning](docs/screenshots/ramen-lightning.png) | ![SD 1.5](docs/screenshots/ramen-sd15.png) |
-
 All local images generated on an RTX 3060 Ti (8GB VRAM) using GGUF quantized models.
 
-### Why Per-Model Defaults Matter
-
-Wyltek Studio applies optimal generation settings (sampler, scheduler, CFG scale, steps, resolution) per model automatically. Without this, compare mode sends identical parameters to every model — which can produce dramatically bad results.
-
-**The problem:** Flux, Lightning, Schnell, and DreamShaper all need radically different settings. Sending CFG 7.0 and 25 steps to a Flux model (which needs CFG 3.5) or a 4-step distilled model produces washed-out or over-processed images.
-
-> *Before tuning: "A Pokemon style cat" — all models received steps=25, CFG=7.0, euler_ancestral sampler*
-
-| Flux Dev Q4 (CFG 7.0) | Flux Dev Q8 (CFG 7.0) | SDXL Lightning (25 steps, CFG 7.0) | SD3 Medium Q4 |
-|:---:|:---:|:---:|:---:|
-| ![Flux Q4 before](docs/screenshots/before-flux-q4-cat.png) | ![Flux Q8 before](docs/screenshots/before-flux-q8-cat.png) | ![Lightning before](docs/screenshots/before-lightning-cat.png) | ![SD3 before](docs/screenshots/before-sd3-cat.png) |
-| Washed out yellow blob | Barely a silhouette | Sticker artifacts | Crosshatch/halftone (broken at Q4) |
-
-> *After tuning: "A Pokemon style dog" — each model receives its optimal settings automatically*
-
-| Flux Dev Q4 (CFG 3.5, euler, simple) | Flux Dev Q8 (CFG 3.5, euler, simple) | Flux Dev Q5 (CFG 3.5, euler, simple) |
-|:---:|:---:|:---:|
-| ![Flux Q4 after](docs/screenshots/after-flux-q4-dog.png) | ![Flux Q8 after](docs/screenshots/after-flux-q8-dog.png) | ![Flux Q5 after](docs/screenshots/after-flux-q5-dog.png) |
-
-| Flux Schnell (4 steps, CFG 1.0) | DreamShaper XL (8 steps, CFG 2.0, dpmpp_sde) | SDXL Lightning (4 steps, CFG 1.0, sgm_uniform) |
-|:---:|:---:|:---:|
-| ![Schnell after](docs/screenshots/after-schnell-dog.png) | ![DreamShaper after](docs/screenshots/after-dreamshaper-dog.png) | ![Lightning after](docs/screenshots/after-lightning-dog.png) |
-
-| Juggernaut XL v9 (dpmpp_2m, karras) | RealVisXL V4 (dpmpp_2m, karras) | Gemini 2.5 Flash (cloud) | Gemini 3 Pro (cloud) |
-|:---:|:---:|:---:|:---:|
-| ![Juggernaut after](docs/screenshots/after-juggernaut-dog.png) | ![RealVis after](docs/screenshots/after-realvis-dog.png) | ![Gemini Flash after](docs/screenshots/after-gemini-flash-dog.png) | ![Gemini Pro after](docs/screenshots/after-gemini-pro-dog.png) |
-
-**Key settings that affect output quality:**
-
-| Setting | What it does | Wrong value symptoms |
-|---|---|---|
-| **CFG Scale** | How closely the model follows the prompt. Higher = more literal, but overcooked above model's range | Washed out, over-saturated, or blown-out highlights |
-| **Steps** | Number of denoising iterations. Distilled models (Lightning, Schnell) need very few | Over-processed, artifacts, loss of detail, wasted generation time |
-| **Sampler** | The algorithm used for denoising. `dpmpp_2m` is sharp, `euler` suits Flux, `dpmpp_sde` suits turbo models | Soft/blurry output, or unstable generation |
-| **Scheduler** | Controls the noise schedule curve. `karras` is sharper for SDXL, `simple` for Flux, `sgm_uniform` for Lightning | Subtle quality loss, muddy details |
-| **Resolution** | Must match the model's training resolution. SD 1.5 = 512x512, SDXL/Flux = 1024x1024 | Repeated patterns, artifacts, blur (especially SD 1.5 at 1024x) |
-
-Wyltek Studio handles all of this automatically — just pick your model and generate.
-
-### "OP My Prompt" — AI-Enhanced Prompts
-
-The **OP my prompt** button uses a local LLM (via [Ollama](https://ollama.com)) to enhance your prompt before generation. It adds lighting, composition, color guidance, and a negative prompt — running entirely on CPU so your GPU stays free for image generation.
-
-> **Human prompt:** "A Pokemon style cat"
->
-> **OP'd prompt:** "A cute and detailed Pokémon-style cat character with vibrant colors, expressive eyes, and a playful pose. The background is a stylized forest scene with glowing leaves and soft lighting to emphasize the character."
-
-| | Juggernaut XL v9 | DreamShaper XL | Juggernaut XI Q4 |
-|---|:---:|:---:|:---:|
-| **Human prompt** | ![before](docs/screenshots/plain-cat-juggernaut.png) | ![before](docs/screenshots/plain-dog-dreamshaper.png) | ![before](docs/screenshots/after-juggernaut-dog.png) |
-| **OP'd prompt** | ![after](docs/screenshots/op-cat-juggernaut.png) | ![after](docs/screenshots/op-cat-dreamshaper.png) | ![after](docs/screenshots/op-cat-juggernaut-gguf.png) |
-
-| | RealVisXL V4 Q4 | SDXL Lightning | Flux Schnell |
-|---|:---:|:---:|:---:|
-| **OP'd prompt** | ![op](docs/screenshots/op-cat-realvis-gguf.png) | ![op](docs/screenshots/op-cat-lightning.png) | ![op](docs/screenshots/op-cat-schnell.png) |
-
-> **Human prompt:** "a deer in a forest"
->
-> **OP'd prompt:** "A majestic red deer standing in a dense, sun-dappled forest during the golden hour..."
-
-| | Juggernaut XL v9 | DreamShaper XL | Juggernaut XI Q4 | Flux Schnell |
-|---|:---:|:---:|:---:|:---:|
-| **Human** | ![before](docs/screenshots/deer-human-juggernaut.png) | ![before](docs/screenshots/deer-human-dreamshaper.png) | ![before](docs/screenshots/deer-human-juggernaut-gguf.png) | ![before](docs/screenshots/deer-human-schnell.png) |
-| **OP'd** | ![after](docs/screenshots/deer-op-juggernaut.png) | ![after](docs/screenshots/deer-op-dreamshaper.png) | ![after](docs/screenshots/deer-op-juggernaut-gguf.png) | ![after](docs/screenshots/deer-op-schnell.png) |
-
-| RealVisXL V4 (OP'd) | SDXL Lightning (OP'd) |
-|:---:|:---:|
-| ![op](docs/screenshots/deer-op-realvis.png) | ![op](docs/screenshots/deer-op-lightning.png) |
-
-The OP adds scene context, lighting direction, and quality descriptors that transform simple prompts into cinematic results. Works with any Ollama-compatible model — configure in Settings.
-
-### Auto Image Scoring
-
-Every generated image is automatically scored on 8 quality metrics: sharpness, saturation, brightness, color diversity, contrast, noise, edge density, and dynamic range. Scores are stored in SQLite and aggregated into per-model profiles over time.
-
-Click the **Scores** button on any generated image or compare card to see its metrics. Visit `/api/scores/models` to see how each model performs on average across all your generations.
+---
 
 ## Quick Start
 
@@ -184,145 +90,187 @@ Open **http://localhost:7860** in your browser.
 
 1. Get a free API key from [Google AI Studio](https://aistudio.google.com/apikey)
 2. Set it: `export GEMINI_API_KEY=your_key_here`
-3. Run `python server.py` (or add to config.yaml and restart the container)
+3. Run `python server.py`
 
-**Have an NVIDIA GPU?** Set up [ComfyUI](https://github.com/comfyanonymous/ComfyUI) and point Wyltek Studio at it in `config.yaml`. Download GGUF quantized models to run SDXL-quality generation on 8GB VRAM.
+**Have an NVIDIA GPU?** Set up [ComfyUI](https://github.com/comfyanonymous/ComfyUI) and point Wyltek Studio at it in `config.yaml`.
+
+---
+
+## Image Tools
+
+### Background Removal
+
+Runs entirely locally via [rembg](https://github.com/danielgatis/rembg) in a dedicated venv (`/data/venvs/rembg/`). No API calls after the first model download.
+
+Five models available:
+
+| Model | Best for |
+|-------|----------|
+| `u2net` | General purpose (default) |
+| `u2net_human_seg` | Portraits and people |
+| `isnet-general-use` | Stronger general removal |
+| `birefnet-general` | Best quality, slower |
+| `silueta` | Fast and lightweight |
+
+Alpha matting option for clean hair and fur edges.
+
+### Object Selection Tools
+
+Four ways to select what to remove or replace:
+
+| Tool | How it works |
+|------|-------------|
+| **Brush** | Freehand paint over the area |
+| **Rectangle** | Drag to select a rectangular region |
+| **Ellipse** | Drag to select an elliptical region |
+| **Lasso** | Click to add polygon points, double-click to close |
+| **SAM** (⚡) | Click anywhere on an object — SAM finds its exact boundary automatically |
+
+SAM (Segment Anything, ViT-L) runs locally. The model (~1.2GB) is loaded once and kept in memory. On an RTX 3060 Ti, segmentation takes ~1 second per click.
+
+### Frame Cutter → Image Tools workflow
+
+1. Open **Frame Cutter**, load a video (reads from your filesystem — nothing uploaded)
+2. Scrub to the frame you want with the slider or step buttons
+3. Click **Grab Frame** → **Send to Image Tools**
+4. The frame lands directly in Image Tools ready to process
+
+### Object removal and inpainting
+
+LaMa object removal and SD inpainting (for adding/replacing objects) are coming next. The selection tools (brush, rect, lasso, SAM) are already wired — the backends just need connecting.
+
+---
+
+## TTS Studio
+
+| Engine | Voices | Speed | Notes |
+|--------|--------|-------|-------|
+| **Piper** | 7 | 40× realtime | Runs on CPU, very fast |
+| **Kokoro** | 11 | 4× realtime | Higher quality |
+| **XTTS v2** | Voice cloning | ~1× realtime | Upload a reference audio clip |
+| **Bark** | Expressive | ~0.5× realtime | Emotions, laughter, non-speech sounds |
+
+---
+
+## Music Studio
+
+Text-to-music via [MusicGen](https://github.com/facebookresearch/audiocraft) (small and medium models). Three modes:
+
+- **Single** — generate a standalone clip (up to 30s)
+- **Continuation** — extend an existing audio clip
+- **Loop** — generate a seamlessly looping clip (up to 180s)
+
+Runs on CPU (GPU optionally via CUDA_VISIBLE_DEVICES).
+
+---
+
+## Video Studio
+
+Text-to-video via [AnimateDiff-Evolved](https://github.com/Kosinkadink/ComfyUI-AnimateDiff-Evolved) in ComfyUI. Uses SD 1.5 + motion module, 8fps, 2–6 second clips. Requires ComfyUI running with the AnimateDiff custom node and motion models installed.
+
+---
+
+## "OP My Prompt" — AI-Enhanced Prompts
+
+The **OP my prompt** button uses a local LLM (via [Ollama](https://ollama.com)) to enhance your prompt before generation — adding lighting, composition, color guidance, and a negative prompt. Runs on CPU so your GPU stays free for image generation.
+
+> **Human prompt:** "A Pokemon style cat"
+>
+> **OP'd prompt:** "A cute and detailed Pokémon-style cat character with vibrant colors, expressive eyes, and a playful pose. The background is a stylized forest scene with glowing leaves and soft lighting to emphasize the character."
+
+Works with any Ollama-compatible model — configure in Settings.
 
 ### Optional: Enable "OP My Prompt"
-
-The prompt optimizer runs entirely on CPU via [Ollama](https://ollama.com) — no GPU required.
 
 ```bash
 # Install Ollama
 curl -fsSL https://ollama.com/install.sh | sh
 
-# Pull a model (pick one)
+# Pull a model
 ollama pull qwen2.5:14b    # Best quality, ~9GB RAM, 8-12s per enhancement
 ollama pull qwen2.5:7b     # Faster, ~5GB RAM
-ollama pull mistral:7b      # Alternative, good quality
 ```
 
-Configure the Ollama URL and model in the Settings page, or edit `config.yaml`:
+Configure in Settings or `config.yaml`:
 
 ```yaml
 prompt_optimizer:
   enabled: true
-  ollama_url: "http://[::1]:11434"   # or http://localhost:11434
+  ollama_url: "http://[::1]:11434"
   model: "qwen2.5:14b"
 ```
 
-Any Ollama-compatible model works — experiment with what you have installed. The Settings page auto-detects installed models.
+---
 
-## Features
+## Auto Image Scoring
 
-- **"OP my prompt"** — AI-enhanced prompts via local Ollama LLM (runs on CPU, GPU stays free)
-- **Auto image scoring** — 8 quality metrics per image, stored in SQLite, per-model profiles over time
-- **Text-to-image** with up to 4 reference images (IP-Adapter support)
-- **Compare mode** — run the same prompt across multiple backends/models side-by-side
-- **Batch mode** — generate N variations with the same prompt/model (different seeds)
-- **LoRA support** — apply style LoRAs with split model/CLIP strength controls
-- **Auto-model detection** — discovers installed ComfyUI models, LoRAs, shows unavailable ones greyed out
-- **Per-model optimal defaults** — sampler, scheduler, resolution, steps, CFG auto-tune per model
-- **GGUF quantized model support** — run Flux.1 and SDXL on 8GB VRAM via ComfyUI-GGUF
-- **Built-in tips guide** — prompt writing, CFG scale, model strengths
-- **Settings page** — configure API keys, enable/disable backends, test connections from the UI
-- **PNG metadata** — prompt, model, seed embedded in every generated image
-- **Real-time progress** via WebSocket with polling fallback
-- **Gallery** of previous generations with metadata
-- **Save / download / use as reference** workflow
-- **Responsive** — works on desktop and mobile
+Every generated image is automatically scored on 8 quality metrics: sharpness, saturation, brightness, color diversity, contrast, noise, edge density, and dynamic range. Scores are stored in SQLite and aggregated into per-model profiles over time.
 
-## Supported Backends
+---
 
-| Backend | Type | Cost | Notes |
-|---------|------|------|-------|
-| **ComfyUI** | Local | Free | Most flexible — supports checkpoints, GGUF, LoRA, IP-Adapter, ControlNet |
-| **Fooocus** | Local | Free | Simple setup, good defaults, image prompt support |
-| **A1111 WebUI** | Local | Free | Mature ecosystem with extensions |
-| **Gemini** | Cloud | Free tier | Nano Banana, Nano Banana Pro, Imagen 4 models |
-| **HuggingFace** | Cloud | Free credits | Community models via Inference API |
-| **Pollinations** | Cloud | Token required | Flux and Turbo models |
-| **Stability AI** | Cloud | Paid | SDXL, Stable Image Core |
-| **OpenAI** | Cloud | Paid | DALL-E 3, GPT Image 1 |
-| **Replicate** | Cloud | Paid | Flux Pro, SDXL, and many more |
+## Supported Image Backends
+
+| Backend | Type | Notes |
+|---------|------|-------|
+| **ComfyUI** | Local | Checkpoints, GGUF, LoRA, IP-Adapter, ControlNet |
+| **Fooocus** | Local | Simple setup, good defaults |
+| **A1111 WebUI** | Local | Mature ecosystem |
+| **Gemini** | Cloud | Nano Banana, Nano Banana Pro, Imagen 4 |
+| **HuggingFace** | Cloud | Community models via Inference API |
+| **Pollinations** | Cloud | Flux and Turbo models |
+| **Stability AI** | Cloud | SDXL, Stable Image Core |
+| **OpenAI** | Cloud | DALL-E 3, GPT Image 1 |
+| **Replicate** | Cloud | Flux Pro, SDXL, many more |
+
+---
 
 ## Local Models
 
-### Checkpoints (full models)
+### Checkpoints
 
 Place in `ComfyUI/models/checkpoints/`:
 
-| Model | Size | Resolution | Steps | CFG | Best For |
-|-------|------|-----------|-------|-----|----------|
-| SD 1.5 | 4.0 GB | 512x512 | 20 | 7.0 | Fast drafts, stylised art |
-| SDXL 1.0 | 6.5 GB | 1024x1024 | 25 | 7.0 | All-rounder |
-| Juggernaut XL v9 | 6.7 GB | 1024x1024 | 30 | 6.0 | Photorealism, people, products |
-| RealVisXL V4 | 6.5 GB | 1024x1024 | 28 | 5.5 | Portraits, architecture, nature |
-| DreamShaper XL Turbo | 746 MB | 1024x1024 | 8 | 2.0 | Fast iteration, versatile style |
+| Model | Size | Resolution | Best For |
+|-------|------|-----------|----------|
+| SD 1.5 | 4.0 GB | 512×512 | Fast drafts, stylised art |
+| SDXL 1.0 | 6.5 GB | 1024×1024 | All-rounder |
+| Juggernaut XL v9 | 6.7 GB | 1024×1024 | Photorealism, people, products |
+| RealVisXL V4 | 6.5 GB | 1024×1024 | Portraits, architecture, nature |
+| DreamShaper XL Turbo | 746 MB | 1024×1024 | Fast iteration, versatile style |
 
 ### GGUF Quantized Models (lower VRAM)
 
-Place in `ComfyUI/models/unet/`. Requires [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) custom node.
+Place in `ComfyUI/models/unet/`. Requires [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF).
 
-| Model | Size | VRAM | Steps | CFG | Best For |
-|-------|------|------|-------|-----|----------|
-| Flux.1 Dev Q4 | ~5.5 GB | 6 GB | 20 | 3.5 | State-of-the-art quality, text rendering |
-| Flux.1 Dev Q5 | ~7 GB | 8 GB | 20 | 3.5 | Higher fidelity than Q4 |
-| Flux.1 Dev Q8 | ~12 GB | 12 GB+ | 20 | 3.5 | Near-lossless (CPU offload on 8GB GPU) |
-| Flux.1 Schnell Q4 | ~5.5 GB | 6 GB | 4 | 1.0 | Ultra-fast drafts (4 steps!) |
-| SD3 Medium Q4 | ~2 GB | 5 GB | 28 | 7.0 | Different aesthetic, good prompt adherence |
-| SDXL Lightning 4-step | ~5 GB | 7 GB | 4 | 1.0 | Ultra-fast, LoRA compatible |
+| Model | Size | VRAM | Best For |
+|-------|------|------|----------|
+| Flux.1 Dev Q4 | ~5.5 GB | 6 GB | SOTA quality, text rendering |
+| Flux.1 Dev Q5 | ~7 GB | 8 GB | Higher fidelity |
+| Flux.1 Schnell Q4 | ~5.5 GB | 6 GB | Ultra-fast (4 steps) |
+| SDXL Lightning 4-step | ~5 GB | 7 GB | Fast, LoRA compatible |
 
-**Flux models also need:**
-- T5-XXL encoder (GGUF): `ComfyUI/models/clip/t5-v1_1-xxl-encoder-Q4_K_M.gguf` ([download](https://huggingface.co/city96/t5-v1_1-xxl-encoder-gguf))
-- CLIP-L: `ComfyUI/models/clip/clip_l.safetensors`
-- Flux VAE: `ComfyUI/models/vae/ae.safetensors` ([download](https://huggingface.co/black-forest-labs/FLUX.1-dev) — requires HF login + license acceptance)
-
-**SDXL GGUF models also need:**
-- CLIP-L + CLIP-G: `ComfyUI/models/clip/clip_l.safetensors`, `clip_g.safetensors`
-- SDXL VAE: `ComfyUI/models/vae/sdxl_vae.safetensors`
+Flux models also need T5-XXL encoder, CLIP-L, and Flux VAE in `ComfyUI/models/clip/` and `ComfyUI/models/vae/`.
 
 ### LoRA Style Models
 
-Place in `ComfyUI/models/loras/`. Work with any SDXL-based model (checkpoints or GGUF).
+Place in `ComfyUI/models/loras/`. Works with SDXL-based checkpoints and GGUF models.
 
-| LoRA | Effect | Recommended Strength |
-|------|--------|---------------------|
-| Pixel Art XL | Pixel art / retro game style | 0.7 - 1.0 |
-| Anime Detailer XL | Anime/manga illustration | 0.6 - 0.9 |
-| Flat Color / Vector | Clean flat colours, vector-like | 0.5 - 0.8 |
-| Film Grain / Cinematic | 35mm film grain, cinematic look | 0.3 - 0.6 |
-
-Select a LoRA from the Advanced Settings panel. Adjust strength to control how strongly the style is applied (0 = no effect, 1+ = strong effect).
-
-### Installing New Models
-
-**Checkpoints:** Download `.safetensors` files into `ComfyUI/models/checkpoints/`. Add to `config.yaml` under `backends.comfyui.models.checkpoints`. Add optimal defaults in `static/js/app.js` `MODEL_DEFAULTS` object.
-
-**GGUF models:** Download `.gguf` files into `ComfyUI/models/unet/`. Add to `config.yaml` under `backends.comfyui.models.checkpoints` (same list — the backend detects `.gguf` extension and uses the UNet loader). Add defaults to `MODEL_DEFAULTS`.
-
-**LoRAs:** Download `.safetensors` LoRA files into `ComfyUI/models/loras/`. Add to `config.yaml` under `backends.comfyui.models.loras`. LoRAs are compatible with SDXL checkpoints and SDXL GGUF models (not Flux or SD3).
-
-**Cloud models:** Add model IDs to the relevant backend section in `config.yaml`. No file download needed.
-
-After adding models, restart ComfyUI (`systemctl --user restart comfyui`) and refresh Wyltek Studio in the browser.
+---
 
 ## Configuration
 
-Copy `config.example.yaml` to `config.yaml` and edit:
+Copy `config.example.yaml` to `config.yaml`:
 
 ```yaml
 backends:
   comfyui:
     enabled: true
-    url: "http://127.0.0.1:8188"  # your ComfyUI instance
+    url: "http://127.0.0.1:8188"
 
   gemini:
     enabled: true
     api_key: ""  # or set GEMINI_API_KEY env var
 ```
-
-API keys can also be managed from the **Settings** page in the UI (`/settings`).
 
 ### Environment Variables
 
@@ -331,14 +279,15 @@ API keys can also be managed from the **Settings** page in the UI (`/settings`).
 | `GEMINI_API_KEY` | Google Gemini / Imagen |
 | `OPENAI_API_KEY` | OpenAI DALL-E |
 | `STABILITY_API_KEY` | Stability AI |
-| `HF_TOKEN` or `HUGGINGFACE_API_KEY` | HuggingFace |
+| `HF_TOKEN` | HuggingFace |
 | `REPLICATE_API_TOKEN` | Replicate |
 | `POLLINATIONS_API_KEY` | Pollinations |
 
-### Running as a System Service
+---
+
+## Running as a System Service
 
 ```bash
-# Create systemd user service
 mkdir -p ~/.config/systemd/user
 cat > ~/.config/systemd/user/wyltek-studio.service << 'EOF'
 [Unit]
@@ -351,7 +300,6 @@ ExecStart=/usr/bin/python3 server.py
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
-EnvironmentFile=/path/to/.env  # optional, for API keys
 [Install]
 WantedBy=default.target
 EOF
@@ -360,57 +308,43 @@ systemctl --user daemon-reload
 systemctl --user enable --now wyltek-studio
 ```
 
-Also run ComfyUI as a service for persistent local generation:
-
-```bash
-cat > ~/.config/systemd/user/comfyui.service << 'EOF'
-[Unit]
-Description=ComfyUI
-After=network.target
-[Service]
-Type=simple
-WorkingDirectory=/path/to/ComfyUI
-ExecStart=/usr/bin/python3 main.py --listen 0.0.0.0 --port 8188
-Restart=always
-RestartSec=5
-Environment=PYTHONUNBUFFERED=1
-[Install]
-WantedBy=default.target
-EOF
-
-systemctl --user daemon-reload
-systemctl --user enable --now comfyui
-```
+---
 
 ## Architecture
 
 ```
 Browser (localhost:7860)
-    |
-    v
+    │
+    ▼
 Wyltek Studio (FastAPI + WebSocket)
-    |
-    +-- ComfyUI API (local GPU)
-    |     +-- Checkpoints (SD 1.5, SDXL, Juggernaut, RealVis, DreamShaper)
-    |     +-- GGUF models (Flux.1, SD3, SDXL Lightning)
-    |     +-- LoRAs (Pixel Art, Anime, Film Grain, etc.)
-    |     +-- IP-Adapter (reference image conditioning)
-    |     +-- Upscalers (RealESRGAN, UltraSharp)
-    |
-    +-- Gemini API (cloud)
-    +-- HuggingFace API (cloud)
-    +-- ... other cloud APIs
+    │
+    ├── Image Generator
+    │     ├── ComfyUI API (local GPU — checkpoints, GGUF, LoRA, IP-Adapter)
+    │     └── Cloud APIs (Gemini, OpenAI, Replicate, HuggingFace, …)
+    │
+    ├── Frame Cutter        — browser reads video from disk via blob URL
+    │
+    ├── Image Tools
+    │     ├── rembg          — /data/venvs/rembg/ (dedicated venv)
+    │     ├── SAM ViT-L      — ~/ComfyUI/models/sams/sam_vit_l_0b3195.pth
+    │     └── LaMa / SD inpaint  — coming soon
+    │
+    ├── TTS Studio           — Piper, Kokoro, XTTS v2, Bark (CPU)
+    ├── Music Studio         — MusicGen small/medium (CPU)
+    ├── Video Studio         — AnimateDiff via ComfyUI (GPU)
+    └── Projects             — ffmpeg-python timeline renderer
 ```
 
-All generation is async. The server submits jobs, tracks progress via WebSocket, and streams updates to the browser. Generated images are saved with full metadata (JSON sidecar + embedded PNG tEXt chunks).
+All generation is async. The server submits jobs and streams progress to the browser via WebSocket. Generated images are saved with full metadata (JSON sidecar + embedded PNG tEXt chunks).
 
-ComfyUI handles its own job queue — multiple requests are serialized automatically, swapping models in/out of VRAM as needed.
+---
 
 ## Requirements
 
 - Python 3.10+
-- For local generation: NVIDIA GPU with 6GB+ VRAM (8GB+ recommended)
-- For cloud-only: no GPU needed
+- For local image generation: NVIDIA GPU with 6GB+ VRAM (8GB+ recommended)
+- For background removal and SAM: CPU is fine (GPU accelerates SAM if available)
+- For cloud-only image generation: no GPU needed
 
 ## License
 
