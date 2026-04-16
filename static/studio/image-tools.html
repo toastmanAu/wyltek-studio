@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Wyltek Studio — Image Tools</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="stylesheet" href="/static/css/nav.css">
+  <script src="/static/js/nav.js"></script>
+  <style>
+    .studio-page { max-width: 1100px; margin: 0 auto; padding: 32px 24px; }
+    .studio-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; flex-wrap: wrap; gap: 8px; }
+    .studio-header h2 { margin: 0; }
+    .studio-header .subtitle { font-size: 13px; color: var(--text-dim); }
+
+    /* Tool tabs */
+    .tab-bar { display: flex; gap: 4px; margin-bottom: 20px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+    .tab-btn { padding: 8px 16px; font-size: 12px; font-weight: 600; border: none; background: var(--surface-2); color: var(--text-dim); border-radius: 6px 6px 0 0; cursor: pointer; transition: all 0.15s; }
+    .tab-btn:hover { color: var(--text); background: var(--surface-3); }
+    .tab-btn.active { color: var(--accent); background: var(--accent-dim); }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+    .badge-soon { font-size: 10px; padding: 2px 7px; background: var(--surface-3); color: var(--text-dim); border-radius: 10px; border: 1px solid var(--border); margin-left: 6px; }
+
+    /* Load bar */
+    .load-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 20px; padding: 12px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; }
+    .load-bar span { font-size: 13px; color: var(--text-dim); }
+    .file-pick-btn { padding: 7px 14px; font-size: 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; color: var(--text); cursor: pointer; }
+    .file-pick-btn:hover { border-color: var(--accent); color: var(--accent); }
+    #img-file-input { display: none; }
+    .loaded-name { font-size: 12px; color: var(--success); }
+
+    /* Two-column */
+    .tool-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    @media (max-width: 750px) { .tool-columns { grid-template-columns: 1fr; } }
+
+    .img-panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+    .img-panel-header { padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 12px; font-weight: 600; color: var(--text-dim); display: flex; align-items: center; justify-content: space-between; }
+    .img-panel-body { background: repeating-conic-gradient(var(--surface-2) 0% 25%, var(--surface-3) 0% 50%) 50% / 16px 16px; min-height: 280px; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+    .img-placeholder { font-size: 13px; color: var(--text-dim); text-align: center; padding: 40px; }
+    .result-img { max-width: 100%; max-height: 420px; display: block; object-fit: contain; }
+
+    /* Canvas editor */
+    .canvas-editor { position: relative; display: inline-block; line-height: 0; }
+    .canvas-editor img { display: block; max-width: 100%; max-height: 420px; }
+    .canvas-editor canvas { position: absolute; top: 0; left: 0; }
+
+    /* Tool controls */
+    .tool-controls { padding: 14px 16px; border-top: 1px solid var(--border); }
+    .control-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+    .control-row:last-child { margin-bottom: 0; }
+    .control-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; min-width: 46px; }
+
+    /* Selection mode toolbar */
+    .sel-tools { display: flex; gap: 4px; }
+    .sel-btn { padding: 6px 10px; font-size: 18px; line-height: 1; background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; color: var(--text-dim); transition: all 0.15s; }
+    .sel-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .sel-btn.active { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
+    .sel-btn[title] { position: relative; }
+
+    .brush-size { width: 80px; accent-color: var(--accent); }
+
+    /* SAM status */
+    .sam-hint { font-size: 12px; color: var(--text-dim); padding: 6px 10px; background: var(--surface-2); border-radius: 6px; border: 1px solid var(--border); }
+    .sam-hint.loading { color: var(--warning); border-color: var(--warning); }
+    .sam-hint.ready { color: var(--success); border-color: var(--success); }
+
+    /* Buttons */
+    .btn-primary { padding: 9px 22px; font-size: 13px; font-weight: 600; background: var(--accent); color: #fff; border: none; border-radius: 8px; cursor: pointer; }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-secondary { padding: 8px 14px; font-size: 12px; font-weight: 600; background: var(--surface-2); color: var(--accent); border: 1px solid var(--accent); border-radius: 6px; cursor: pointer; }
+    .btn-secondary:hover { background: var(--accent-dim); }
+    .btn-outline { padding: 7px 12px; font-size: 12px; background: transparent; color: var(--text-dim); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; }
+    .btn-outline:hover { color: var(--text); background: var(--surface-2); }
+
+    .progress-bar { height: 3px; background: var(--border); border-radius: 2px; margin: 10px 0; display: none; }
+    .progress-bar.active { display: block; }
+    .progress-fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width 0.4s; }
+    .status-msg { font-size: 12px; color: var(--text-dim); margin-top: 6px; }
+    .status-msg.ok { color: var(--success); }
+    .status-msg.err { color: var(--error); }
+
+    .result-actions { padding: 10px 14px; border-top: 1px solid var(--border); display: flex; gap: 8px; flex-wrap: wrap; }
+
+    .model-note { font-size: 12px; color: var(--text-dim); padding: 10px 14px; background: var(--surface-2); border-radius: 6px; margin-bottom: 14px; }
+    .prompt-wrap textarea { width: 100%; padding: 10px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 13px; resize: vertical; min-height: 60px; }
+  </style>
+</head>
+<body>
+<div class="studio-page">
+  <div class="studio-header">
+    <div>
+      <h2>Image Tools</h2>
+      <div class="subtitle">Background removal, object removal, inpainting — all local inference</div>
+    </div>
+  </div>
+
+  <div class="load-bar">
+    <span>Image:</span>
+    <button class="file-pick-btn" onclick="document.getElementById('img-file-input').click()">Browse local file</button>
+    <input type="file" id="img-file-input" accept="image/*">
+    <span style="font-size:12px;color:var(--text-dim)">or</span>
+    <button class="file-pick-btn" id="from-frame-btn" style="display:none">Use frame from Frame Cutter</button>
+    <span class="loaded-name" id="loaded-name"></span>
+  </div>
+
+  <div class="tab-bar">
+    <button class="tab-btn active" data-tab="bg-remove">Remove Background</button>
+    <button class="tab-btn" data-tab="obj-remove">Remove Object <span class="badge-soon">soon</span></button>
+    <button class="tab-btn" data-tab="obj-add">Add / Replace <span class="badge-soon">soon</span></button>
+  </div>
+
+  <!-- ═══ BG REMOVE ═══ -->
+  <div class="tab-panel active" id="tab-bg-remove">
+    <div class="tool-columns">
+      <div class="img-panel">
+        <div class="img-panel-header">
+          <span>Source</span>
+          <span id="src-dims"></span>
+        </div>
+        <div class="img-panel-body" id="src-body-bg">
+          <div class="img-placeholder" id="src-ph-bg">Load an image above to start</div>
+          <img id="src-img-bg" style="display:none; max-width:100%; max-height:420px;">
+        </div>
+        <div class="tool-controls">
+          <div class="control-row">
+            <span class="control-label">Model</span>
+            <select id="rembg-model" style="padding:6px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;flex:1">
+              <option value="u2net">u2net — general purpose</option>
+              <option value="u2net_human_seg">u2net_human_seg — people / portraits</option>
+              <option value="isnet-general-use">isnet — stronger general</option>
+              <option value="birefnet-general">BiRefNet — best quality (slower)</option>
+              <option value="silueta">silueta — lightweight / fast</option>
+            </select>
+          </div>
+          <div class="control-row">
+            <label style="font-size:12px;display:flex;align-items:center;gap:6px;cursor:pointer">
+              <input type="checkbox" id="alpha-matting"> Alpha matting (better hair / fur edges)
+            </label>
+          </div>
+          <div class="control-row">
+            <button class="btn-primary" id="run-bg-remove">Remove Background</button>
+          </div>
+          <div class="progress-bar" id="bg-progress"><div class="progress-fill" id="bg-fill" style="width:0%"></div></div>
+          <div class="status-msg" id="bg-status"></div>
+        </div>
+      </div>
+
+      <div class="img-panel">
+        <div class="img-panel-header"><span>Result</span><span id="result-size-bg"></span></div>
+        <div class="img-panel-body" id="result-body-bg">
+          <div class="img-placeholder">Result will appear here</div>
+          <img id="result-img-bg" style="display:none" class="result-img">
+        </div>
+        <div class="result-actions" id="result-actions-bg" style="display:none">
+          <button class="btn-secondary" id="dl-bg-btn">Download PNG</button>
+          <button class="btn-outline" id="send-project-bg">Send to Projects</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ OBJECT REMOVE ═══ -->
+  <div class="tab-panel" id="tab-obj-remove">
+    <div class="model-note">
+      Object removal uses <strong>LaMa</strong> inpainting — paint, click, or lasso the object and the model fills it in naturally. Requires <code>iopaint</code> + LaMa weights (~200MB). <strong>Coming soon.</strong>
+    </div>
+    <div class="tool-columns">
+      <div class="img-panel">
+        <div class="img-panel-header"><span>Source — select what to remove</span><span id="rm-mode-hint" style="font-size:11px;color:var(--accent)"></span></div>
+        <div class="img-panel-body" id="src-body-rm">
+          <div class="img-placeholder" id="src-ph-rm">Load an image above first</div>
+          <div class="canvas-editor" id="rm-editor" style="display:none">
+            <img id="src-img-rm">
+            <canvas id="mask-rm"></canvas>
+          </div>
+        </div>
+        <div class="tool-controls">
+          <div class="control-row">
+            <span class="control-label">Select</span>
+            <div class="sel-tools" id="rm-sel-tools">
+              <button class="sel-btn active" data-mode="brush" title="Freehand brush">&#9999;</button>
+              <button class="sel-btn" data-mode="rect" title="Rectangle">&#9645;</button>
+              <button class="sel-btn" data-mode="ellipse" title="Ellipse">&#9711;</button>
+              <button class="sel-btn" data-mode="lasso" title="Lasso (click to add points, double-click to close)">&#10006;</button>
+              <button class="sel-btn" data-mode="sam" title="Click an object — SAM finds it automatically">&#9889;</button>
+            </div>
+            <span class="sam-hint" id="rm-sam-status" style="display:none">Loading SAM...</span>
+          </div>
+          <div class="control-row" id="rm-brush-row">
+            <span class="control-label">Size</span>
+            <input type="range" class="brush-size" id="brush-rm" min="5" max="80" value="20">
+            <button class="btn-outline" id="clear-mask-rm">Clear</button>
+          </div>
+          <div class="control-row">
+            <button class="btn-primary" id="run-obj-remove" disabled>Remove Object (LaMa)</button>
+          </div>
+          <div class="status-msg" id="rm-status"></div>
+        </div>
+      </div>
+      <div class="img-panel">
+        <div class="img-panel-header"><span>Result</span></div>
+        <div class="img-panel-body"><div class="img-placeholder">Result will appear here</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ ADD / REPLACE ═══ -->
+  <div class="tab-panel" id="tab-obj-add">
+    <div class="model-note">
+      Uses <strong>SD inpainting</strong> via ComfyUI — select the area to replace, describe what to put there. Requires ComfyUI running with an inpainting model. <strong>Coming soon.</strong>
+    </div>
+    <div class="tool-columns">
+      <div class="img-panel">
+        <div class="img-panel-header"><span>Source — select area to replace</span><span id="add-mode-hint" style="font-size:11px;color:var(--accent)"></span></div>
+        <div class="img-panel-body" id="src-body-add">
+          <div class="img-placeholder" id="src-ph-add">Load an image above first</div>
+          <div class="canvas-editor" id="add-editor" style="display:none">
+            <img id="src-img-add">
+            <canvas id="mask-add"></canvas>
+          </div>
+        </div>
+        <div class="tool-controls">
+          <div class="control-row">
+            <span class="control-label">Select</span>
+            <div class="sel-tools" id="add-sel-tools">
+              <button class="sel-btn active" data-mode="brush" title="Freehand brush">&#9999;</button>
+              <button class="sel-btn" data-mode="rect" title="Rectangle">&#9645;</button>
+              <button class="sel-btn" data-mode="ellipse" title="Ellipse">&#9711;</button>
+              <button class="sel-btn" data-mode="lasso" title="Lasso (click to add points, double-click to close)">&#10006;</button>
+              <button class="sel-btn" data-mode="sam" title="Click an object — SAM finds it automatically">&#9889;</button>
+            </div>
+            <span class="sam-hint" id="add-sam-status" style="display:none">Loading SAM...</span>
+          </div>
+          <div class="control-row" id="add-brush-row">
+            <span class="control-label">Size</span>
+            <input type="range" class="brush-size" id="brush-add" min="5" max="80" value="20">
+            <button class="btn-outline" id="clear-mask-add">Clear</button>
+          </div>
+          <div class="prompt-wrap" style="margin-bottom:10px">
+            <textarea id="add-prompt" placeholder="Describe what to place here — e.g. 'a red fire hydrant', 'a golden retriever sitting'"></textarea>
+          </div>
+          <div class="control-row">
+            <button class="btn-primary" id="run-obj-add" disabled>Generate (SD Inpainting)</button>
+          </div>
+          <div class="status-msg" id="add-status"></div>
+        </div>
+      </div>
+      <div class="img-panel">
+        <div class="img-panel-header"><span>Result</span></div>
+        <div class="img-panel-body"><div class="img-placeholder">Result will appear here</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════
+// Tab switching
+// ═══════════════════════════════════════════════════════
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+  });
+});
+
+// ═══════════════════════════════════════════════════════
+// Image loading
+// ═══════════════════════════════════════════════════════
+let loadedPath = null;
+let loadedBlobUrl = null;
+let loadedNaturalW = 0, loadedNaturalH = 0;
+
+const fromFrameBtn = document.getElementById('from-frame-btn');
+const frameSource = sessionStorage.getItem('imagetools-source');
+if (frameSource) {
+  fromFrameBtn.style.display = 'block';
+  fromFrameBtn.textContent = 'Use: ' + frameSource.split('/').pop();
+}
+
+fromFrameBtn.addEventListener('click', () => {
+  loadedPath = frameSource;
+  const url = '/api/frame/serve?path=' + encodeURIComponent(frameSource);
+  applyImageToAll(url, frameSource.split('/').pop());
+  sessionStorage.removeItem('imagetools-source');
+  fromFrameBtn.style.display = 'none';
+});
+
+document.getElementById('img-file-input').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  if (loadedBlobUrl) URL.revokeObjectURL(loadedBlobUrl);
+  loadedBlobUrl = URL.createObjectURL(file);
+  loadedPath = null;
+  applyImageToAll(loadedBlobUrl, file.name);
+});
+
+function applyImageToAll(src, name) {
+  document.getElementById('loaded-name').textContent = name;
+
+  // BG remove tab — simple img element
+  const imgBg = document.getElementById('src-img-bg');
+  imgBg.onload = () => {
+    loadedNaturalW = imgBg.naturalWidth;
+    loadedNaturalH = imgBg.naturalHeight;
+    document.getElementById('src-dims').textContent = `${imgBg.naturalWidth} \u00d7 ${imgBg.naturalHeight}`;
+    document.getElementById('src-ph-bg').style.display = 'none';
+    imgBg.style.display = 'block';
+  };
+  imgBg.src = src;
+
+  // Reset result
+  document.getElementById('result-img-bg').style.display = 'none';
+  document.getElementById('result-actions-bg').style.display = 'none';
+  document.getElementById('bg-status').textContent = '';
+  document.getElementById('bg-status').className = 'status-msg';
+  document.getElementById('result-size-bg').textContent = '';
+
+  // Mask editors
+  setupMaskEditor('rm', src);
+  setupMaskEditor('add', src);
+}
+
+// ═══════════════════════════════════════════════════════
+// Mask editor — supports brush / rect / ellipse / lasso / SAM
+// ═══════════════════════════════════════════════════════
+function setupMaskEditor(prefix, src) {
+  const editor = document.getElementById(`${prefix}-editor`);
+  const img    = document.getElementById(`src-img-${prefix}`);
+  const canvas = document.getElementById(`mask-${prefix}`);
+  const ph     = document.getElementById(`src-ph-${prefix}`);
+  const ctx    = canvas.getContext('2d');
+
+  let mode = 'brush';
+  let painting = false;
+  let startX = 0, startY = 0;
+  let snapshot = null;          // ImageData before shape preview
+  let lassoPoints = [];         // for lasso mode
+
+  img.onload = () => {
+    // Scale to fit panel (max 500×420)
+    const scale = Math.min(500 / img.naturalWidth, 420 / img.naturalHeight, 1);
+    const dw = Math.round(img.naturalWidth * scale);
+    const dh = Math.round(img.naturalHeight * scale);
+    img.style.width  = dw + 'px';
+    img.style.height = dh + 'px';
+    canvas.width  = dw; canvas.height = dh;
+    canvas.style.width  = dw + 'px';
+    canvas.style.height = dh + 'px';
+    ctx.clearRect(0, 0, dw, dh);
+    ph.style.display = 'none';
+    editor.style.display = 'inline-block';
+  };
+  img.src = src;
+
+  // Mode toolbar
+  document.querySelectorAll(`#${prefix}-sel-tools .sel-btn`).forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll(`#${prefix}-sel-tools .sel-btn`).forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      mode = btn.dataset.mode;
+      lassoPoints = [];
+
+      // Show/hide brush size row
+      const brushRow = document.getElementById(`${prefix}-brush-row`);
+      brushRow.style.display = mode === 'brush' ? 'flex' : 'none';
+
+      // SAM status chip
+      const samStatus = document.getElementById(`${prefix}-sam-status`);
+      samStatus.style.display = mode === 'sam' ? 'inline-block' : 'none';
+      if (mode === 'sam') {
+        canvas.style.cursor = 'crosshair';
+        samStatus.textContent = 'Click any object to select it';
+        samStatus.className = 'sam-hint';
+      } else {
+        canvas.style.cursor = mode === 'brush' ? 'crosshair' : 'default';
+      }
+
+      // Mode hint in header
+      const hints = { brush: '', rect: 'drag to select', ellipse: 'drag to select', lasso: 'click points — double-click to close', sam: 'click object' };
+      document.getElementById(`${prefix}-mode-hint`).textContent = hints[mode] || '';
+    });
+  });
+
+  // Clear
+  document.getElementById(`clear-mask-${prefix}`).addEventListener('click', () => {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    lassoPoints = [];
+  });
+
+  // ── Pointer helpers ──
+  function pos(e) {
+    const r = canvas.getBoundingClientRect();
+    const touch = e.touches ? e.touches[0] : e;
+    return { x: touch.clientX - r.left, y: touch.clientY - r.top };
+  }
+
+  function fillCircle(x, y, r) {
+    ctx.fillStyle = 'rgba(255, 50, 50, 0.55)';
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawRectPreview(ex, ey) {
+    ctx.putImageData(snapshot, 0, 0);
+    ctx.fillStyle = 'rgba(255, 50, 50, 0.45)';
+    ctx.fillRect(startX, startY, ex - startX, ey - startY);
+    ctx.strokeStyle = 'rgba(255, 80, 80, 0.9)';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(startX, startY, ex - startX, ey - startY);
+  }
+
+  function drawEllipsePreview(ex, ey) {
+    ctx.putImageData(snapshot, 0, 0);
+    const rx = (ex - startX) / 2, ry = (ey - startY) / 2;
+    const cx = startX + rx, cy = startY + ry;
+    ctx.fillStyle = 'rgba(255, 50, 50, 0.45)';
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, Math.abs(rx), Math.abs(ry), 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255, 80, 80, 0.9)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+
+  function drawLasso() {
+    if (lassoPoints.length < 2) return;
+    ctx.save();
+    ctx.fillStyle = 'rgba(255, 50, 50, 0.45)';
+    ctx.strokeStyle = 'rgba(255, 80, 80, 0.9)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(lassoPoints[0].x, lassoPoints[0].y);
+    lassoPoints.slice(1).forEach(p => ctx.lineTo(p.x, p.y));
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // ── Mouse / touch events ──
+  canvas.addEventListener('mousedown', e => {
+    const p = pos(e);
+    if (mode === 'brush') {
+      painting = true;
+      const r = parseInt(document.getElementById(`brush-${prefix}`).value) / 2;
+      fillCircle(p.x, p.y, r);
+    } else if (mode === 'rect' || mode === 'ellipse') {
+      painting = true;
+      startX = p.x; startY = p.y;
+      snapshot = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    } else if (mode === 'lasso') {
+      lassoPoints.push(p);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (snapshot) ctx.putImageData(snapshot, 0, 0);
+      drawLasso();
+    } else if (mode === 'sam') {
+      runSAM(prefix, p.x, p.y, img, canvas, ctx);
+    }
+  });
+
+  canvas.addEventListener('mousemove', e => {
+    if (!painting) return;
+    const p = pos(e);
+    if (mode === 'brush') {
+      const r = parseInt(document.getElementById(`brush-${prefix}`).value) / 2;
+      fillCircle(p.x, p.y, r);
+    } else if (mode === 'rect') {
+      drawRectPreview(p.x, p.y);
+    } else if (mode === 'ellipse') {
+      drawEllipsePreview(p.x, p.y);
+    }
+  });
+
+  canvas.addEventListener('mouseup', e => {
+    if (!painting) return;
+    painting = false;
+    const p = pos(e);
+    if (mode === 'rect') drawRectPreview(p.x, p.y);
+    else if (mode === 'ellipse') drawEllipsePreview(p.x, p.y);
+    snapshot = null;
+  });
+
+  canvas.addEventListener('dblclick', e => {
+    if (mode === 'lasso' && lassoPoints.length >= 3) {
+      // Commit lasso — save current state as new snapshot baseline
+      snapshot = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      lassoPoints = [];
+    }
+  });
+
+  canvas.addEventListener('mouseleave', () => { painting = false; });
+}
+
+// ═══════════════════════════════════════════════════════
+// SAM click-to-segment
+// ═══════════════════════════════════════════════════════
+async function runSAM(prefix, canvasX, canvasY, img, canvas, ctx) {
+  const statusEl = document.getElementById(`${prefix}-sam-status`);
+  statusEl.textContent = 'Segmenting...';
+  statusEl.className = 'sam-hint loading';
+
+  // Convert canvas coordinates → original image coordinates
+  const scaleX = img.naturalWidth  / parseInt(img.style.width);
+  const scaleY = img.naturalHeight / parseInt(img.style.height);
+  const imgX = Math.round(canvasX * scaleX);
+  const imgY = Math.round(canvasY * scaleY);
+
+  try {
+    let body;
+    if (loadedPath) {
+      body = JSON.stringify({ path: loadedPath, x: imgX, y: imgY });
+    } else {
+      // Send current source image as base64
+      const tmpCanvas = document.createElement('canvas');
+      tmpCanvas.width = img.naturalWidth;
+      tmpCanvas.height = img.naturalHeight;
+      tmpCanvas.getContext('2d').drawImage(img, 0, 0);
+      const b64 = tmpCanvas.toDataURL('image/png').split(',')[1];
+      body = JSON.stringify({ image_b64: b64, x: imgX, y: imgY });
+    }
+
+    const res = await fetch('/api/image/sam-segment', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body
+    });
+    const data = await res.json();
+    if (!data.mask_b64) throw new Error(data.error || 'No mask returned');
+
+    // Decode returned mask and paint it onto the canvas
+    const maskImg = new Image();
+    maskImg.onload = () => {
+      const tmpC = document.createElement('canvas');
+      tmpC.width = maskImg.width; tmpC.height = maskImg.height;
+      const tmpCtx = tmpC.getContext('2d');
+      tmpCtx.drawImage(maskImg, 0, 0);
+      const maskData = tmpCtx.getImageData(0, 0, tmpC.width, tmpC.height);
+
+      // Scale mask pixels → canvas
+      const sw = canvas.width / maskImg.width;
+      const sh = canvas.height / maskImg.height;
+      ctx.fillStyle = 'rgba(255, 50, 50, 0.55)';
+      for (let my = 0; my < maskImg.height; my++) {
+        for (let mx = 0; mx < maskImg.width; mx++) {
+          const i = (my * maskImg.width + mx) * 4;
+          if (maskData.data[i] > 128) {
+            ctx.fillRect(mx * sw, my * sh, Math.ceil(sw), Math.ceil(sh));
+          }
+        }
+      }
+      statusEl.textContent = 'Object found \u2014 click another to add, or clear to restart';
+      statusEl.className = 'sam-hint ready';
+    };
+    maskImg.src = 'data:image/png;base64,' + data.mask_b64;
+
+  } catch (err) {
+    statusEl.textContent = 'SAM error: ' + err.message;
+    statusEl.className = 'sam-hint';
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+// BG Remove
+// ═══════════════════════════════════════════════════════
+document.getElementById('run-bg-remove').addEventListener('click', async () => {
+  const btn    = document.getElementById('run-bg-remove');
+  const status = document.getElementById('bg-status');
+  const bar    = document.getElementById('bg-progress');
+  const fill   = document.getElementById('bg-fill');
+
+  btn.disabled = true;
+  status.textContent = 'Running rembg...';
+  status.className = 'status-msg';
+  bar.classList.add('active');
+
+  let pct = 0;
+  const ticker = setInterval(() => { pct = Math.min(pct + 2, 85); fill.style.width = pct + '%'; }, 200);
+
+  try {
+    let body;
+    if (loadedPath) {
+      body = JSON.stringify({
+        path: loadedPath,
+        model: document.getElementById('rembg-model').value,
+        alpha_matting: document.getElementById('alpha-matting').checked
+      });
+    } else {
+      const imgEl = document.getElementById('src-img-bg');
+      const cvs = document.createElement('canvas');
+      cvs.width = imgEl.naturalWidth; cvs.height = imgEl.naturalHeight;
+      cvs.getContext('2d').drawImage(imgEl, 0, 0);
+      body = JSON.stringify({
+        image_b64: cvs.toDataURL('image/png').split(',')[1],
+        model: document.getElementById('rembg-model').value,
+        alpha_matting: document.getElementById('alpha-matting').checked
+      });
+    }
+
+    const res  = await fetch('/api/image/bg-remove', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+    const data = await res.json();
+    clearInterval(ticker);
+    fill.style.width = '100%';
+
+    if (data.result_url) {
+      const ri = document.getElementById('result-img-bg');
+      ri.src = data.result_url + '?t=' + Date.now();
+      ri.style.display = 'block';
+      document.getElementById('result-actions-bg').style.display = 'flex';
+      document.getElementById('result-size-bg').textContent = data.filename || '';
+      status.className = 'status-msg ok';
+      status.textContent = `Done \u2014 ${data.elapsed_ms}ms`;
+      document.getElementById('dl-bg-btn').onclick = () => {
+        const a = document.createElement('a'); a.href = data.result_url; a.download = data.filename; a.click();
+      };
+    } else {
+      throw new Error(data.error || 'No result returned');
+    }
+  } catch (err) {
+    clearInterval(ticker);
+    status.className = 'status-msg err';
+    status.textContent = 'Error: ' + err.message;
+  } finally {
+    btn.disabled = false;
+    setTimeout(() => { bar.classList.remove('active'); fill.style.width = '0%'; }, 800);
+  }
+});
+</script>
+</body>
+</html>

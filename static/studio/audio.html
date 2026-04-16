@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Wyltek Studio — Audio Tools</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="stylesheet" href="/static/css/nav.css">
+  <script src="/static/js/nav.js"></script>
+  <style>
+    .studio-page {
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 32px 24px;
+    }
+    .studio-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 28px;
+    }
+    .studio-header h2 { margin: 0; }
+
+    .tab-bar {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 28px;
+      border-bottom: 1px solid var(--border);
+    }
+    .tab-btn {
+      padding: 8px 20px;
+      background: none;
+      border: 1px solid transparent;
+      border-bottom: none;
+      border-radius: 6px 6px 0 0;
+      color: var(--text-dim);
+      cursor: pointer;
+      font-size: 14px;
+      margin-bottom: -1px;
+    }
+    .tab-btn.active {
+      background: var(--surface);
+      border-color: var(--border);
+      color: var(--text);
+      border-bottom-color: var(--surface);
+    }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    .upload-zone {
+      border: 2px dashed var(--border);
+      border-radius: 10px;
+      padding: 36px 24px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.15s;
+      margin-bottom: 20px;
+    }
+    .upload-zone:hover, .upload-zone.drag-over { border-color: var(--accent); }
+    .upload-zone input[type="file"] { display: none; }
+    .upload-zone .uz-icon { font-size: 32px; margin-bottom: 8px; }
+    .upload-zone p { margin: 6px 0 0; font-size: 13px; color: var(--text-dim); }
+    .upload-zone .uz-filename {
+      margin-top: 10px; font-size: 13px; color: var(--accent);
+      font-weight: 500; display: none;
+    }
+
+    .controls-row {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: flex-end;
+      margin-bottom: 20px;
+    }
+    .ctrl-group { display: flex; flex-direction: column; gap: 4px; min-width: 120px; }
+    .ctrl-group label { font-size: 11px; text-transform: uppercase; color: var(--text-dim); }
+    .ctrl-group select, .ctrl-group input {
+      padding: 8px 10px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-size: 13px;
+    }
+
+    .btn-primary {
+      padding: 10px 28px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    .btn-secondary {
+      padding: 8px 16px;
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .btn-secondary:hover { border-color: var(--accent); color: var(--accent); }
+    .btn-secondary:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    .player-area {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .player-area audio { width: 100%; margin-bottom: 14px; }
+    .time-display {
+      font-size: 13px; color: var(--text-dim);
+      margin-bottom: 12px; font-family: monospace;
+    }
+    .mark-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    .mark-badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 4px 10px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 12px; font-family: monospace;
+    }
+    .mark-badge.set { border-color: var(--accent); color: var(--accent); }
+
+    .result-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 20px;
+      margin-top: 20px;
+      display: none;
+    }
+    .result-card.visible { display: block; }
+    .result-card h4 { margin: 0 0 12px 0; }
+    .result-card audio { width: 100%; margin-bottom: 12px; }
+    .result-meta {
+      display: flex; gap: 16px; flex-wrap: wrap;
+      margin-bottom: 12px; font-size: 12px; color: var(--text-dim);
+    }
+
+    .status-msg { font-size: 13px; color: var(--text-dim); margin-top: 10px; min-height: 20px; }
+    .status-msg.error { color: var(--error, #f87171); }
+    .status-msg.success { color: var(--success, #34d399); }
+  </style>
+</head>
+<body>
+<div class="studio-page">
+  <div class="studio-header">
+    <span style="font-size:28px">&#127911;</span>
+    <h2>Audio Tools</h2>
+  </div>
+
+  <div class="tab-bar">
+    <button class="tab-btn active" onclick="switchTab('extract', this)">Extract from Video</button>
+    <button class="tab-btn" onclick="switchTab('convert', this)">Convert</button>
+    <button class="tab-btn" onclick="switchTab('cut', this)">Cut Audio</button>
+  </div>
+
+  <!-- TAB 1: EXTRACT -->
+  <div id="tab-extract" class="tab-panel active">
+    <div class="upload-zone" id="extract-drop" onclick="document.getElementById('extract-file').click()">
+      <input type="file" id="extract-file" accept="video/*,audio/*" onchange="onExtractFile(this)">
+      <div class="uz-icon">&#127910;</div>
+      <strong>Click to choose a video</strong>
+      <p>MP4, MKV, WebM, MOV, AVI — or any audio file to re-encode</p>
+      <div class="uz-filename" id="extract-filename"></div>
+    </div>
+
+    <div class="controls-row">
+      <div class="ctrl-group">
+        <label>Output Format</label>
+        <select id="extract-format">
+          <option value="mp3">MP3</option>
+          <option value="wav">WAV</option>
+          <option value="flac">FLAC</option>
+          <option value="ogg">OGG</option>
+        </select>
+      </div>
+      <div class="ctrl-group">
+        <label>Bitrate (MP3 / OGG)</label>
+        <select id="extract-quality">
+          <option value="128k">128 kbps</option>
+          <option value="192k" selected>192 kbps</option>
+          <option value="256k">256 kbps</option>
+          <option value="320k">320 kbps</option>
+        </select>
+      </div>
+      <button class="btn-primary" id="extract-btn" onclick="runExtract()" disabled>
+        &#9660; Extract Audio
+      </button>
+    </div>
+
+    <div class="status-msg" id="extract-status"></div>
+
+    <div class="result-card" id="extract-result">
+      <h4>&#10003; Extracted Audio</h4>
+      <audio id="extract-player" controls></audio>
+      <div class="result-meta" id="extract-meta"></div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <a id="extract-dl" class="btn-secondary" download>&#8595; Download</a>
+        <button class="btn-secondary" id="extract-send-cut" onclick="sendToCut()">&#9986; Send to Cut</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- TAB 2: CONVERT -->
+  <div id="tab-convert" class="tab-panel">
+    <div class="upload-zone" id="convert-drop" onclick="document.getElementById('convert-file').click()">
+      <input type="file" id="convert-file"
+             accept="audio/*,.mp3,.wav,.flac,.ogg,.m4a,.aac,.webm,.opus"
+             onchange="onConvertFile(this)">
+      <div class="uz-icon">&#8644;</div>
+      <strong>Click to choose an audio file</strong>
+      <p>MP3, WAV, FLAC, OGG, M4A, AAC, Opus, WebM — any format ffmpeg can read</p>
+      <div class="uz-filename" id="convert-filename"></div>
+    </div>
+
+    <div class="controls-row">
+      <div class="ctrl-group">
+        <label>Target Format</label>
+        <select id="convert-format">
+          <option value="wav">WAV (uncompressed)</option>
+          <option value="mp3">MP3</option>
+          <option value="flac">FLAC (lossless)</option>
+          <option value="ogg">OGG Vorbis</option>
+        </select>
+      </div>
+      <div class="ctrl-group" id="convert-quality-group">
+        <label>Bitrate (MP3 / OGG)</label>
+        <select id="convert-quality">
+          <option value="128k">128 kbps</option>
+          <option value="192k" selected>192 kbps</option>
+          <option value="256k">256 kbps</option>
+          <option value="320k">320 kbps</option>
+        </select>
+      </div>
+      <button class="btn-primary" id="convert-btn" onclick="runConvert()" disabled>
+        &#8644; Convert
+      </button>
+    </div>
+
+    <div class="status-msg" id="convert-status"></div>
+
+    <div class="result-card" id="convert-result">
+      <h4>&#10003; Converted Audio</h4>
+      <audio id="convert-player" controls></audio>
+      <div class="result-meta" id="convert-meta"></div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <a id="convert-dl" class="btn-secondary" download>&#8595; Download</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- TAB 3: CUT -->
+  <div id="tab-cut" class="tab-panel">
+    <div class="upload-zone" id="cut-drop" onclick="document.getElementById('cut-file').click()">
+      <input type="file" id="cut-file" accept="audio/*,audio/mpeg,audio/wav,audio/flac,audio/ogg,audio/mp4,audio/x-m4a,.mp3,.wav,.flac,.ogg,.m4a,.aac" onchange="onCutFile(this)">
+      <div class="uz-icon">&#9986;</div>
+      <strong>Click to choose an audio file</strong>
+      <p>MP3, WAV, FLAC, OGG, M4A</p>
+      <div class="uz-filename" id="cut-filename"></div>
+    </div>
+
+    <div class="player-area" id="cut-player-area" style="display:none">
+      <audio id="cut-audio" controls ontimeupdate="onTimeUpdate()"></audio>
+      <div class="time-display">
+        Position: <span id="cur-time">0.00</span>s &nbsp;/&nbsp;
+        Duration: <span id="dur-time">—</span>s
+      </div>
+      <div class="mark-row">
+        <button class="btn-secondary" onclick="markStart()">&#9654; Mark Start</button>
+        <div class="mark-badge" id="start-badge">Start: —</div>
+        <button class="btn-secondary" onclick="markEnd()">&#9646; Mark End</button>
+        <div class="mark-badge" id="end-badge">End: —</div>
+        <button class="btn-secondary" style="margin-left:auto" onclick="clearMarks()">&#8635; Clear</button>
+      </div>
+    </div>
+
+    <div class="controls-row" id="cut-controls" style="display:none">
+      <div class="ctrl-group">
+        <label>Start (seconds)</label>
+        <input type="number" id="cut-start" value="0" min="0" step="0.1">
+      </div>
+      <div class="ctrl-group">
+        <label>End (seconds)</label>
+        <input type="number" id="cut-end" value="0" min="0" step="0.1">
+      </div>
+      <button class="btn-primary" id="cut-btn" onclick="runCut()" disabled>
+        &#9986; Cut
+      </button>
+    </div>
+
+    <div class="status-msg" id="cut-status"></div>
+
+    <div class="result-card" id="cut-result">
+      <h4>&#10003; Trimmed Audio</h4>
+      <audio id="cut-player" controls></audio>
+      <div class="result-meta" id="cut-meta"></div>
+      <a id="cut-dl" class="btn-secondary" download>&#8595; Download</a>
+    </div>
+  </div>
+</div>
+
+<script>
+// ─── Tab switching ──────────────────────────────────────────────────────────
+
+function switchTab(id, btn) {
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + id).classList.add('active');
+  btn.classList.add('active');
+}
+
+// ─── Safe meta builder — no innerHTML with server data ──────────────────────
+
+function buildMeta(container, items) {
+  container.textContent = '';
+  items.forEach(({ label, value }) => {
+    const span = document.createElement('span');
+    const b = document.createElement('b');
+    b.textContent = value;
+    span.textContent = label + ': ';
+    span.appendChild(b);
+    container.appendChild(span);
+  });
+}
+
+// ─── Status helper ──────────────────────────────────────────────────────────
+
+function setStatus(id, msg, type) {
+  const el = document.getElementById(id);
+  el.textContent = msg;
+  el.className = 'status-msg' + (type ? ' ' + type : '');
+}
+
+// ─── Drag-and-drop setup ─────────────────────────────────────────────────────
+
+function setupDrop(zoneId, inputId, onFile) {
+  const zone = document.getElementById(zoneId);
+  zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+  zone.addEventListener('drop', e => {
+    e.preventDefault();
+    zone.classList.remove('drag-over');
+    const file = e.dataTransfer.files[0];
+    if (!file) return;
+    const input = document.getElementById(inputId);
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    input.files = dt.files;
+    onFile(input);
+  });
+}
+
+// ─── Extract tab ─────────────────────────────────────────────────────────────
+
+setupDrop('extract-drop', 'extract-file', onExtractFile);
+
+function onExtractFile(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const fn = document.getElementById('extract-filename');
+  fn.textContent = file.name;
+  fn.style.display = 'block';
+  document.getElementById('extract-btn').disabled = false;
+  document.getElementById('extract-result').classList.remove('visible');
+  setStatus('extract-status', '');
+}
+
+async function runExtract() {
+  const input = document.getElementById('extract-file');
+  const file = input.files[0];
+  if (!file) return;
+
+  const format  = document.getElementById('extract-format').value;
+  const quality = document.getElementById('extract-quality').value;
+  const btn     = document.getElementById('extract-btn');
+
+  btn.disabled = true;
+  btn.textContent = 'Extracting…';
+  setStatus('extract-status', 'Running ffmpeg…');
+
+  const fd = new FormData();
+  fd.append('video', file);
+  fd.append('format', format);
+  fd.append('quality', quality);
+
+  try {
+    const res  = await fetch('/api/audio/extract', { method: 'POST', body: fd });
+    const data = await res.json();
+
+    if (!res.ok) {
+      setStatus('extract-status', data.error || 'Extraction failed', 'error');
+      return;
+    }
+
+    const url = '/api/audio/serve?path=' + encodeURIComponent(data.path);
+    document.getElementById('extract-player').src = url;
+    const dl = document.getElementById('extract-dl');
+    dl.href = url;
+    dl.download = data.filename;
+
+    buildMeta(document.getElementById('extract-meta'), [
+      { label: 'Format',   value: data.format.toUpperCase() },
+      { label: 'Size',     value: data.size_kb + ' KB' },
+      { label: 'File',     value: data.filename },
+    ]);
+    document.getElementById('extract-result').classList.add('visible');
+    setStatus('extract-status', 'Done.', 'success');
+  } catch (err) {
+    setStatus('extract-status', 'Request failed: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '↓ Extract Audio';
+  }
+}
+
+async function sendToCut() {
+  const btn = document.getElementById('extract-send-cut');
+  const dlLink = document.getElementById('extract-dl');
+  const url = dlLink.href;
+  const filename = dlLink.download;
+  if (!url) return;
+
+  btn.disabled = true;
+  btn.textContent = 'Loading…';
+
+  try {
+    const res = await fetch(url);
+    const blob = await res.blob();
+    const file = new File([blob], filename, { type: blob.type });
+
+    const input = document.getElementById('cut-file');
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    input.files = dt.files;
+    onCutFile(input);
+
+    // Switch to cut tab
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('tab-cut').classList.add('active');
+    document.querySelectorAll('.tab-btn')[1].classList.add('active');
+  } catch (err) {
+    setStatus('extract-status', 'Failed to send: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '✂ Send to Cut';
+  }
+}
+
+// ─── Convert tab ─────────────────────────────────────────────────────────────
+
+setupDrop('convert-drop', 'convert-file', onConvertFile);
+
+// Hide bitrate dropdown when target is lossless (wav/flac)
+document.getElementById('convert-format').addEventListener('change', (e) => {
+  const lossless = e.target.value === 'wav' || e.target.value === 'flac';
+  document.getElementById('convert-quality-group').style.display = lossless ? 'none' : 'flex';
+});
+
+function onConvertFile(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const fn = document.getElementById('convert-filename');
+  fn.textContent = file.name;
+  fn.style.display = 'block';
+  document.getElementById('convert-btn').disabled = false;
+  document.getElementById('convert-result').classList.remove('visible');
+  setStatus('convert-status', '');
+}
+
+async function runConvert() {
+  const input = document.getElementById('convert-file');
+  const file = input.files[0];
+  if (!file) return;
+
+  const format  = document.getElementById('convert-format').value;
+  const quality = document.getElementById('convert-quality').value;
+  const btn     = document.getElementById('convert-btn');
+
+  btn.disabled = true;
+  btn.textContent = 'Converting…';
+  setStatus('convert-status', 'Running ffmpeg…');
+
+  // Re-use /api/audio/extract — it already handles audio→audio re-encoding.
+  // The form field is named "video" but ffmpeg treats any input the same.
+  const fd = new FormData();
+  fd.append('video', file);
+  fd.append('format', format);
+  fd.append('quality', quality);
+
+  try {
+    const res  = await fetch('/api/audio/extract', { method: 'POST', body: fd });
+    const data = await res.json();
+
+    if (!res.ok) {
+      setStatus('convert-status', data.error || 'Conversion failed', 'error');
+      return;
+    }
+
+    const url = '/api/audio/serve?path=' + encodeURIComponent(data.path);
+    document.getElementById('convert-player').src = url;
+    const dl = document.getElementById('convert-dl');
+    dl.href = url;
+    dl.download = data.filename;
+
+    buildMeta(document.getElementById('convert-meta'), [
+      { label: 'Format', value: data.format.toUpperCase() },
+      { label: 'Size',   value: data.size_kb + ' KB' },
+      { label: 'File',   value: data.filename },
+    ]);
+    document.getElementById('convert-result').classList.add('visible');
+    setStatus('convert-status', 'Done.', 'success');
+  } catch (err) {
+    setStatus('convert-status', 'Request failed: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '⇄ Convert';
+  }
+}
+
+// ─── Cut tab ──────────────────────────────────────────────────────────────────
+
+setupDrop('cut-drop', 'cut-file', onCutFile);
+
+let cutDuration = 0;
+
+function onCutFile(input) {
+  const file = input.files[0];
+  if (!file) return;
+
+  const fn = document.getElementById('cut-filename');
+  fn.textContent = file.name;
+  fn.style.display = 'block';
+
+  const audio = document.getElementById('cut-audio');
+  audio.src = URL.createObjectURL(file);
+  audio.onloadedmetadata = () => {
+    cutDuration = audio.duration;
+    document.getElementById('dur-time').textContent = cutDuration.toFixed(2);
+    document.getElementById('cut-end').value = cutDuration.toFixed(2);
+    document.getElementById('cut-end').max   = cutDuration;
+    document.getElementById('cut-start').max = cutDuration;
+  };
+
+  document.getElementById('cut-player-area').style.display = 'block';
+  document.getElementById('cut-controls').style.display = 'flex';
+  document.getElementById('cut-btn').disabled = false;
+  document.getElementById('cut-result').classList.remove('visible');
+  clearMarks();
+  setStatus('cut-status', '');
+}
+
+function onTimeUpdate() {
+  const t = document.getElementById('cut-audio').currentTime;
+  document.getElementById('cur-time').textContent = t.toFixed(2);
+}
+
+function markStart() {
+  const t = document.getElementById('cut-audio').currentTime;
+  document.getElementById('cut-start').value = t.toFixed(2);
+  const badge = document.getElementById('start-badge');
+  badge.textContent = 'Start: ' + t.toFixed(2) + 's';
+  badge.classList.add('set');
+}
+
+function markEnd() {
+  const t = document.getElementById('cut-audio').currentTime;
+  document.getElementById('cut-end').value = t.toFixed(2);
+  const badge = document.getElementById('end-badge');
+  badge.textContent = 'End: ' + t.toFixed(2) + 's';
+  badge.classList.add('set');
+}
+
+function clearMarks() {
+  document.getElementById('cut-start').value = 0;
+  document.getElementById('cut-end').value   = cutDuration ? cutDuration.toFixed(2) : 0;
+  const sb = document.getElementById('start-badge');
+  const eb = document.getElementById('end-badge');
+  sb.textContent = 'Start: —';
+  sb.classList.remove('set');
+  eb.textContent = 'End: —';
+  eb.classList.remove('set');
+}
+
+async function runCut() {
+  const input = document.getElementById('cut-file');
+  const file  = input.files[0];
+  if (!file) return;
+
+  const start = parseFloat(document.getElementById('cut-start').value) || 0;
+  const end   = parseFloat(document.getElementById('cut-end').value);
+
+  if (end <= start) {
+    setStatus('cut-status', 'End must be after start.', 'error');
+    return;
+  }
+
+  const btn = document.getElementById('cut-btn');
+  btn.disabled = true;
+  btn.textContent = 'Cutting…';
+  setStatus('cut-status', 'Running ffmpeg…');
+
+  const fd = new FormData();
+  fd.append('audio', file);
+  fd.append('start', start);
+  fd.append('end', end);
+
+  try {
+    const res  = await fetch('/api/audio/cut', { method: 'POST', body: fd });
+    const data = await res.json();
+
+    if (!res.ok) {
+      setStatus('cut-status', data.error || 'Cut failed', 'error');
+      return;
+    }
+
+    const url = '/api/audio/serve?path=' + encodeURIComponent(data.path);
+    document.getElementById('cut-player').src = url;
+    const dl = document.getElementById('cut-dl');
+    dl.href = url;
+    dl.download = data.filename;
+
+    buildMeta(document.getElementById('cut-meta'), [
+      { label: 'Duration', value: data.duration.toFixed(2) + 's' },
+      { label: 'Size',     value: data.size_kb + ' KB' },
+      { label: 'File',     value: data.filename },
+    ]);
+    document.getElementById('cut-result').classList.add('visible');
+    setStatus('cut-status', 'Done.', 'success');
+  } catch (err) {
+    setStatus('cut-status', 'Request failed: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '✂ Cut';
+  }
+}
+</script>
+</body>
+</html>

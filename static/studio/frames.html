@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Wyltek Studio — Frame Cutter</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="stylesheet" href="/static/css/nav.css">
+  <script src="/static/js/nav.js"></script>
+  <style>
+    .studio-page { max-width: 1000px; margin: 0 auto; padding: 32px 24px; }
+    .studio-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; flex-wrap: wrap; gap: 8px; }
+    .studio-header h2 { margin: 0; }
+    .studio-header .subtitle { font-size: 13px; color: var(--text-dim); }
+
+    /* Drop zone */
+    .drop-zone {
+      border: 2px dashed var(--border); border-radius: 12px; padding: 60px 24px;
+      text-align: center; cursor: pointer; transition: all 0.2s; color: var(--text-dim);
+    }
+    .drop-zone:hover, .drop-zone.drag-over { border-color: var(--accent); color: var(--text); background: var(--accent-dim); }
+    .drop-zone .drop-icon { font-size: 40px; margin-bottom: 12px; }
+    .drop-zone p { font-size: 14px; margin-bottom: 6px; }
+    .drop-zone small { font-size: 12px; }
+    #file-input { display: none; }
+
+    /* Player area */
+    #player-area { display: none; }
+
+    .video-wrap {
+      background: #000; border-radius: 10px; overflow: hidden;
+      margin-bottom: 12px; position: relative;
+    }
+    #main-video {
+      width: 100%; max-height: 520px; display: block; object-fit: contain;
+    }
+
+    /* Controls bar */
+    .controls-bar {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 14px 16px; margin-bottom: 16px;
+    }
+    .scrub-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+    .scrub-row input[type=range] {
+      flex: 1; height: 4px; cursor: pointer; accent-color: var(--accent);
+    }
+    .time-display {
+      font-size: 12px; color: var(--text-dim); white-space: nowrap; min-width: 100px; text-align: right;
+    }
+
+    .btn-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+    .btn-play {
+      padding: 8px 18px; font-size: 13px; font-weight: 600;
+      background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+      border-radius: 8px; cursor: pointer; min-width: 80px;
+    }
+    .btn-play:hover { border-color: var(--accent); color: var(--accent); }
+
+    .speed-select {
+      padding: 7px 10px; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text); font-size: 12px; cursor: pointer;
+    }
+
+    .step-btn {
+      padding: 7px 12px; font-size: 12px; background: var(--surface-2);
+      border: 1px solid var(--border); border-radius: 6px; color: var(--text-dim); cursor: pointer;
+    }
+    .step-btn:hover { color: var(--text); border-color: var(--accent); }
+
+    .btn-grab {
+      padding: 8px 20px; font-size: 13px; font-weight: 600;
+      background: var(--accent); color: #fff; border: none; border-radius: 8px; cursor: pointer;
+      margin-left: auto;
+    }
+    .btn-grab:hover { background: var(--accent-hover); }
+
+    /* Frame preview */
+    #preview-area {
+      display: none; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 20px;
+    }
+    .preview-header {
+      display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px;
+    }
+    .preview-header h3 { margin: 0; font-size: 15px; }
+    .preview-meta { font-size: 12px; color: var(--text-dim); }
+
+    .preview-canvas-wrap {
+      background: repeating-conic-gradient(var(--surface-2) 0% 25%, var(--surface-3) 0% 50%) 50% / 16px 16px;
+      border-radius: 8px; overflow: hidden; margin-bottom: 16px;
+      display: flex; align-items: center; justify-content: center; min-height: 120px;
+    }
+    #preview-canvas { max-width: 100%; max-height: 400px; display: block; }
+
+    .preview-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+    .btn-primary {
+      padding: 9px 20px; font-size: 13px; font-weight: 600;
+      background: var(--accent); color: #fff; border: none; border-radius: 8px; cursor: pointer;
+    }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .btn-secondary {
+      padding: 8px 16px; font-size: 12px; font-weight: 600;
+      background: var(--surface-2); color: var(--accent); border: 1px solid var(--accent);
+      border-radius: 6px; cursor: pointer;
+    }
+    .btn-secondary:hover { background: var(--accent-dim); }
+
+    .btn-outline {
+      padding: 8px 16px; font-size: 12px;
+      background: transparent; color: var(--text-dim); border: 1px solid var(--border);
+      border-radius: 6px; cursor: pointer;
+    }
+    .btn-outline:hover { color: var(--text); border-color: var(--border); background: var(--surface-2); }
+
+    .status-msg { font-size: 12px; color: var(--text-dim); margin-left: auto; }
+    .status-msg.ok { color: var(--success); }
+    .status-msg.err { color: var(--error); }
+  </style>
+</head>
+<body>
+<div class="studio-page">
+  <div class="studio-header">
+    <div>
+      <h2>Frame Cutter</h2>
+      <div class="subtitle">Load a video, scrub to any frame, save it as an image</div>
+    </div>
+  </div>
+
+  <!-- Drop zone -->
+  <div class="drop-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
+    <div class="drop-icon">&#127909;</div>
+    <p>Click or drop a video file here</p>
+    <small>MP4, MKV, WebM, MOV — loaded directly from your filesystem, nothing uploaded</small>
+  </div>
+  <input type="file" id="file-input" accept="video/*">
+
+  <!-- Player -->
+  <div id="player-area">
+    <div class="video-wrap">
+      <video id="main-video" preload="metadata"></video>
+    </div>
+
+    <div class="controls-bar">
+      <div class="scrub-row">
+        <input type="range" id="scrubber" min="0" max="1000" value="0" step="1">
+        <div class="time-display" id="time-display">0:00.000 / 0:00</div>
+      </div>
+      <div class="btn-row">
+        <button class="btn-play" id="play-btn">&#9654; Play</button>
+        <select class="speed-select" id="speed-select">
+          <option value="0.1">0.1×</option>
+          <option value="0.25">0.25×</option>
+          <option value="0.5">0.5×</option>
+          <option value="1" selected>1×</option>
+          <option value="2">2×</option>
+        </select>
+        <button class="step-btn" id="step-back" title="Step back 1 frame (approx)">&#9668;&#9668;</button>
+        <button class="step-btn" id="step-fwd" title="Step forward 1 frame (approx)">&#9658;&#9658;</button>
+        <button class="btn-grab" id="grab-btn">&#9989; Grab Frame</button>
+      </div>
+    </div>
+
+    <!-- Preview -->
+    <div id="preview-area">
+      <div class="preview-header">
+        <h3>Grabbed Frame</h3>
+        <span class="preview-meta" id="preview-meta"></span>
+      </div>
+      <div class="preview-canvas-wrap">
+        <canvas id="preview-canvas"></canvas>
+      </div>
+      <div class="preview-actions">
+        <button class="btn-primary" id="save-btn">Save to Files</button>
+        <button class="btn-secondary" id="send-tools-btn">Send to Image Tools &#8594;</button>
+        <button class="btn-outline" id="grab-another-btn">Grab Another</button>
+        <span class="status-msg" id="save-status"></span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const video = document.getElementById('main-video');
+  const scrubber = document.getElementById('scrubber');
+  const timeDisplay = document.getElementById('time-display');
+  const playBtn = document.getElementById('play-btn');
+  const speedSelect = document.getElementById('speed-select');
+  const stepBack = document.getElementById('step-back');
+  const stepFwd = document.getElementById('step-fwd');
+  const grabBtn = document.getElementById('grab-btn');
+  const previewArea = document.getElementById('preview-area');
+  const previewCanvas = document.getElementById('preview-canvas');
+  const previewMeta = document.getElementById('preview-meta');
+  const saveBtn = document.getElementById('save-btn');
+  const sendToolsBtn = document.getElementById('send-tools-btn');
+  const grabAnotherBtn = document.getElementById('grab-another-btn');
+  const saveStatus = document.getElementById('save-status');
+  const dropZone = document.getElementById('drop-zone');
+  const fileInput = document.getElementById('file-input');
+
+  let blobUrl = null;
+  let isSeeking = false;
+  let lastSavedPath = null;
+
+  function formatTime(s, showMs = false) {
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    if (showMs) {
+      return `${m}:${String(Math.floor(sec)).padStart(2, '0')}.${String(Math.round((sec % 1) * 1000)).padStart(3, '0')}`;
+    }
+    return `${m}:${String(Math.floor(sec)).padStart(2, '0')}`;
+  }
+
+  function loadVideo(file) {
+    if (blobUrl) URL.revokeObjectURL(blobUrl);
+    blobUrl = URL.createObjectURL(file);
+    video.src = blobUrl;
+    video.load();
+    dropZone.style.display = 'none';
+    document.getElementById('player-area').style.display = 'block';
+    previewArea.style.display = 'none';
+    saveStatus.textContent = '';
+  }
+
+  fileInput.addEventListener('change', e => {
+    if (e.target.files[0]) loadVideo(e.target.files[0]);
+  });
+
+  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.classList.remove('drag-over');
+    const file = e.dataTransfer.files[0];
+    if (file && file.type.startsWith('video/')) loadVideo(file);
+  });
+
+  video.addEventListener('loadedmetadata', () => {
+    scrubber.max = 1000;
+    updateTimeDisplay();
+  });
+
+  video.addEventListener('timeupdate', () => {
+    if (!isSeeking) {
+      scrubber.value = Math.round((video.currentTime / video.duration) * 1000);
+      updateTimeDisplay();
+    }
+  });
+
+  video.addEventListener('ended', () => {
+    playBtn.textContent = '\u25B6 Play';
+  });
+
+  scrubber.addEventListener('mousedown', () => { isSeeking = true; });
+  scrubber.addEventListener('input', () => {
+    video.currentTime = (scrubber.value / 1000) * video.duration;
+    updateTimeDisplay();
+  });
+  scrubber.addEventListener('mouseup', () => { isSeeking = false; });
+
+  playBtn.addEventListener('click', () => {
+    if (video.paused) {
+      video.play();
+      playBtn.textContent = '\u23F8 Pause';
+    } else {
+      video.pause();
+      playBtn.textContent = '\u25B6 Play';
+    }
+  });
+
+  speedSelect.addEventListener('change', () => {
+    video.playbackRate = parseFloat(speedSelect.value);
+  });
+
+  // Approximate frame step (~1/30s default, detect if possible)
+  function frameStep(dir) {
+    video.pause();
+    playBtn.textContent = '\u25B6 Play';
+    // Try to step by approximately 1 frame at 30fps
+    const step = 1 / 30;
+    video.currentTime = Math.max(0, Math.min(video.duration, video.currentTime + dir * step));
+  }
+  stepBack.addEventListener('click', () => frameStep(-1));
+  stepFwd.addEventListener('click', () => frameStep(1));
+
+  function updateTimeDisplay() {
+    if (!video.duration || isNaN(video.duration)) return;
+    timeDisplay.textContent = `${formatTime(video.currentTime, true)} / ${formatTime(video.duration)}`;
+  }
+
+  // Grab current frame
+  grabBtn.addEventListener('click', () => {
+    video.pause();
+    playBtn.textContent = '\u25B6 Play';
+
+    // Wait for frame to settle after pause
+    const doGrab = () => {
+      const w = video.videoWidth;
+      const h = video.videoHeight;
+      previewCanvas.width = w;
+      previewCanvas.height = h;
+      const ctx = previewCanvas.getContext('2d');
+      ctx.drawImage(video, 0, 0, w, h);
+      previewMeta.textContent = `${w} \u00d7 ${h} \u2014 ${formatTime(video.currentTime, true)}`;
+      previewArea.style.display = 'block';
+      saveStatus.textContent = '';
+      saveStatus.className = 'status-msg';
+      lastSavedPath = null;
+      previewArea.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    };
+
+    // If video is already paused and settled, grab immediately
+    if (video.paused) {
+      setTimeout(doGrab, 50);
+    } else {
+      video.addEventListener('pause', doGrab, { once: true });
+    }
+  });
+
+  grabAnotherBtn.addEventListener('click', () => {
+    previewArea.style.display = 'none';
+  });
+
+  async function saveFrame() {
+    saveBtn.disabled = true;
+    saveStatus.className = 'status-msg';
+    saveStatus.textContent = 'Saving...';
+
+    const dataUrl = previewCanvas.toDataURL('image/png');
+    const base64 = dataUrl.split(',')[1];
+
+    try {
+      const res = await fetch('/api/frame/grab', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image_b64: base64, timestamp: video.currentTime })
+      });
+      const data = await res.json();
+      if (data.path) {
+        lastSavedPath = data.path;
+        saveStatus.className = 'status-msg ok';
+        saveStatus.textContent = `Saved: ${data.filename}`;
+      } else {
+        throw new Error(data.error || 'Unknown error');
+      }
+    } catch (err) {
+      saveStatus.className = 'status-msg err';
+      saveStatus.textContent = `Error: ${err.message}`;
+    } finally {
+      saveBtn.disabled = false;
+    }
+  }
+
+  saveBtn.addEventListener('click', saveFrame);
+
+  sendToolsBtn.addEventListener('click', async () => {
+    // Save first if not already saved
+    if (!lastSavedPath) {
+      await saveFrame();
+    }
+    if (lastSavedPath) {
+      sessionStorage.setItem('imagetools-source', lastSavedPath);
+      window.location.href = '/studio/image-tools';
+    }
+  });
+</script>
+</body>
+</html>
