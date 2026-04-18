@@ -716,6 +716,13 @@ async def get_backends():
                         info["models"].append({"id": discovered, "label": discovered.replace(".safetensors", "").replace(".gguf", ""), "available": True, "discovered": True})
                 # Same for ip_adapters, upscalers, clip_vision
                 if "model_categories" in info:
+                    # Trigger-word lookup for auto-discovered LoRAs not in config.yaml.
+                    # Distillation LoRAs (lightning, hyper) need no trigger; style LoRAs
+                    # do. Discovered entries with no entry here ship trigger="".
+                    _AUTO_LORA_TRIGGERS = {
+                        "sdxl_lightning_4step_lora.safetensors": "",
+                        "sdxl_lightning_8step_lora.safetensors": "",
+                    }
                     for cat in ("ip_adapters", "upscalers", "loras"):
                         live_cat = live.get(cat, [])
                         for m in info["model_categories"].get(cat, []):
@@ -723,7 +730,10 @@ async def get_backends():
                         for discovered in live_cat:
                             existing = info["model_categories"].get(cat, [])
                             if not any(m["id"] == discovered for m in existing):
-                                existing.append({"id": discovered, "label": discovered.rsplit(".", 1)[0], "available": True, "discovered": True})
+                                entry = {"id": discovered, "label": discovered.rsplit(".", 1)[0], "available": True, "discovered": True}
+                                if cat == "loras":
+                                    entry["trigger"] = _AUTO_LORA_TRIGGERS.get(discovered, "")
+                                existing.append(entry)
                 # Models to hide from discovery (broken at current quantization, etc.)
                 _hidden = backend_cfg.get("hidden_models", set())
                 # Add GGUF unets as checkpoints too
@@ -986,16 +996,23 @@ async def get_op_config():
         "ollama_url": opt_config.get("ollama_url", ""),
         "model": opt_config.get("model", ""),
         "installed_models": [],
+        "ollama_error": None,
     }
     # Try to list installed Ollama models
     try:
         import httpx
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(timeout=5) as client:
             resp = await client.get(f"{result['ollama_url']}/api/tags")
             if resp.status_code == 200:
                 result["installed_models"] = [m["name"] for m in resp.json().get("models", [])]
-    except Exception:
-        pass
+            else:
+                result["ollama_error"] = f"Ollama returned HTTP {resp.status_code}"
+    except httpx.TimeoutException:
+        result["ollama_error"] = f"Ollama at {result['ollama_url']} timed out (service may be unresponsive)"
+    except httpx.ConnectError:
+        result["ollama_error"] = f"Ollama at {result['ollama_url']} unreachable (is the service running?)"
+    except Exception as e:
+        result["ollama_error"] = f"{type(e).__name__}: {e}"
     return result
 
 
@@ -1035,7 +1052,9 @@ async def op_prompt(request: Request):
         return JSONResponse({"error": "No prompt provided"}, status_code=400)
 
     ollama_url = opt_config.get("ollama_url", "http://localhost:11434")
-    ollama_model = opt_config.get("model", "qwen2.5:14b")
+    # Per-request override wins over the configured default so the UI can
+    # A/B different OP models without mutating global config.
+    ollama_model = data.get("ollama_model") or opt_config.get("model", "qwen2.5:14b")
 
     json_format = '{{"enhanced_prompt": "...", "negative_prompt": "...", "changes_made": "brief explanation of what you improved"}}'
 
@@ -1096,7 +1115,12 @@ Respond ONLY with valid JSON (no markdown, no code fences):
                     "prompt": user_prompt,
                     "system": system_prompt,
                     "stream": False,
-                    "options": {"temperature": 0.3, "num_gpu": 0},
+                    # num_gpu: -1 = let Ollama auto-pick (all GPU layers that fit,
+                # falling back to CPU for the rest). On a GPU-less Ollama host
+                # this behaves like CPU-only but takes the normal optimized
+                # path instead of the strict "num_gpu=0" fallback path, which
+                # is ~3× faster in practice. See scripts/op_latency_bench.py.
+                "options": {"temperature": 0.3, "num_gpu": -1},
                 },
             )
             if resp.status_code != 200:
@@ -1152,6 +1176,16 @@ async def get_model_catalog():
     except Exception:
         pass
 
+    # Single source of truth for ComfyUI-backed types: ask ComfyUI itself.
+    # Aggregates across all loader buckets so we don't care which dir a
+    # file sits in (unet/ vs diffusion_models/ etc.). Falls back to a
+    # filesystem check if ComfyUI is unreachable (offline catalog browsing).
+    live = await _probe_comfyui(comfyui_url) if comfyui_url else None
+    live_installed: set[str] = set()
+    if live:
+        for bucket in ("checkpoints", "unets", "loras", "ip_adapters", "upscalers", "clip_vision"):
+            live_installed.update(live.get(bucket, []))
+
     result = []
     for item in CATALOG:
         entry = dict(item)
@@ -1166,14 +1200,27 @@ async def get_model_catalog():
             entry["installed"] = voice_path.exists()
         elif item["type"] == "pip-package":
             pkg = item.get("pip_package", "")
+            mod_name = pkg.replace("-", "_").split("[")[0]
             try:
-                __import__(pkg.replace("-", "_").split("[")[0])
+                __import__(mod_name)
                 entry["installed"] = True
-            except ImportError:
+            except ModuleNotFoundError as e:
                 entry["installed"] = False
-        elif comfyui_root and item["type"] in DEST_MAP and DEST_MAP[item["type"]]:
-            dest = comfyui_root / DEST_MAP[item["type"]] / item["filename"]
-            entry["installed"] = dest.exists()
+                # Package IS on disk but a transitive dep import failed — flag as broken
+                # so the UI can distinguish "not installed" from "installed-but-broken".
+                if e.name and e.name != mod_name:
+                    entry["install_error"] = f"broken: missing '{e.name}' (transitive dep)"
+            except Exception as e:
+                entry["installed"] = False
+                entry["install_error"] = f"broken: {type(e).__name__}: {e}"
+        elif item["type"] in DEST_MAP and DEST_MAP[item["type"]]:
+            if live is not None:
+                entry["installed"] = item["filename"] in live_installed
+            elif comfyui_root:
+                dest = comfyui_root / DEST_MAP[item["type"]] / item["filename"]
+                entry["installed"] = dest.exists()
+            else:
+                entry["installed"] = False
         else:
             entry["installed"] = False
 
@@ -2091,6 +2138,10 @@ async def compare(
     steps: int = Form(30),
     cfg_scale: float = Form(7.0),
     seed: int = Form(-1),
+    lora_model: str = Form(""),
+    lora_strength: float = Form(1.0),
+    lora_strength_model: float = Form(1.0),
+    lora_strength_clip: float = Form(0.6),
     reference_images: list[UploadFile] = File(default=[]),
 ):
     """Launch same prompt across multiple backends for comparison."""
@@ -2126,6 +2177,10 @@ async def compare(
             "ip_adapter_model": "",
             "ip_adapter_strength": 0.6,
             "upscaler": "",
+            "lora_model": lora_model,
+            "lora_strength": lora_strength,
+            "lora_strength_model": lora_strength_model,
+            "lora_strength_clip": lora_strength_clip,
             "reference_images": ref_paths,
         }
         jobs[job_id] = {"status": "queued", "params": params, "progress": 0, "comparison_id": comparison_id}

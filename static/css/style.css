@@ -826,10 +826,35 @@ input[type="range"] {
 .prompt-group {
   position: relative;
 }
+/* Controls sit below the textarea in a right-aligned row. Previously they
+   overlaid the textarea's bottom-right corner, which stole clicks from the
+   textarea once the dropdown was added. */
+.op-controls {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  align-items: center;
+  margin-top: 6px;
+}
+.op-model-select {
+  font-size: 11px;
+  padding: 3px 6px;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  max-width: 160px;
+  cursor: pointer;
+}
+.op-model-select:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+.op-model-select.override {
+  border-color: var(--accent);
+  color: var(--text);
+}
 .btn-op-prompt {
-  position: absolute;
-  bottom: 8px;
-  right: 8px;
   font-size: 11px;
   padding: 4px 10px;
   background: var(--accent-dim);

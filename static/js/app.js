@@ -14,6 +14,23 @@ const state = {
   comparePollTimer: null,
 };
 
+// Show / clear the prompt-trigger hint under the LoRA selector.
+// Style LoRAs need a trigger word in the prompt or they barely fire even at strength 1.
+function _updateLoraTriggerHint() {
+  const loraSelect = document.getElementById('lora-select');
+  if (!loraSelect) return;
+  let hint = document.getElementById('lora-trigger-hint');
+  if (!hint) {
+    hint = document.createElement('div');
+    hint.id = 'lora-trigger-hint';
+    hint.style.cssText = 'font-size:11px;color:var(--text-dim);margin-top:4px;font-style:italic;';
+    loraSelect.parentElement.appendChild(hint);
+  }
+  const opt = loraSelect.options[loraSelect.selectedIndex];
+  const trigger = opt && opt.dataset ? opt.dataset.trigger : '';
+  hint.textContent = trigger ? `Tip: include "${trigger}" in your prompt for this LoRA to fire.` : '';
+}
+
 // LoRA compatibility — SDXL architecture only (not Flux, SD3, or SD 1.5)
 function _isLoraCompatible(modelId) {
   if (!modelId) return false;
@@ -160,6 +177,42 @@ document.addEventListener('DOMContentLoaded', async () => {
       state.opStatus = { available: false, reason: 'Could not reach server' };
       document.getElementById('btn-op-prompt').classList.add('unavailable');
     });
+
+  // Populate OP-model dropdown. Server config holds the global default; the
+  // dropdown lets you override per-session without touching settings.
+  // Precedence for initial selection: localStorage → server default.
+  fetch('/api/op-prompt/config')
+    .then(r => r.json())
+    .then(cfg => {
+      const sel = document.getElementById('op-model-select');
+      if (!sel) return;
+      const installed = cfg.installed_models || [];
+      const serverDefault = cfg.model || '';
+      const remembered = localStorage.getItem('opModel');
+      const initial = (remembered && installed.includes(remembered))
+        ? remembered
+        : serverDefault;
+
+      sel.replaceChildren();
+      installed.forEach(m => {
+        const opt = document.createElement('option');
+        opt.value = m;
+        opt.textContent = (m === serverDefault) ? `${m} (default)` : m;
+        if (m === initial) opt.selected = true;
+        sel.appendChild(opt);
+      });
+      // Accent the border when the user's choice differs from server default.
+      const markOverride = () => {
+        sel.classList.toggle('override', sel.value !== serverDefault);
+      };
+      markOverride();
+      sel.addEventListener('change', () => {
+        localStorage.setItem('opModel', sel.value);
+        markOverride();
+      });
+      state.opModel = initial;
+    })
+    .catch(() => { /* dropdown stays empty; OP button will just use server default */ });
 
   // Check for images sent from Projects page
   const refData = sessionStorage.getItem('ws-ref-images');
@@ -319,7 +372,11 @@ function selectBackend(name) {
 
   // Update LoRA options (ComfyUI only — SDXL compatible)
   const loraSelect = document.getElementById('lora-select');
-  loraSelect.innerHTML = '<option value="">None</option>';
+  while (loraSelect.firstChild) loraSelect.removeChild(loraSelect.firstChild);
+  const noneOpt = document.createElement('option');
+  noneOpt.value = '';
+  noneOpt.textContent = 'None';
+  loraSelect.appendChild(noneOpt);
   if (name === 'comfyui' && info.model_categories?.loras) {
     info.model_categories.loras.forEach(m => {
       const opt = document.createElement('option');
@@ -328,9 +385,12 @@ function selectBackend(name) {
       opt.textContent = available ? m.label : `${m.label}  [not installed]`;
       opt.disabled = !available;
       if (!available) opt.style.color = '#555';
+      // Trigger word: needed in prompt for the LoRA to fire visibly.
+      if (m.trigger) opt.dataset.trigger = m.trigger;
       loraSelect.appendChild(opt);
     });
   }
+  _updateLoraTriggerHint();
 
   // Update upscaler options
   const upSelect = document.getElementById('upscaler-select');
@@ -454,6 +514,7 @@ function bindEvents() {
   document.getElementById('lora-clip-strength').addEventListener('input', (e) => {
     document.getElementById('lora-clip-val').textContent = parseFloat(e.target.value).toFixed(2);
   });
+  document.getElementById('lora-select').addEventListener('change', _updateLoraTriggerHint);
 
   // Model change
   document.getElementById('model-select').addEventListener('change', updateModelInfo);
@@ -801,10 +862,12 @@ async function opMyPrompt() {
 
   try {
     const model = document.getElementById('model-select').value;
+    const opSel = document.getElementById('op-model-select');
+    const ollama_model = opSel && opSel.value ? opSel.value : undefined;
     const resp = await fetch('/api/op-prompt', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ prompt, model }),
+      body: JSON.stringify({ prompt, model, ollama_model }),
     });
     const data = await resp.json();
     if (data.error) throw new Error(data.error);
@@ -885,6 +948,12 @@ async function startBatch() {
   formData.append('steps', document.getElementById('steps').value);
   formData.append('cfg_scale', document.getElementById('cfg-scale').value);
   formData.append('seed', '-1'); // Always random for batch — each gets unique seed
+  // LoRA — same logic as single-generate path (architecture-gated by selected model)
+  const _loraModel = _isLoraCompatible(model) ? document.getElementById('lora-select').value : '';
+  formData.append('lora_model', _loraModel);
+  formData.append('lora_strength', document.getElementById('lora-strength').value);
+  formData.append('lora_strength_model', document.getElementById('lora-strength').value);
+  formData.append('lora_strength_clip', document.getElementById('lora-clip-strength').value);
   state.refImages.forEach(file => { if (file) formData.append('reference_images', file); });
 
   try {
@@ -1021,6 +1090,13 @@ async function startComparison() {
   formData.append('steps', document.getElementById('steps').value);
   formData.append('cfg_scale', document.getElementById('cfg-scale').value);
   formData.append('seed', document.getElementById('seed').value);
+  // LoRA — applied per-job in backend; only meaningful for SDXL-arch options.
+  // For mixed-architecture compares, backend will inject for all and ComfyUI will
+  // error visibly on incompatible combos rather than silently skipping.
+  formData.append('lora_model', document.getElementById('lora-select').value);
+  formData.append('lora_strength', document.getElementById('lora-strength').value);
+  formData.append('lora_strength_model', document.getElementById('lora-strength').value);
+  formData.append('lora_strength_clip', document.getElementById('lora-clip-strength').value);
   state.refImages.forEach(file => { if (file) formData.append('reference_images', file); });
 
   try {

@@ -25,7 +25,10 @@
         <div class="section-title">Prompt</div>
         <div class="form-group prompt-group">
           <textarea id="prompt" placeholder="Describe the image you want to generate..."></textarea>
-          <button class="btn btn-op-prompt" id="btn-op-prompt" disabled title="Enhance prompt with local AI">OP my prompt</button>
+          <div class="op-controls" id="op-controls">
+            <select id="op-model-select" class="op-model-select" title="Which Ollama model enhances your prompt"></select>
+            <button class="btn btn-op-prompt" id="btn-op-prompt" disabled title="Enhance prompt with local AI">OP my prompt</button>
+          </div>
         </div>
         <div class="form-group">
           <label>Negative prompt</label>

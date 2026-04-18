@@ -12,6 +12,7 @@ import aiohttp
 logger = logging.getLogger(__name__)
 
 from backends.base import BaseBackend
+from model_catalog import LORA_TRIGGERS
 
 # Server-side optimal defaults per model — applied before workflow build.
 # Compare mode sends flat params, so these ensure each model gets sane settings.
@@ -93,10 +94,41 @@ MODEL_DEFAULTS = {
         "sampler": "euler", "scheduler": "simple",
         "steps": 4, "cfg": 1.0,
     },
-    # --- SD3 Medium (disabled/broken at Q4 but keep defaults if re-enabled) ---
+    # --- FLUX.2-klein (4-step distilled, qwen3_4b encoder) ---
+    # cfg=1.0 is non-negotiable — klein is guidance-distilled. The klein
+    # workflow branch in generate() also explicitly sets these values; the
+    # entry here ensures _resolve_defaults rewrites the generic UI defaults
+    # (steps=30, cfg=7.0) before they reach the workflow builder.
+    "flux-2-klein-base-4b.safetensors": {
+        "sampler": "euler", "scheduler": "simple",
+        "steps": 4, "cfg": 1.0,
+    },
+    # --- SD3 / SD3.5 (MMDiT, triple CLIP: CLIP-L + CLIP-G + T5-XXL) ---
+    # Shared defaults: dpmpp_2m + sgm_uniform, cfg ~4.5-5, steps ~25-30.
+    # Use TripleCLIPLoaderGGUF so the GGUF T5 is picked up alongside the
+    # safetensors CLIP-L/G — without T5, SD3 prompts degrade badly.
     "sd3-medium-Q4_0.gguf": {
         "sampler": "dpmpp_2m", "scheduler": "sgm_uniform",
         "steps": 28, "cfg": 5.0,
+    },
+    "sd3.5_medium-Q4_0.gguf": {
+        "sampler": "dpmpp_2m", "scheduler": "sgm_uniform",
+        "steps": 28, "cfg": 4.5,
+    },
+    "sd3.5_medium-Q8_0.gguf": {
+        "sampler": "dpmpp_2m", "scheduler": "sgm_uniform",
+        "steps": 28, "cfg": 4.5,
+    },
+    # SD 3.5 Large uses Stability's reference recipe: euler + simple.
+    # dpmpp_2m + sgm_uniform that works for SD3 Medium under-steps the
+    # high-noise region for the 8B Large variant and produces soft output.
+    "sd3.5_large-Q4_0.gguf": {
+        "sampler": "euler", "scheduler": "simple",
+        "steps": 28, "cfg": 4.5,
+    },
+    "sd3.5_large-Q8_0.gguf": {
+        "sampler": "euler", "scheduler": "simple",
+        "steps": 28, "cfg": 4.5,
     },
     # --- PixArt-Sigma (DiT, requires ExtraModels / PixArt loader node) ---
     "pixart_sigma_xl_1024.safetensors": {
@@ -121,6 +153,63 @@ LORA_DEFAULTS = {
         "lora_strength_model": 1.0, "lora_strength_clip": 1.0,
     },
 }
+
+
+# Common style cues users write deliberately. If any appear in the prompt,
+# a prompt is "not bare" — we shouldn't fight an explicit choice like
+# "photograph" or "oil painting" by appending a conflicting style trigger.
+STYLE_CUES = (
+    "photo", "photograph", "photorealistic", "cinematic",
+    "painting", "oil painting", "acrylic", "gouache",
+    "illustration", "drawing", "sketch", "line art",
+    "3d", "3d render", "cgi", "octane", "unreal engine",
+    "anime", "manga", "cartoon",
+)
+
+
+def _is_bare_prompt(prompt: str, triggers: list[str]) -> bool:
+    """Return True if ``prompt`` lacks any cue that would tell the LoRA what to do.
+
+    Hybrid / combined rule:
+      - not bare if any of the LoRA's registered triggers already appear
+      - not bare if the prompt declares a deliberate style (STYLE_CUES)
+      - bare otherwise — short crude prompts AND long detail-rich prompts
+        that never mention a style both get the LoRA's canonical trigger
+        appended. This is what makes OP-my-prompt's enriched output work:
+        the enhancer adds descriptive detail but rarely style keywords, so
+        we still inject on its behalf.
+    """
+    lowered = prompt.lower()
+    if any(t.lower() in lowered for t in triggers):
+        return False
+    return not any(cue in lowered for cue in STYLE_CUES)
+
+
+def _maybe_inject_trigger(params: dict) -> dict:
+    """If a style LoRA is active and its trigger is missing from the prompt,
+    append the canonical trigger. Records the original prompt and the injected
+    trigger in ``params`` so the sidecar JSON preserves an audit trail.
+
+    Returns the (possibly modified) params dict. Never mutates the input.
+    """
+    params = dict(params)
+    lora = params.get("lora_model", "")
+    triggers = LORA_TRIGGERS.get(lora, [])
+    prompt = params.get("prompt", "") or ""
+
+    # Skip when there's nothing to inject — no LoRA, no triggers registered,
+    # or the LoRA has explicitly-empty triggers (e.g. Lightning speed-LoRAs).
+    if not lora or not triggers:
+        return params
+
+    if _is_bare_prompt(prompt, triggers):
+        canonical = triggers[0]
+        params["original_prompt"] = prompt
+        params["trigger_injected"] = canonical
+        params["prompt"] = f"{prompt}, {canonical}" if prompt else canonical
+        logger.info("LoRA trigger injected: %r → %r (lora=%s)",
+                    prompt, params["prompt"], lora)
+    return params
 
 
 def _resolve_defaults(params: dict) -> dict:
@@ -173,6 +262,10 @@ def _resolve_defaults(params: dict) -> dict:
             params["lora_strength_model"] = lora_defaults["lora_strength_model"]
         if "lora_strength_clip" in lora_defaults and "lora_strength_clip" not in params:
             params["lora_strength_clip"] = lora_defaults["lora_strength_clip"]
+
+    # Hybrid trigger-word injection for style LoRAs. Runs last so it sees the
+    # final resolved prompt (in case any earlier step rewrites it).
+    params = _maybe_inject_trigger(params)
 
     return params
 
@@ -722,7 +815,14 @@ class ComfyUIBackend(BaseBackend):
 
     async def generate(self, params, output_path, on_progress):
         # Apply per-model optimal defaults before building workflow
-        params = _resolve_defaults(params)
+        resolved = _resolve_defaults(params)
+        # Propagate audit fields (effective prompt + injection record) back to
+        # the caller's dict so the sidecar JSON captures what actually went to
+        # the model, not just what the user typed.
+        for key in ("prompt", "original_prompt", "trigger_injected"):
+            if key in resolved:
+                params[key] = resolved[key]
+        params = resolved
 
         url = self.url.rstrip("/")
         prompt_api = f"{url}/prompt"
@@ -735,9 +835,127 @@ class ComfyUIBackend(BaseBackend):
         workflow = json.loads(json.dumps(BASIC_TXT2IMG))
 
         is_flux = is_gguf and "flux" in model_name.lower()
-        is_sd3 = is_gguf and "sd3" in model_name.lower()
+        # SD3/3.5 detection covers both "sd3" and "stable-diffusion-3" naming,
+        # GGUF-only (the only SD3 path Wyltek Studio ships today).
+        lower_name = model_name.lower()
+        is_sd3 = is_gguf and ("sd3" in lower_name or "sd3.5" in lower_name
+                              or "stable-diffusion-3" in lower_name)
+        # SD 3.5 (Medium + Large) was trained with shift=3.0; SD 3 original
+        # used shift~1.0. Distinguishing here so only SD 3.5 gets the
+        # ModelSamplingSD3 shift node injected below.
+        is_sd35 = is_sd3 and "sd3.5" in lower_name
+        is_klein = "klein" in lower_name
+        # SDXL Lightning is guidance-distilled like Flux/Klein: cfg MUST be 1.0
+        # and step count is fixed (4 or 8). The post-branch param loop below
+        # would otherwise clobber these invariants with user-set slider values.
+        is_lightning = model_name.startswith("sdxl-lightning")
+        # PixArt-Sigma is a bare DiT transformer — no CLIP or VAE in the
+        # checkpoint — so we need ExtraModels's PixArt-specific loaders.
+        is_pixart = "pixart" in lower_name
 
-        if is_flux:
+        if is_klein:
+            # FLUX.2-klein canonical recipe (per feedback_comfyui_rocm_rdna3.md
+            # bring-up 2026-04-14):
+            #   Flux2Scheduler + SamplerCustomAdvanced + BasicGuider + RandomNoise
+            # with FluxGuidance=3.5 and steps=4.
+            #
+            # Why NOT plain KSampler + ModelSamplingFlux: Flux2Scheduler is
+            # aspect-ratio-aware — it computes the correct timestep shift
+            # from (steps, width, height). ModelSamplingFlux with a hardcoded
+            # flat shift value overrides that adaptive logic and produces
+            # malformed geometry / bad anatomy at non-square aspect ratios.
+            workflow["4"] = {
+                "class_type": "UNETLoader",
+                # weight_dtype="default" (NOT fp8_e4m3fn) — on-the-fly fp8
+                # quantization during weight load produces malformed output
+                # for FLUX.2-klein on AMD gfx1100. Verified by comparing
+                # against known-good ComfyUI-direct generations whose
+                # workflow JSON is embedded in ~/ComfyUI/output/flux2_*.png.
+                "inputs": {"unet_name": model_name, "weight_dtype": "default"},
+            }
+            workflow["14"] = {
+                "class_type": "CLIPLoader",
+                "inputs": {
+                    "clip_name": "flux2_klein_qwen3_merged.safetensors",
+                    "type": "flux2",
+                },
+            }
+            workflow["15"] = {
+                "class_type": "VAELoader",
+                "inputs": {"vae_name": "flux2-klein-vae.safetensors"},
+            }
+            # FLUX.2 has its own latent initialiser with the correct
+            # 16-channel scale. Replace BASIC_TXT2IMG's generic
+            # EmptyLatentImage (node 5) to match the canonical klein
+            # workflow captured from prior successful generations.
+            workflow["5"] = {
+                "class_type": "EmptyFlux2LatentImage",
+                "inputs": {
+                    "width": params.get("width", 1024),
+                    "height": params.get("height", 1024),
+                    "batch_size": 1,
+                },
+            }
+            workflow["6"]["inputs"]["clip"] = ["14", 0]
+            workflow["7"]["inputs"]["clip"] = ["14", 0]
+            workflow["22"] = {
+                "class_type": "FluxGuidance",
+                "inputs": {
+                    "conditioning": ["6", 0],
+                    # Klein's "cfg_scale" slider routes here as distilled
+                    # guidance. BFL's recommended range is 1.0-5.0; 3.5 is
+                    # the bring-up-verified sweet spot. Default fallback
+                    # covers the case where _resolve_defaults left cfg at
+                    # the klein-defaults "1.0" value (which would
+                    # desaturate output — 3.5 is safer for un-tuned users).
+                    "guidance": float(params.get("cfg_scale", 3.5))
+                               if params.get("cfg_scale", 3.5) >= 1.5 else 3.5,
+                },
+            }
+            workflow["23"] = {
+                "class_type": "BasicGuider",
+                "inputs": {"model": ["4", 0], "conditioning": ["22", 0]},
+            }
+            workflow["24"] = {
+                "class_type": "KSamplerSelect",
+                "inputs": {"sampler_name": "euler"},
+            }
+            workflow["25"] = {
+                "class_type": "Flux2Scheduler",
+                "inputs": {
+                    "steps": int(params.get("steps", 4) or 4),
+                    "width": params.get("width", 1024),
+                    "height": params.get("height", 1024),
+                },
+            }
+            # Resolve seed up-front (RandomNoise needs a concrete int; we
+            # can't wait for the post-branch seed resolver because that
+            # writes into workflow["3"] which we're about to delete).
+            _klein_seed = params.get("seed", -1)
+            if _klein_seed == -1:
+                import random
+                _klein_seed = random.randint(0, 2**32 - 1)
+            params["seed"] = _klein_seed  # stabilises audit trail downstream
+            workflow["26"] = {
+                "class_type": "RandomNoise",
+                "inputs": {"noise_seed": _klein_seed},
+            }
+            workflow["27"] = {
+                "class_type": "SamplerCustomAdvanced",
+                "inputs": {
+                    "noise": ["26", 0],
+                    "guider": ["23", 0],
+                    "sampler": ["24", 0],
+                    "sigmas": ["25", 0],
+                    "latent_image": ["5", 0],
+                },
+            }
+            # Re-route VAEDecode to pull from the advanced sampler.
+            workflow["8"]["inputs"]["samples"] = ["27", 0]
+            workflow["8"]["inputs"]["vae"] = ["15", 0]
+            # Drop the stock KSampler — all its writes below are guarded.
+            del workflow["3"]
+        elif is_flux:
             # Flux uses GGUF UNet + T5-XXL + CLIP-L + Flux VAE + different sampler
             is_schnell = "schnell" in model_name.lower()
             workflow["4"] = {
@@ -778,26 +996,86 @@ class ComfyUIBackend(BaseBackend):
             if is_schnell:
                 workflow["3"]["inputs"]["steps"] = params.get("steps", 4)
         elif is_sd3:
-            # SD3 uses 16-channel latent space — needs Flux VAE (also 16-ch), not SDXL VAE (4-ch)
+            # SD3 / SD3.5: MMDiT architecture with THREE text encoders
+            # (CLIP-L + CLIP-G + T5-XXL). Dropping T5 gives visibly worse
+            # prompt following — TripleCLIPLoaderGGUF handles the mixed
+            # safetensors-CLIP + GGUF-T5 situation.
+            # VAE: use Stability's own sd3.5_vae.safetensors (16-ch f8). The
+            # Flux VAE (ae.safetensors) is architecturally compatible but
+            # has different latent-scale statistics — decoding SD3 latents
+            # through it produces a "metal-stamped" embossed artefact.
             workflow["4"] = {
                 "class_type": "UnetLoaderGGUF",
                 "inputs": {"unet_name": model_name},
             }
             workflow["14"] = {
-                "class_type": "DualCLIPLoader",
+                "class_type": "TripleCLIPLoaderGGUF",
                 "inputs": {
                     "clip_name1": "clip_l.safetensors",
                     "clip_name2": "clip_g.safetensors",
-                    "type": "sd3",
+                    "clip_name3": "t5-v1_1-xxl-encoder-Q4_K_M.gguf",
                 },
             }
             workflow["15"] = {
                 "class_type": "VAELoader",
-                "inputs": {"vae_name": "ae.safetensors"},
+                "inputs": {"vae_name": "sd3.5_vae.safetensors"},
             }
-            workflow["3"]["inputs"]["model"] = ["4", 0]
             workflow["6"]["inputs"]["clip"] = ["14", 0]
             workflow["7"]["inputs"]["clip"] = ["14", 0]
+            workflow["8"]["inputs"]["vae"] = ["15", 0]
+            # SD 3.5 (Medium + Large) was trained with shift=3.0 — the
+            # rectified-flow timestep reshape that concentrates sampling
+            # effort in the high-noise region. Without ModelSamplingSD3,
+            # KSampler uses a linear schedule and output is visibly soft /
+            # under-converged. SD 3 original (non-3.5) keeps the default.
+            if is_sd35:
+                workflow["21"] = {
+                    "class_type": "ModelSamplingSD3",
+                    "inputs": {"model": ["4", 0], "shift": 3.0},
+                }
+                workflow["3"]["inputs"]["model"] = ["21", 0]
+            else:
+                workflow["3"]["inputs"]["model"] = ["4", 0]
+        elif is_pixart:
+            # PixArt-Sigma: DiT transformer using T5-XXL only (no CLIP-L/G).
+            # The .safetensors file is a bare transformer — no CLIP or VAE
+            # bundled — so CheckpointLoaderSimple can't handle it. We use
+            # ExtraModels' PixArtCheckpointLoader for the transformer, reuse
+            # the SD3 TripleCLIPLoaderGGUF to get a handle on our existing
+            # T5-XXL GGUF, extract just the T5 portion via PixArtT5FromSD3CLIP,
+            # and pair with the SDXL VAE (PixArt was trained against it).
+            workflow["4"] = {
+                "class_type": "PixArtCheckpointLoader",
+                "inputs": {
+                    "ckpt_name": model_name,
+                    "model": "PixArtMS_Sigma_XL_2",
+                },
+            }
+            workflow["14"] = {
+                "class_type": "TripleCLIPLoaderGGUF",
+                "inputs": {
+                    "clip_name1": "clip_l.safetensors",
+                    "clip_name2": "clip_g.safetensors",
+                    "clip_name3": "t5-v1_1-xxl-encoder-Q4_K_M.gguf",
+                },
+            }
+            # PixArtT5FromSD3CLIP outputs a CLIP-typed handle (not T5) that
+            # wraps just the T5 portion of the SD3-style CLIP bundle. We keep
+            # the stock CLIPTextEncode nodes (6 + 7) and point them at this
+            # T5-only CLIP — that's the intended "Path B" in ExtraModels.
+            # (Path A uses T5v11Loader + PixArtT5TextEncode but needs T5
+            # weights pre-staged in models/t5/ which we don't have.)
+            workflow["16"] = {
+                "class_type": "PixArtT5FromSD3CLIP",
+                "inputs": {"sd3_clip": ["14", 0], "padding": 1},
+            }
+            workflow["15"] = {
+                "class_type": "VAELoader",
+                "inputs": {"vae_name": "sdxl_vae_fp16_fix.safetensors"},
+            }
+            workflow["6"]["inputs"]["clip"] = ["16", 0]
+            workflow["7"]["inputs"]["clip"] = ["16", 0]
+            workflow["3"]["inputs"]["model"] = ["4", 0]
             workflow["8"]["inputs"]["vae"] = ["15", 0]
         elif model_name.startswith("sdxl-lightning"):
             # SDXL Lightning is a UNet-only safetensor, needs separate CLIP + VAE
@@ -824,6 +1102,11 @@ class ComfyUIBackend(BaseBackend):
             workflow["3"]["inputs"]["sampler_name"] = "euler"
             workflow["3"]["inputs"]["scheduler"] = "sgm_uniform"
             workflow["3"]["inputs"]["cfg"] = 1.0
+            # Lightning's 4-step invariant — shielded by the is_lightning guard
+            # in the post-branch loop so a user's slider can't override it.
+            # Without this explicit set, BASIC_TXT2IMG's default 30 bleeds
+            # through and the model over-denoises into a dark sludge.
+            workflow["3"]["inputs"]["steps"] = 4
         elif is_gguf:
             # SDXL GGUF models use separate UNet + CLIP + VAE loaders
             workflow["4"] = {
@@ -854,6 +1137,16 @@ class ComfyUIBackend(BaseBackend):
         lora_name = params.get("lora_model", "")
         lora_strength_model = float(params.get("lora_strength_model", params.get("lora_strength", 0.8)))
         lora_strength_clip = float(params.get("lora_strength_clip", lora_strength_model * 0.6))
+        # PixArt uses its own PixArtLoraLoader (different wiring + DiT-specific
+        # rank handling). Skip the generic LoRA injection path until we wire
+        # PixArt LoRAs explicitly — otherwise workflow["6"]["inputs"]["clip"]
+        # would KeyError since PixArt replaces CLIPTextEncode with T5 encoders.
+        # Klein has workflow["3"] deleted (SamplerCustomAdvanced path) so
+        # model_source = workflow["3"]["inputs"]["model"] below would also
+        # KeyError. Flux.2-klein LoRAs would need a Flux2-specific loader
+        # anyway — we don't support that yet.
+        if lora_name and (is_pixart or is_klein):
+            lora_name = ""
         if lora_name:
             # Pick the right loader: GGUF models need LoraLoaderModelOnly,
             # standard checkpoints use LoraLoader (which also modifies CLIP)
@@ -893,24 +1186,34 @@ class ComfyUIBackend(BaseBackend):
         workflow["5"]["inputs"]["height"] = params.get("height", 1024)
         workflow["6"]["inputs"]["text"] = params["prompt"]
         workflow["7"]["inputs"]["text"] = params.get("negative_prompt", "")
-        workflow["3"]["inputs"]["steps"] = params.get("steps", 30)
-        # Distilled models (Flux-dev, Schnell, SDXL Lightning) require KSampler.cfg=1.0
-        # and have already set it correctly above. The user-facing cfg_scale is routed
-        # through FluxGuidance for Flux, or simply ignored for Schnell/Lightning. Don't
-        # clobber the invariant here.
-        if not is_flux:
-            workflow["3"]["inputs"]["cfg"] = params.get("cfg_scale", 7.0)
-
-        # Apply resolved sampler/scheduler from model defaults
-        if "_sampler" in params:
-            workflow["3"]["inputs"]["sampler_name"] = params["_sampler"]
-        if "_scheduler" in params:
-            workflow["3"]["inputs"]["scheduler"] = params["_scheduler"]
-        seed = params.get("seed", -1)
-        if seed == -1:
-            import random
-            seed = random.randint(0, 2**32 - 1)
-        workflow["3"]["inputs"]["seed"] = seed
+        # Klein uses SamplerCustomAdvanced (node 27) — KSampler (node 3) was
+        # deleted in its branch. All the setters below target node 3 and
+        # would KeyError if run against klein. Klein's steps/guidance/seed
+        # are resolved inside its branch via Flux2Scheduler, FluxGuidance,
+        # and RandomNoise respectively.
+        if not is_klein:
+            # Lightning needs exactly 4 steps — its branch has already set
+            # that. A user slider at 20/25/30 would undo the distillation
+            # invariant and produce dark, under-denoised output.
+            if not is_lightning:
+                workflow["3"]["inputs"]["steps"] = params.get("steps", 30)
+            # Distilled models (Flux-dev, Schnell, SDXL Lightning) require
+            # KSampler.cfg=1.0 and have already set it correctly above. The
+            # user-facing cfg_scale is routed through FluxGuidance for Flux,
+            # or simply ignored for Schnell/Lightning. Don't clobber the
+            # invariant here.
+            if not is_flux and not is_lightning:
+                workflow["3"]["inputs"]["cfg"] = params.get("cfg_scale", 7.0)
+            # Apply resolved sampler/scheduler from model defaults
+            if "_sampler" in params:
+                workflow["3"]["inputs"]["sampler_name"] = params["_sampler"]
+            if "_scheduler" in params:
+                workflow["3"]["inputs"]["scheduler"] = params["_scheduler"]
+            seed = params.get("seed", -1)
+            if seed == -1:
+                import random
+                seed = random.randint(0, 2**32 - 1)
+            workflow["3"]["inputs"]["seed"] = seed
 
         # Add IP-Adapter nodes if reference images provided
         ref_images = params.get("reference_images", [])

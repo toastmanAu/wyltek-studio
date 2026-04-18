@@ -57,6 +57,49 @@ CATALOG = [
         "size_mb": 6400, "category": "Image Generation", "type": "comfyui-unet",
     },
     {
+        "id": "flux-dev-q8", "name": "Flux.1 Dev (Q8, higher quality)",
+        "desc": "Less quantized Flux Dev. Noticeably better detail than Q4. ~12GB, needs 16GB+ VRAM class.",
+        "url": "https://huggingface.co/city96/FLUX.1-dev-gguf/resolve/main/flux1-dev-Q8_0.gguf",
+        "filename": "flux1-dev-Q8_0.gguf",
+        "size_mb": 12300, "category": "Image Generation", "type": "comfyui-unet",
+    },
+    # --- Stable Diffusion 3 / 3.5 (MMDiT, triple CLIP: CLIP-L + CLIP-G + T5-XXL) ---
+    {
+        "id": "sd3-medium-q4", "name": "SD 3 Medium (Q4)",
+        "desc": "Original SD3 Medium at Q4. Uses triple text encoder (CLIP-L + CLIP-G + T5). ~1.2GB UNet.",
+        "url": "https://huggingface.co/city96/stable-diffusion-3-medium-gguf/resolve/main/sd3_medium-Q4_0.gguf",
+        "filename": "sd3-medium-Q4_0.gguf",
+        "size_mb": 1200, "category": "Image Generation", "type": "comfyui-unet",
+    },
+    {
+        "id": "sd35-medium-q4", "name": "SD 3.5 Medium (Q4)",
+        "desc": "Stability's 2.5B SD3.5 Medium. Much better prompt following than SDXL at a similar VRAM footprint. Triple text encoder.",
+        "url": "https://huggingface.co/city96/stable-diffusion-3.5-medium-gguf/resolve/main/sd3.5_medium-Q4_0.gguf",
+        "filename": "sd3.5_medium-Q4_0.gguf",
+        "size_mb": 1700, "category": "Image Generation", "type": "comfyui-unet",
+    },
+    {
+        "id": "sd35-medium-q8", "name": "SD 3.5 Medium (Q8, higher quality)",
+        "desc": "Less-quantized SD3.5 Medium. Noticeably cleaner output than Q4. ~3GB UNet.",
+        "url": "https://huggingface.co/city96/stable-diffusion-3.5-medium-gguf/resolve/main/sd3.5_medium-Q8_0.gguf",
+        "filename": "sd3.5_medium-Q8_0.gguf",
+        "size_mb": 3000, "category": "Image Generation", "type": "comfyui-unet",
+    },
+    {
+        "id": "sd35-large-q4", "name": "SD 3.5 Large (Q4, 24GB-class)",
+        "desc": "Stability's 8B SD3.5 Large. Top-tier quality. Q4 ~5GB UNet; full stack (UNet + triple CLIP + VAE) wants 16GB+ VRAM.",
+        "url": "https://huggingface.co/city96/stable-diffusion-3.5-large-gguf/resolve/main/sd3.5_large-Q4_0.gguf",
+        "filename": "sd3.5_large-Q4_0.gguf",
+        "size_mb": 5000, "category": "Image Generation", "type": "comfyui-unet",
+    },
+    {
+        "id": "sd35-large-q8", "name": "SD 3.5 Large (Q8, 24GB-class)",
+        "desc": "Less-quantized SD3.5 Large. Best quality this side of API. ~9GB UNet.",
+        "url": "https://huggingface.co/city96/stable-diffusion-3.5-large-gguf/resolve/main/sd3.5_large-Q8_0.gguf",
+        "filename": "sd3.5_large-Q8_0.gguf",
+        "size_mb": 9000, "category": "Image Generation", "type": "comfyui-unet",
+    },
+    {
         "id": "flux2-klein-4b", "name": "Flux.2 Klein 4B (4-step distilled, 24GB-class)",
         "desc": "Next-gen Flux distilled. 4-step, CFG 1-1.5. Needs ~16GB VRAM. Uses Qwen3 text encoder.",
         "url": "https://huggingface.co/black-forest-labs/FLUX.2-klein-base-4B/resolve/main/flux-2-klein-base-4b.safetensors",
@@ -288,6 +331,30 @@ CATALOG = [
         "size_mb": 1700, "category": "LLM (Ollama)", "type": "ollama",
     },
 ]
+
+# Trigger words per LoRA filename. Style LoRAs only fire reliably when their
+# activator tokens appear in the prompt. First entry in each list is the
+# canonical trigger used for auto-injection; the others are recognised as
+# already-present (no injection needed) when we scan the user's prompt.
+#
+# Edit freely — triggers come from each LoRA's HF/Civitai page and are the
+# single most common reason a style LoRA "does nothing". Leave the list empty
+# for LoRAs that don't need (or don't have) a hard trigger — e.g. detailers.
+LORA_TRIGGERS: dict[str, list[str]] = {
+    "pixel-art-xl.safetensors":       ["pixel art", "pixel-art", "8-bit"],
+    "voxel-xl.safetensors":           ["voxel art", "voxel", "voxel style"],
+    "crayon-style-xl.safetensors":    ["crayon drawing", "crayon", "wax crayon"],
+    "watercolor-xl.safetensors":      ["watercolor painting", "watercolor", "watercolour"],
+    "sticker-style-xl.safetensors":   ["die-cut sticker", "sticker", "vinyl sticker"],
+    # anime-detailer is a *detailer*, not a style LoRA — it sharpens existing
+    # anime imagery. Giving it "anime" as a trigger is usually enough.
+    "anime-detailer-xl.safetensors":  ["anime", "anime style"],
+    # Speed/distillation LoRAs have no stylistic trigger — they affect sampling,
+    # not content. Explicitly empty so auto-injection skips them.
+    "sdxl_lightning_4step_lora.safetensors": [],
+    "sdxl_lightning_8step_lora.safetensors": [],
+}
+
 
 # Map type → destination directory (relative to ComfyUI root)
 DEST_MAP = {
