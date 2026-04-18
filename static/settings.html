@@ -632,6 +632,9 @@
               actionHtml = '<span style="color:var(--success);font-size:12px">&#10003; Installed</span>';
             } else if (m.download && m.download.status === 'downloading') {
               actionHtml = `<span style="font-size:12px;color:var(--accent)">${m.download.progress}%</span>`;
+            } else if (m.install_error) {
+              const safeMsg = m.install_error.replace(/"/g, '&quot;');
+              actionHtml = `<span title="${safeMsg}" style="color:#e0a000;font-size:11px;cursor:help">&#9888; ${safeMsg}</span>`;
             } else {
               actionHtml = `<button onclick="downloadModel('${m.id}')" style="padding:4px 12px;font-size:11px;background:var(--accent-dim);color:var(--accent);border:1px solid var(--accent);border-radius:4px;cursor:pointer">Download</button>`;
             }
