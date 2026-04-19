@@ -308,6 +308,52 @@ BASIC_TXT2IMG = {
 }
 
 
+# Img2img workflow template for Style Remix.
+# Differs from BASIC_TXT2IMG by replacing EmptyLatentImage with a
+# LoadImage -> VAEEncode pair. KSampler starts from a partially-denoised
+# version of the source image rather than random noise.
+BASIC_IMG2IMG = {
+    "1": {
+        "class_type": "LoadImage",
+        "inputs": {"image": ""},
+    },
+    "2": {
+        "class_type": "VAEEncode",
+        "inputs": {"pixels": ["1", 0], "vae": ["4", 2]},
+    },
+    "3": {
+        "class_type": "KSampler",
+        "inputs": {
+            "seed": 0, "steps": 30, "cfg": 7.0,
+            "sampler_name": "dpmpp_2m", "scheduler": "karras",
+            "denoise": 0.55,
+            "model": ["4", 0], "positive": ["6", 0],
+            "negative": ["7", 0], "latent_image": ["2", 0],
+        },
+    },
+    "4": {
+        "class_type": "CheckpointLoaderSimple",
+        "inputs": {"ckpt_name": "sd_xl_base_1.0.safetensors"},
+    },
+    "6": {
+        "class_type": "CLIPTextEncode",
+        "inputs": {"text": "", "clip": ["4", 1]},
+    },
+    "7": {
+        "class_type": "CLIPTextEncode",
+        "inputs": {"text": "", "clip": ["4", 1]},
+    },
+    "8": {
+        "class_type": "VAEDecode",
+        "inputs": {"samples": ["3", 0], "vae": ["4", 2]},
+    },
+    "9": {
+        "class_type": "SaveImage",
+        "inputs": {"filename_prefix": "wyltek-remix", "images": ["8", 0]},
+    },
+}
+
+
 # Sprite generation workflow: SDXL checkpoint + pixel-art LoRA, batch output
 # Default: JuggernautXL v9 (best creature/character detail)
 # Switchable to DreamShaper XL (fast, 8 steps) or ZavyChroma (vibrant)
@@ -1429,7 +1475,11 @@ class ComfyUIBackend(BaseBackend):
                 "preset": preset,
             },
         }
-        # Apply IP-Adapter with batched images
+        # Apply IP-Adapter with batched images.
+        # `embeds_scaling` and `encode_batch_size` are required by
+        # IPAdapterBatch (see ComfyUI_IPAdapter_plus/IPAdapterPlus.py
+        # IPAdapterBatch.INPUT_TYPES). Omitting either triggers ComfyUI's
+        # "Required input is missing" validation failure.
         workflow["13"] = {
             "class_type": "IPAdapterBatch",
             "inputs": {
@@ -1440,6 +1490,8 @@ class ComfyUIBackend(BaseBackend):
                 "start_at": start_at,
                 "end_at": end_at,
                 "weight_type": weight_type,
+                "embeds_scaling": "V only",
+                "encode_batch_size": 0,
             },
         }
         # Rewire KSampler to use IP-Adapter model output
