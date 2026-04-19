@@ -1612,6 +1612,24 @@ def resolve_gallery_image(filename: str) -> Path | None:
     return store.resolve_asset(filename)
 
 
+@app.get("/api/crypto-logos")
+async def list_crypto_logos():
+    """List all crypto logos available for Style Remix."""
+    logos_dir = Path("storage") / "crypto-logos"
+    if not logos_dir.exists():
+        return []
+    items = []
+    for png in sorted(logos_dir.glob("*.png")):
+        slug = png.stem
+        parts = slug.rsplit("-", 1)
+        if len(parts) == 2 and parts[1].isalpha():
+            name = f"{parts[0].replace('-', ' ').title()} ({parts[1].upper()})"
+        else:
+            name = slug.replace("-", " ").title()
+        items.append({"slug": slug, "name": name})
+    return items
+
+
 # --- Music Generation API ---
 
 _music_engine = None
