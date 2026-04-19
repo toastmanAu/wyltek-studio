@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Wyltek Studio — Style Remix</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="stylesheet" href="/static/css/nav.css">
+  <script src="/static/js/nav.js"></script>
+  <style>
+    .studio-page { max-width: 1400px; margin: 0 auto; padding: 32px 24px; }
+    .studio-header h2 { margin: 0 0 4px; }
+    .studio-header .subtitle { font-size: 13px; color: var(--text-dim); margin-bottom: 20px; }
+    .ref-row { display: flex; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
+    .ref-tile {
+      width: 180px; height: 180px; border: 2px dashed var(--border); border-radius: 8px;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      cursor: pointer; position: relative; overflow: hidden; background: var(--surface);
+    }
+    .ref-tile.has-image { border-style: solid; }
+    .ref-tile img { width: 100%; height: 100%; object-fit: contain; }
+    .ref-tile .label { font-size: 12px; color: var(--text-dim); text-align: center; }
+    .ref-tile .clear {
+      position: absolute; top: 6px; right: 6px; width: 22px; height: 22px;
+      background: rgba(0,0,0,0.7); color: #fff; border: none; border-radius: 50%;
+      cursor: pointer; font-size: 13px; display: none;
+    }
+    .ref-tile.has-image .clear { display: block; }
+    .ref-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; margin-bottom: 6px; }
+    .crypto-picker { width: 180px; display: flex; flex-direction: column; gap: 6px; position: relative; }
+    .crypto-picker input {
+      padding: 6px 8px; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text); font-size: 12px;
+    }
+    .crypto-picker .dropdown {
+      display: none; position: absolute; top: 100%; left: 0; background: var(--surface);
+      border: 1px solid var(--border); border-radius: 6px; max-height: 260px;
+      overflow-y: auto; z-index: 20; min-width: 180px;
+    }
+    .crypto-picker .dropdown .item { padding: 6px 10px; font-size: 12px; cursor: pointer; }
+    .crypto-picker .dropdown .item:hover { background: var(--surface-2); }
+    .sublabel { font-size: 10px; color: var(--text-dim); text-align: center; }
+    .controls { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; margin-bottom: 16px; }
+    .controls label { display: block; font-size: 10px; color: var(--text-dim); text-transform: uppercase; margin-bottom: 3px; }
+    .controls input, .controls select {
+      width: 100%; padding: 7px; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text); font-size: 12px;
+    }
+    .range-val { font-size: 10px; color: var(--text-dim); text-align: center; }
+    .hint-row { margin-bottom: 16px; }
+    .hint-row input {
+      width: 100%; padding: 10px; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text); font-size: 13px;
+    }
+    .progress-bar { height: 6px; background: var(--surface-2); border-radius: 3px; overflow: hidden; margin: 12px 0; display: none; }
+    .progress-fill { height: 100%; background: var(--accent); width: 0%; transition: width 0.3s; }
+    .result-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; margin-top: 20px; }
+    .result-tile { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+    .result-tile .image-wrap { width: 100%; aspect-ratio: 1/1; background: var(--surface-2); display: flex; align-items: center; justify-content: center; }
+    .result-tile .image-wrap img { width: 100%; height: 100%; object-fit: contain; }
+    .result-tile .placeholder { font-size: 11px; color: var(--text-dim); }
+    .result-tile .actions { display: flex; gap: 4px; padding: 8px; }
+    .result-tile .actions button { flex: 1; font-size: 11px; padding: 5px; }
+    .modal-bg { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100; }
+    .modal-bg.active { display: flex; align-items: center; justify-content: center; }
+    .modal { background: var(--surface); border-radius: 12px; padding: 24px; max-width: 900px; width: 90vw; max-height: 85vh; display: flex; flex-direction: column; }
+    .modal h3 { margin: 0 0 12px; }
+    .gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; overflow-y: auto; flex: 1; }
+    .gallery-item { background: var(--surface-2); border-radius: 6px; cursor: pointer; overflow: hidden; aspect-ratio: 1/1; }
+    .gallery-item img { width: 100%; height: 100%; object-fit: contain; }
+    .gallery-item:hover { outline: 2px solid var(--accent); }
+  </style>
+</head>
+<body>
+  <div class="studio-page">
+    <div class="studio-header">
+      <h2>Style Remix</h2>
+      <div class="subtitle">Pick a character from your gallery, apply a style reference.</div>
+    </div>
+
+    <div class="ref-row">
+      <div>
+        <div class="ref-label">Base Character</div>
+        <div class="ref-tile" id="base-tile" onclick="onBaseTileClick()">
+          <span class="label">Click to pick from gallery<br>or drop an image</span>
+          <button class="clear" onclick="clearBase(event)">&times;</button>
+        </div>
+      </div>
+
+      <div>
+        <div class="ref-label">Style Reference</div>
+        <div class="ref-tile" id="style-tile" onclick="onStyleTileClick()">
+          <span class="label">Upload image</span>
+          <button class="clear" onclick="clearStyle(event)">&times;</button>
+        </div>
+      </div>
+
+      <div class="crypto-picker">
+        <div class="ref-label">— or — Crypto Logo</div>
+        <input type="text" id="crypto-search" placeholder="Search coin..." autocomplete="off"
+               oninput="onCryptoSearch()" onfocus="onCryptoSearch()">
+        <div class="dropdown" id="crypto-dropdown"></div>
+        <div class="sublabel" id="crypto-status"></div>
+      </div>
+
+      <input type="file" id="hidden-upload" accept="image/*" style="display:none">
+    </div>
+
+    <div class="hint-row">
+      <input type="text" id="hint" placeholder="Optional style hint (e.g. 'more golden', 'glowing eyes')">
+    </div>
+
+    <div class="controls">
+      <div>
+        <label>Preserve Character</label>
+        <input type="range" id="preserve" min="0.2" max="0.9" step="0.05" value="0.45">
+        <div class="range-val" id="preserve-val">0.45</div>
+      </div>
+      <div>
+        <label>Style Intensity</label>
+        <input type="range" id="strength" min="0" max="1.5" step="0.05" value="0.75">
+        <div class="range-val" id="strength-val">0.75</div>
+      </div>
+      <div>
+        <label>Style Start</label>
+        <input type="range" id="ip-start" min="0" max="1" step="0.05" value="0.0">
+        <div class="range-val" id="ip-start-val">0.00</div>
+      </div>
+      <div>
+        <label>Style End</label>
+        <input type="range" id="ip-end" min="0" max="1" step="0.05" value="0.8">
+        <div class="range-val" id="ip-end-val">0.80</div>
+      </div>
+      <div>
+        <label>Blend Mode</label>
+        <select id="blend-mode">
+          <option value="style transfer" selected>Style Transfer</option>
+          <option value="standard">Standard</option>
+          <option value="prompt is more important">Prompt Priority</option>
+        </select>
+      </div>
+      <div>
+        <label>Model</label>
+        <select id="model"></select>
+      </div>
+      <div>
+        <label>LoRA</label>
+        <select id="lora"></select>
+      </div>
+      <div>
+        <label>LoRA Strength</label>
+        <input type="range" id="lora-strength" min="0" max="1" step="0.05" value="0.55">
+        <div class="range-val" id="lora-strength-val">0.55</div>
+      </div>
+      <div>
+        <label>Batch Size</label>
+        <select id="batch">
+          <option value="2">2</option>
+          <option value="4" selected>4</option>
+          <option value="6">6</option>
+          <option value="8">8</option>
+        </select>
+      </div>
+      <div>
+        <label>Steps</label>
+        <input type="number" id="steps" min="10" max="40" value="20">
+      </div>
+      <div>
+        <label>CFG</label>
+        <input type="number" id="cfg" min="1" max="20" step="0.5" value="6.0">
+      </div>
+      <div>
+        <label>Seed</label>
+        <input type="number" id="seed" value="-1" title="-1 = random">
+      </div>
+    </div>
+
+    <button class="btn-primary" id="btn-gen" onclick="submitRemix()">Generate Remix</button>
+
+    <div class="progress-bar" id="progress"><div class="progress-fill" id="progress-fill"></div></div>
+
+    <div class="result-grid" id="results"></div>
+  </div>
+
+  <div class="modal-bg" id="gallery-modal" onclick="closeGalleryModal(event)">
+    <div class="modal" onclick="event.stopPropagation()">
+      <h3>Pick Base Character</h3>
+      <div class="gallery-grid" id="gallery-grid"></div>
+    </div>
+  </div>
+
+  <script src="/static/studio/js/remix.js"></script>
+</body>
+</html>

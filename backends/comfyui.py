@@ -308,6 +308,52 @@ BASIC_TXT2IMG = {
 }
 
 
+# Img2img workflow template for Style Remix.
+# Differs from BASIC_TXT2IMG by replacing EmptyLatentImage with a
+# LoadImage -> VAEEncode pair. KSampler starts from a partially-denoised
+# version of the source image rather than random noise.
+BASIC_IMG2IMG = {
+    "1": {
+        "class_type": "LoadImage",
+        "inputs": {"image": ""},
+    },
+    "2": {
+        "class_type": "VAEEncode",
+        "inputs": {"pixels": ["1", 0], "vae": ["4", 2]},
+    },
+    "3": {
+        "class_type": "KSampler",
+        "inputs": {
+            "seed": 0, "steps": 30, "cfg": 7.0,
+            "sampler_name": "dpmpp_2m", "scheduler": "karras",
+            "denoise": 0.55,
+            "model": ["4", 0], "positive": ["6", 0],
+            "negative": ["7", 0], "latent_image": ["2", 0],
+        },
+    },
+    "4": {
+        "class_type": "CheckpointLoaderSimple",
+        "inputs": {"ckpt_name": "sd_xl_base_1.0.safetensors"},
+    },
+    "6": {
+        "class_type": "CLIPTextEncode",
+        "inputs": {"text": "", "clip": ["4", 1]},
+    },
+    "7": {
+        "class_type": "CLIPTextEncode",
+        "inputs": {"text": "", "clip": ["4", 1]},
+    },
+    "8": {
+        "class_type": "VAEDecode",
+        "inputs": {"samples": ["3", 0], "vae": ["4", 2]},
+    },
+    "9": {
+        "class_type": "SaveImage",
+        "inputs": {"filename_prefix": "wyltek-remix", "images": ["8", 0]},
+    },
+}
+
+
 # Sprite generation workflow: SDXL checkpoint + pixel-art LoRA, batch output
 # Default: JuggernautXL v9 (best creature/character detail)
 # Switchable to DreamShaper XL (fast, 8 steps) or ZavyChroma (vibrant)
@@ -1429,7 +1475,11 @@ class ComfyUIBackend(BaseBackend):
                 "preset": preset,
             },
         }
-        # Apply IP-Adapter with batched images
+        # Apply IP-Adapter with batched images.
+        # `embeds_scaling` and `encode_batch_size` are required by
+        # IPAdapterBatch (see ComfyUI_IPAdapter_plus/IPAdapterPlus.py
+        # IPAdapterBatch.INPUT_TYPES). Omitting either triggers ComfyUI's
+        # "Required input is missing" validation failure.
         workflow["13"] = {
             "class_type": "IPAdapterBatch",
             "inputs": {
@@ -1440,12 +1490,135 @@ class ComfyUIBackend(BaseBackend):
                 "start_at": start_at,
                 "end_at": end_at,
                 "weight_type": weight_type,
+                "embeds_scaling": "V only",
+                "encode_batch_size": 0,
             },
         }
         # Rewire KSampler to use IP-Adapter model output
         workflow["3"]["inputs"]["model"] = ["13", 0]
 
         return workflow
+
+    def _build_remix_workflow(self, params: dict) -> dict:
+        """Build an img2img + IPAdapter workflow for Style Remix.
+
+        Mirrors generate() but uses BASIC_IMG2IMG as the base. SDXL-only
+        for v1 (no GGUF / Flux / PixArt / Klein paths).
+
+        `params` must already be resolved - filenames refer to files
+        already copied into the ComfyUI input directory.
+        """
+        import json as _json
+
+        workflow = _json.loads(_json.dumps(BASIC_IMG2IMG))
+
+        workflow["1"]["inputs"]["image"] = params["base_filename"]
+
+        model_name = params.get("model", "")
+        if model_name:
+            workflow["4"]["inputs"]["ckpt_name"] = model_name
+
+        workflow["3"]["inputs"]["seed"] = int(params["seed"])
+        workflow["3"]["inputs"]["steps"] = int(params["steps"])
+        workflow["3"]["inputs"]["cfg"] = float(params["cfg"])
+        preserve = float(params["preserve_character"])
+        workflow["3"]["inputs"]["denoise"] = round(1.0 - preserve, 4)
+
+        workflow["6"]["inputs"]["text"] = params.get("hint", "") or ""
+        workflow["7"]["inputs"]["text"] = params.get("negative_prompt", "") or ""
+
+        lora_name = params.get("lora_model", "")
+        if lora_name:
+            lora_strength = float(params.get("lora_strength", 0.55))
+            lora_strength_clip = float(params.get("lora_strength_clip", lora_strength * 0.6))
+            model_source = workflow["3"]["inputs"]["model"]
+            clip_source = workflow["6"]["inputs"]["clip"]
+            workflow["20"] = {
+                "class_type": "LoraLoader",
+                "inputs": {
+                    "lora_name": lora_name,
+                    "strength_model": lora_strength,
+                    "strength_clip": lora_strength_clip,
+                    "model": model_source,
+                    "clip": clip_source,
+                },
+            }
+            workflow["3"]["inputs"]["model"] = ["20", 0]
+            workflow["6"]["inputs"]["clip"] = ["20", 1]
+            workflow["7"]["inputs"]["clip"] = ["20", 1]
+
+        style_filename = params.get("style_ref_filename", "")
+        if style_filename:
+            ip_params = {
+                "ip_adapter_model": params.get("ip_adapter_model", "sdxl_models/ip-adapter_sdxl_vit-h.safetensors"),
+                "ip_adapter_strength": float(params.get("style_strength", 0.75)),
+                "ip_adapter_weight_type": params.get("blend_mode", "style transfer"),
+                "ip_adapter_start": float(params.get("ip_start", 0.0)),
+                "ip_adapter_end": float(params.get("ip_end", 0.8)),
+            }
+            workflow = self._add_ip_adapter(workflow, [style_filename], ip_params)
+
+        return workflow
+
+    async def generate_remix(self, params: dict, output_path: str, on_progress) -> dict:
+        """Run a single remix job through ComfyUI.
+
+        `params` keys (server.py resolves filenames before calling):
+          base_filename, style_ref_filename, model, lora_model, lora_strength,
+          preserve_character, style_strength, ip_start, ip_end, blend_mode,
+          steps, cfg, seed, hint, width, height.
+        """
+        import aiohttp
+
+        workflow = self._build_remix_workflow(params)
+
+        url = self.url.rstrip("/")
+        client_id = str(uuid.uuid4())
+
+        await on_progress(5, "Submitting to ComfyUI...")
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(f"{url}/prompt",
+                                    json={"prompt": workflow, "client_id": client_id}) as resp:
+                resp.raise_for_status()
+                submit_resp = await resp.json()
+                if "error" in submit_resp:
+                    err = submit_resp.get("error")
+                    node_errors = submit_resp.get("node_errors", {})
+                    raise RuntimeError(f"ComfyUI rejected workflow: {err} {node_errors}")
+                prompt_id = submit_resp["prompt_id"]
+
+            for i in range(300):
+                await asyncio.sleep(1)
+                async with session.get(f"{url}/history/{prompt_id}") as resp:
+                    history = await resp.json()
+                if prompt_id in history:
+                    break
+                if i % 5 == 0:
+                    await on_progress(min(10 + i, 85), "Remixing...")
+            else:
+                raise RuntimeError("ComfyUI remix timed out")
+
+            record = history[prompt_id]
+            outputs = record.get("outputs", {})
+            save_node = outputs.get("9", {})
+            images = save_node.get("images", [])
+            if not images:
+                raise RuntimeError("ComfyUI finished but produced no images")
+            img = images[0]
+            filename = img["filename"]
+            subfolder = img.get("subfolder", "")
+            view_url = f"{url}/view"
+            qs = {"filename": filename, "subfolder": subfolder, "type": img.get("type", "output")}
+            async with session.get(view_url, params=qs) as resp:
+                resp.raise_for_status()
+                image_bytes = await resp.read()
+
+        with open(output_path, "wb") as f:
+            f.write(image_bytes)
+
+        await on_progress(100, "Done")
+        return {"filename": Path(output_path).name}
 
     async def _poll_history(self, session, url, prompt_id, on_progress):
         """Fallback polling when WebSocket unavailable."""

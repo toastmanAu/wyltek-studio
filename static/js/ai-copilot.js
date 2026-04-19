@@ -9,7 +9,7 @@
     '/studio/tts':     'TTS Studio — text-to-speech. Text input: #tts-text. Voice selector: #voice-select. Generate button: #tts-generate.',
     '/studio/music':   'Music Studio — AI music generation. Prompt input: #music-prompt. Generate button: #music-generate.',
     '/studio/video':   'Video Studio — AI video composition. Prompt input: #video-prompt. Generate button: #video-generate.',
-    '/studio/sprites': 'Sprite Forge — game sprite editor and AI sprite generation.',
+    '/studio/remix': 'Style Remix — take a generated character image and apply a style reference (upload or crypto logo) to create themed variants.',
     '/studio/meme':    `Meme Forge — AI meme template generator.
 
 Tabs: switchTab('generate'), switchTab('upload'), switchTab('template').
@@ -57,7 +57,7 @@ Current page: ${getPageContext()}
 
 Navigation: to go to another section, click its link in the left sidebar nav. Links are:
   Generate (/), TTS Studio (/studio/tts), Music Studio (/studio/music),
-  Video Studio (/studio/video), Sprite Forge (/studio/sprites), Meme Forge (/studio/meme),
+  Video Studio (/studio/video), Style Remix (/studio/remix), Meme Forge (/studio/meme),
   Files (/files), Projects (/projects), Settings (/settings).
 
 To optimize a prompt using the built-in prompt optimizer, use execute_javascript like this:

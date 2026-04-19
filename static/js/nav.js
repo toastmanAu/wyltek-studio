@@ -9,6 +9,7 @@
     { href: '/studio/video', icon: '&#127909;', label: 'Video Studio', id: 'video' },
     { href: '/studio/meme',    icon: '&#128514;', label: 'Meme Forge',   id: 'meme' },
     { href: '/studio/frames',  icon: '&#127916;', label: 'Frame Cutter', id: 'frames' },
+    { href: '/studio/remix',       icon: '&#127912;', label: 'Style Remix',  id: 'remix' },
     { href: '/studio/image-tools', icon: '&#9986;', label: 'Image Tools', id: 'image-tools' },
     { href: '/studio/audio', icon: '&#127911;', label: 'Audio Tools', id: 'audio' },
     { href: '/studio/beats', icon: '&#127928;', label: 'Beat Builder', id: 'beats' },
@@ -23,7 +24,8 @@
   // Determine active page from current path
   const path = window.location.pathname;
   let activeId = 'generate';
-  if (path.startsWith('/studio/meme')) activeId = 'meme';
+  if (path.startsWith('/studio/remix')) activeId = 'remix';
+  else if (path.startsWith('/studio/meme')) activeId = 'meme';
   else if (path.startsWith('/studio/frames')) activeId = 'frames';
   else if (path.startsWith('/studio/image-tools')) activeId = 'image-tools';
   else if (path.startsWith('/studio/video')) activeId = 'video';
