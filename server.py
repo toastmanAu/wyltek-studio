@@ -130,6 +130,11 @@ async def beats_page():
     return FileResponse("static/studio/beats.html")
 
 
+@app.get("/studio/remix")
+async def remix_page():
+    return FileResponse("static/studio/remix.html")
+
+
 @app.post("/api/audio/extract")
 async def api_audio_extract(
     video: UploadFile = File(...),
