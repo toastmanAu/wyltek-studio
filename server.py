@@ -1577,6 +1577,27 @@ async def serve_storage_file(filename: str):
     return JSONResponse({"error": "File not found"}, status_code=404)
 
 
+# --- Style Remix resolvers ---
+
+def resolve_crypto_logo(slug: str) -> Path | None:
+    """Resolve a crypto logo slug like 'bitcoin-btc' to storage/crypto-logos/<slug>.png.
+
+    Rejects slugs containing path separators, '..', or empty values.
+    """
+    if not slug or "/" in slug or "\\" in slug or ".." in slug:
+        return None
+    candidate = Path("storage") / "crypto-logos" / f"{slug}.png"
+    return candidate if candidate.exists() else None
+
+
+def resolve_gallery_image(filename: str) -> Path | None:
+    """Resolve a gallery image filename via storage.resolve_asset."""
+    import storage as store
+    if not filename or "/" in filename or "\\" in filename or ".." in filename:
+        return None
+    return store.resolve_asset(filename)
+
+
 # --- Music Generation API ---
 
 _music_engine = None
