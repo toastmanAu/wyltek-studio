@@ -1671,8 +1671,20 @@ async def gpu_claim_music():
     if not engine:
         return JSONResponse({"error": "MusicGen not available"}, status_code=503)
     engine.preload()
-    device = getattr(engine, "_device", "unknown")
-    return {"ok": True, "device": device}
+    raw_device = getattr(engine, "_device", "unknown")
+    # Resolve a human-readable label. PyTorch's ROCm build keeps the "cuda"
+    # API naming even on AMD GPUs, so the raw string is misleading.
+    if raw_device == "cuda":
+        try:
+            import torch
+            device_label = torch.cuda.get_device_name(0)
+        except Exception:
+            device_label = "GPU"
+    elif raw_device == "cpu":
+        device_label = "CPU"
+    else:
+        device_label = raw_device
+    return {"ok": True, "device": device_label}
 
 
 @app.post("/api/gpu/release-music")
