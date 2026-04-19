@@ -2220,6 +2220,132 @@ async def compare(
     return {"comparison_id": comparison_id, "jobs": job_ids}
 
 
+# --- Style Remix API ---
+
+_BLEND_MODE_VALUES = {"style transfer", "standard", "prompt is more important"}
+
+
+@app.post("/api/remix")
+async def remix(
+    base_image: UploadFile | None = File(default=None),
+    base_gallery_id: str = Form(""),
+    style_ref: UploadFile | None = File(default=None),
+    crypto_logo_id: str = Form(""),
+    preserve_character: float = Form(0.45),
+    style_strength: float = Form(0.75),
+    ip_start: float = Form(0.0),
+    ip_end: float = Form(0.8),
+    blend_mode: str = Form("style transfer"),
+    lora_model: str = Form(""),
+    lora_strength: float = Form(0.55),
+    model: str = Form("juggernautXL_v9.safetensors"),
+    steps: int = Form(20),
+    cfg: float = Form(6.0),
+    seed: int = Form(-1),
+    batch_size: int = Form(4),
+    hint: str = Form(""),
+):
+    """Enqueue a batch of Style Remix jobs. One ComfyUI job per batch slot."""
+    import random as _random
+    import shutil as _shutil
+
+    base_source_path: Path | None = None
+    base_kind = ""
+    base_ref = ""
+    if base_image is not None and base_image.filename:
+        upload_id = str(uuid.uuid4())[:8]
+        ext = Path(base_image.filename).suffix or ".png"
+        dest = Path("uploads") / f"remix_base_{upload_id}{ext}"
+        async with aiofiles.open(dest, "wb") as f:
+            await f.write(await base_image.read())
+        base_source_path = dest
+        base_kind = "upload"
+        base_ref = dest.name
+    elif base_gallery_id:
+        resolved = resolve_gallery_image(base_gallery_id)
+        if resolved is None:
+            return JSONResponse({"error": f"Gallery image '{base_gallery_id}' not found"}, status_code=404)
+        base_source_path = resolved
+        base_kind = "gallery"
+        base_ref = base_gallery_id
+    else:
+        return JSONResponse({"error": "base_image or base_gallery_id is required"}, status_code=400)
+
+    style_source_path: Path | None = None
+    style_kind = ""
+    style_ref_id = ""
+    if style_ref is not None and style_ref.filename:
+        upload_id = str(uuid.uuid4())[:8]
+        ext = Path(style_ref.filename).suffix or ".png"
+        dest = Path("uploads") / f"remix_style_{upload_id}{ext}"
+        async with aiofiles.open(dest, "wb") as f:
+            await f.write(await style_ref.read())
+        style_source_path = dest
+        style_kind = "upload"
+        style_ref_id = dest.name
+    elif crypto_logo_id:
+        resolved = resolve_crypto_logo(crypto_logo_id)
+        if resolved is None:
+            return JSONResponse({"error": f"Crypto logo '{crypto_logo_id}' not found"}, status_code=404)
+        style_source_path = resolved
+        style_kind = "crypto"
+        style_ref_id = crypto_logo_id
+    else:
+        return JSONResponse({"error": "style_ref or crypto_logo_id is required"}, status_code=400)
+
+    if not (0.2 <= preserve_character <= 0.9):
+        return JSONResponse({"error": "preserve_character must be in [0.2, 0.9]"}, status_code=400)
+    if not (1 <= batch_size <= 8):
+        return JSONResponse({"error": "batch_size must be in [1, 8]"}, status_code=400)
+    if blend_mode not in _BLEND_MODE_VALUES:
+        return JSONResponse({"error": f"blend_mode must be one of {sorted(_BLEND_MODE_VALUES)}"}, status_code=400)
+
+    comfy_input_dir = Path("/home/phill/ComfyUI/input")
+    base_filename = f"remix_base_{uuid.uuid4().hex[:8]}{base_source_path.suffix}"
+    style_filename = f"remix_style_{uuid.uuid4().hex[:8]}{style_source_path.suffix}"
+    _shutil.copy2(base_source_path, comfy_input_dir / base_filename)
+    _shutil.copy2(style_source_path, comfy_input_dir / style_filename)
+
+    base_seed = _random.randint(0, 2**32 - 1 - batch_size) if seed == -1 else seed
+
+    remix_id = str(uuid.uuid4())[:8]
+    job_ids: list[dict] = []
+    for i in range(batch_size):
+        job_id = str(uuid.uuid4())[:8]
+        slot_seed = base_seed + i
+        params = {
+            "remix": True,
+            "backend": "comfyui",
+            "base_filename": base_filename,
+            "style_ref_filename": style_filename,
+            "base_from_kind": base_kind,
+            "base_from": base_ref,
+            "style_ref_kind": style_kind,
+            "style_ref": style_ref_id,
+            "model": model,
+            "lora_model": lora_model,
+            "lora_strength": lora_strength,
+            "preserve_character": preserve_character,
+            "style_strength": style_strength,
+            "ip_start": ip_start,
+            "ip_end": ip_end,
+            "blend_mode": blend_mode,
+            "steps": steps,
+            "cfg": cfg,
+            "seed": slot_seed,
+            "batch_size": batch_size,
+            "slot_index": i,
+            "hint": hint,
+            "width": 1024,
+            "height": 1024,
+        }
+        jobs[job_id] = {"status": "queued", "params": params, "progress": 0, "remix_id": remix_id}
+        job_queue.submit_background(_run_job(job_id, params), lane="gpu", job_id=job_id)
+        job_ids.append({"job_id": job_id})
+
+    return {"remix_id": remix_id, "jobs": job_ids}
+
+
 # --- WebSocket for live progress ---
 
 @app.websocket("/ws")
@@ -2277,7 +2403,10 @@ async def _run_job(job_id: str, params: dict):
                 "status": "running", "progress": pct, "message": msg,
             })
 
-        await backend.generate(params, str(output_path), on_progress)
+        if params.get("remix"):
+            await backend.generate_remix(params, str(output_path), on_progress)
+        else:
+            await backend.generate(params, str(output_path), on_progress)
 
         # Save metadata alongside image + embed in PNG
         meta = {**params, "job_id": job_id, "created": datetime.now().isoformat()}
