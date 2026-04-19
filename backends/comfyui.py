@@ -1580,12 +1580,13 @@ class ComfyUIBackend(BaseBackend):
         async with aiohttp.ClientSession() as session:
             async with session.post(f"{url}/prompt",
                                     json={"prompt": workflow, "client_id": client_id}) as resp:
-                data = await resp.json()
-                if "error" in data:
-                    err = data.get("error")
-                    node_errors = data.get("node_errors", {})
+                resp.raise_for_status()
+                submit_resp = await resp.json()
+                if "error" in submit_resp:
+                    err = submit_resp.get("error")
+                    node_errors = submit_resp.get("node_errors", {})
                     raise RuntimeError(f"ComfyUI rejected workflow: {err} {node_errors}")
-                prompt_id = data["prompt_id"]
+                prompt_id = submit_resp["prompt_id"]
 
             for i in range(300):
                 await asyncio.sleep(1)
@@ -1610,10 +1611,11 @@ class ComfyUIBackend(BaseBackend):
             view_url = f"{url}/view"
             qs = {"filename": filename, "subfolder": subfolder, "type": img.get("type", "output")}
             async with session.get(view_url, params=qs) as resp:
-                data = await resp.read()
+                resp.raise_for_status()
+                image_bytes = await resp.read()
 
         with open(output_path, "wb") as f:
-            f.write(data)
+            f.write(image_bytes)
 
         await on_progress(100, "Done")
         return {"filename": Path(output_path).name}
