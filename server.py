@@ -18,6 +18,7 @@ from fastapi import FastAPI, File, Form, Request, UploadFile, WebSocket, WebSock
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+import storage as store
 from backends import registry
 from job_queue import JobQueue
 
@@ -1591,8 +1592,16 @@ def resolve_crypto_logo(slug: str) -> Path | None:
 
 
 def resolve_gallery_image(filename: str) -> Path | None:
-    """Resolve a gallery image filename via storage.resolve_asset."""
-    import storage as store
+    """Resolve a gallery image filename via storage.resolve_asset.
+
+    The path-traversal guard below is defense-in-depth: `storage.resolve_asset`
+    internally reduces its input to `Path(filename).name`, so traversal
+    attempts are silently stripped anyway. The guard here rejects them loudly
+    so misuse surfaces as a None return instead of a surprise asset hit.
+
+    TODO(v1.1): scope this to `storage/unsorted/` only; currently delegates
+    to `storage.resolve_asset` which also searches `storage/projects/`.
+    """
     if not filename or "/" in filename or "\\" in filename or ".." in filename:
         return None
     return store.resolve_asset(filename)
