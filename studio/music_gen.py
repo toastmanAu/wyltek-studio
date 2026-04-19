@@ -9,8 +9,11 @@ class MusicGenEngine:
     name = "musicgen"
 
     MODELS = [
-        {"id": "facebook/musicgen-small", "name": "MusicGen Small (300M)", "size": "small", "params": "300M"},
-        {"id": "facebook/musicgen-medium", "name": "MusicGen Medium (1.5B)", "size": "medium", "params": "1.5B"},
+        {"id": "facebook/musicgen-small", "name": "MusicGen Small", "size": "small", "params": "300M"},
+        {"id": "facebook/musicgen-medium", "name": "MusicGen Medium", "size": "medium", "params": "1.5B"},
+        {"id": "facebook/musicgen-large", "name": "MusicGen Large", "size": "large", "params": "3.3B"},
+        {"id": "facebook/musicgen-melody", "name": "MusicGen Melody", "size": "medium", "params": "1.5B"},
+        {"id": "facebook/musicgen-melody-large", "name": "MusicGen Melody Large", "size": "large", "params": "3.3B"},
     ]
 
     MODES = [
@@ -58,7 +61,11 @@ class MusicGenEngine:
             if torch.cuda.is_available():
                 free_vram = torch.cuda.mem_get_info()[0] / 1024**2
                 mid = model_id or ""
-                if "melody" in mid:
+                # 3.3B variants (large, melody-large) weigh ~13-14GB at fp32,
+                # ~7GB at fp16; reserve headroom for generation buffers.
+                if "large" in mid:
+                    needed = 9000
+                elif "melody" in mid:
                     needed = 6000
                 elif "medium" in mid:
                     needed = 4000
