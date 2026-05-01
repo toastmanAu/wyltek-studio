@@ -929,3 +929,136 @@ input[type="range"] {
 .compare-card-body {
   position: relative;
 }
+
+/* ===== Health widget (floating top-right pill) =====
+ * Status dots + Reset button. Self-mounted by static/js/health-widget.js,
+ * styled here to stay consistent with the rest of the app shell. */
+
+.health-widget {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  background: rgba(20, 20, 20, 0.78);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  font-size: 12px;
+}
+
+.health-dots {
+  display: flex;
+  gap: 6px;
+}
+
+.health-dot {
+  width: 12px;
+  height: 12px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  background: var(--text-dim);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.health-dot:hover {
+  transform: scale(1.15);
+}
+.health-dot:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.health-dot--green   { background: var(--success); box-shadow: 0 0 4px rgba(52, 211, 153, 0.55); }
+.health-dot--amber   { background: var(--warning); box-shadow: 0 0 4px rgba(245, 158, 11, 0.55); }
+.health-dot--red     { background: var(--error);   box-shadow: 0 0 6px rgba(239, 68, 68, 0.7); }
+.health-dot--unknown { background: var(--text-dim); }
+
+.health-reset-btn {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.health-reset-btn:hover {
+  background: var(--surface-3);
+  border-color: var(--accent);
+}
+.health-reset-btn:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+.health-reset-btn--hard {
+  background: var(--error);
+  border-color: var(--error);
+  color: #fff;
+}
+.health-reset-btn--hard:hover {
+  background: #dc2626;
+}
+
+.health-popover {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 6px;
+  padding: 6px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+}
+
+.health-toast {
+  position: fixed;
+  top: 56px;
+  right: 12px;
+  z-index: 70;
+  padding: 8px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--text);
+  opacity: 0;
+  transform: translateY(-8px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+}
+.health-toast--in {
+  opacity: 1;
+  transform: translateY(0);
+}
+.health-toast--error {
+  border-color: var(--error);
+}
+
+/* On narrow viewports, drop the pill below the mobile-header so the
+ * hamburger remains the primary tap target on the top-left, and shrink
+ * padding so the whole pill stays inside the viewport. */
+@media (max-width: 600px) {
+  .health-widget {
+    top: 8px;
+    right: 8px;
+    padding: 4px 8px;
+    gap: 8px;
+  }
+  .health-reset-btn {
+    padding: 3px 8px;
+    font-size: 11px;
+  }
+}

@@ -18,6 +18,7 @@ from fastapi import FastAPI, File, Form, Request, UploadFile, WebSocket, WebSock
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+import health_actions
 import storage as store
 from backends import registry
 from job_queue import JobQueue
@@ -923,6 +924,41 @@ async def generate(
 async def get_queue_status():
     """Current queue status across all resource lanes."""
     return job_queue.status()
+
+
+@app.get("/api/health/components")
+async def get_health_components():
+    """Component health snapshot for the floating widget.
+
+    Returns a flat list of {name, status, tooltip} entries — one per
+    component (comfyui, ollama, gpu, disk, queue). Status is one of
+    green/amber/red/unknown. Tooltips carry the human-readable values.
+    """
+    components = await health_actions.check_components(job_queue)
+    return {"components": components}
+
+
+@app.post("/api/health/reset")
+async def post_health_reset(request: Request):
+    """Run a soft or hard reset.
+
+    Body: {"level": "soft"} (default) or {"level": "hard"}.
+    Soft = orphan-rescue + re-probe (no service restart).
+    Hard = soft + restart comfyui.service.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    level = (body.get("level") or "soft").lower()
+    if level == "hard":
+        result = await health_actions.hard_reset(job_queue)
+    else:
+        result = await health_actions.soft_reset(job_queue)
+    # Invalidate gallery cache so newly-rescued meshes appear immediately.
+    _gallery_cache["items"] = None
+    _gallery_cache["ts"] = 0.0
+    return result
 
 
 @app.get("/api/job/{job_id}")

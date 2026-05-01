@@ -117,6 +117,11 @@
     const copilot = document.createElement('script');
     copilot.src = '/static/js/ai-copilot.js';
     document.head.appendChild(copilot);
+
+    // Load health widget (floating top-right pill: status dots + Reset)
+    const health = document.createElement('script');
+    health.src = '/static/js/health-widget.js';
+    document.head.appendChild(health);
   });
 
   // Toggle collapsed
