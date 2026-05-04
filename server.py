@@ -2552,6 +2552,66 @@ def _backend_type(name: str) -> str:
     return "paid"
 
 
+# ===== Mesh post-processing (modly tier-1 port) =====
+from pydantic import BaseModel as _MeshOptModel  # local alias to avoid clobber
+
+
+class _MeshOptimizeRequest(_MeshOptModel):
+    job_id: str
+    target_faces: int = 0  # 0 = use DEFAULT_TARGET_FACES
+
+
+class _MeshSmoothRequest(_MeshOptModel):
+    job_id: str
+    iterations: int = 3
+
+
+@app.post("/api/mesh/decimate")
+async def api_mesh_decimate(req: _MeshOptimizeRequest):
+    """Decimate the GLB attached to job_id, writing a sibling _decimated.glb."""
+    import storage as store
+    import mesh_optimize
+
+    src = store.asset_path(req.job_id, "mesh", ".glb")
+    if not src.exists():
+        return {"ok": False, "error": f"no mesh for job {req.job_id}"}
+
+    dst = src.with_name(src.stem + "_decimated.glb")
+    try:
+        mesh_optimize.decimate_mesh(str(src), str(dst), req.target_faces)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+    return {
+        "ok": True,
+        "output_url": f"/storage/{req.job_id}_decimated.glb",
+        "target_faces": req.target_faces or mesh_optimize.DEFAULT_TARGET_FACES,
+    }
+
+
+@app.post("/api/mesh/smooth")
+async def api_mesh_smooth(req: _MeshSmoothRequest):
+    """Smooth the GLB attached to job_id, writing a sibling _smoothed.glb."""
+    import storage as store
+    import mesh_optimize
+
+    src = store.asset_path(req.job_id, "mesh", ".glb")
+    if not src.exists():
+        return {"ok": False, "error": f"no mesh for job {req.job_id}"}
+
+    dst = src.with_name(src.stem + "_smoothed.glb")
+    try:
+        mesh_optimize.smooth_mesh(str(src), str(dst), req.iterations)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+    return {
+        "ok": True,
+        "output_url": f"/storage/{req.job_id}_smoothed.glb",
+        "iterations": req.iterations,
+    }
+
+
 if __name__ == "__main__":
     import sys
     load_config()

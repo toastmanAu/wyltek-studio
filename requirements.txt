@@ -14,3 +14,6 @@ opencv-python-headless>=4.8.0
 numpy>=1.24.0
 # Audio / Beat builder
 pydub>=0.25.0
+# Mesh post-processing (modly tier-1 port)
+pymeshlab>=2023.12
+trimesh>=4.0.0
