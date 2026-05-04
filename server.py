@@ -2612,6 +2612,34 @@ async def api_mesh_smooth(req: _MeshSmoothRequest):
     }
 
 
+@app.get("/api/mesh/export")
+async def api_mesh_export(job_id: str, fmt: str):
+    """Convert the GLB attached to job_id into {glb,stl,obj,ply} on demand."""
+    import storage as store
+    import mesh_export
+    from fastapi.responses import FileResponse
+
+    src = store.asset_path(job_id, "mesh", ".glb")
+    if not src.exists():
+        return {"ok": False, "error": f"no mesh for job {job_id}"}
+
+    dst = src.with_name(f"{src.stem}.{fmt.lower()}")
+    try:
+        mesh_export.export_mesh(str(src), str(dst), fmt)
+    except mesh_export.UnsupportedFormatError as e:
+        return {"ok": False, "error": str(e)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+    media = {
+        "glb": "model/gltf-binary",
+        "stl": "model/stl",
+        "obj": "model/obj",
+        "ply": "model/ply",
+    }.get(fmt.lower(), "application/octet-stream")
+    return FileResponse(str(dst), media_type=media, filename=dst.name)
+
+
 if __name__ == "__main__":
     import sys
     load_config()
