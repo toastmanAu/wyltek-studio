@@ -84,9 +84,16 @@ class JobQueue:
                 if job in self._running[lane]:
                     self._running[lane].remove(job)
 
-    def submit_background(self, coro, lane: str = "gpu", job_id: str = ""):
-        """Submit without awaiting — returns immediately, job runs when slot opens."""
-        asyncio.create_task(self.submit(coro, lane=lane, job_id=job_id))
+    def submit_background(self, coro, lane: str = "gpu", job_id: str = "",
+                          timeout: float = 0):
+        """Submit without awaiting — returns immediately, job runs when slot opens.
+
+        Args:
+            timeout: Max seconds for this job. 0 = use lane default. Use a
+                     long override (e.g. 1800) for 3D mesh runs which can take
+                     10–15 min on cascade + textured pipelines.
+        """
+        asyncio.create_task(self.submit(coro, lane=lane, job_id=job_id, timeout=timeout))
 
     def status(self) -> dict:
         """Current queue status per lane."""
