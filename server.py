@@ -2640,6 +2640,44 @@ async def api_mesh_export(job_id: str, fmt: str):
     return FileResponse(str(dst), media_type=media, filename=dst.name)
 
 
+# ===== Job cancellation (modly tier-1 port) =====
+@app.post("/api/job/{job_id}/cancel")
+async def api_job_cancel(job_id: str):
+    """Cancel an in-flight or queued job.
+
+    Cooperative: cancels the wrapping asyncio.Task, which propagates
+    CancelledError into _run_job. ComfyUI itself keeps running until its
+    next prompt boundary; the existing orphan-rescue path
+    (backends/comfyui.py:_rescue_orphan_glb) salvages any GLB it manages
+    to write before teardown.
+    """
+    if job_id not in jobs:
+        return {"ok": False, "error": "unknown job_id"}
+
+    cancelled = await job_queue.cancel(job_id)
+    await _cancel_in_flight(job_id)
+
+    jobs[job_id].update({"status": "cancelled"})
+    await broadcast({
+        "type": "job_update", "job_id": job_id,
+        "status": "cancelled",
+    })
+    return {"ok": cancelled, "job_id": job_id, "status": "cancelled"}
+
+
+async def _cancel_in_flight(job_id: str) -> None:
+    """DECISION D1 = option (i): wrapper-only cancel.
+
+    No-op here — JobQueue.cancel() already cancelled the wrapper task,
+    which propagates CancelledError through asyncio.wait_for in submit().
+    ComfyUI continues until its next prompt boundary; orphan-rescue picks
+    up any late-arriving GLB. To switch to option (ii) graceful DELETE
+    or option (iii) DELETE+kill, replace this body — see plan
+    docs/superpowers/plans/2026-05-04-modly-tier1-ports.md DECISION D1.
+    """
+    return
+
+
 if __name__ == "__main__":
     import sys
     load_config()

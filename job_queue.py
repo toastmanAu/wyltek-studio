@@ -45,6 +45,9 @@ class JobQueue:
         self._running: dict[str, list[QueuedJob]] = {
             lane: [] for lane in self.LANE_LIMITS
         }
+        # Map job_id → asyncio.Task so cancel() can find and cancel running
+        # or queued jobs. Tasks self-remove via add_done_callback.
+        self._tasks: dict[str, asyncio.Task] = {}
 
     # Default timeout per lane (seconds)
     LANE_TIMEOUTS = {
@@ -92,8 +95,18 @@ class JobQueue:
             timeout: Max seconds for this job. 0 = use lane default. Use a
                      long override (e.g. 1800) for 3D mesh runs which can take
                      10–15 min on cascade + textured pipelines.
+
+        Returns the asyncio.Task so callers can await or cancel it. Tasks
+        with non-empty job_id are also tracked in self._tasks for cancel()
+        lookup, and self-remove on completion.
         """
-        asyncio.create_task(self.submit(coro, lane=lane, job_id=job_id, timeout=timeout))
+        task = asyncio.create_task(
+            self.submit(coro, lane=lane, job_id=job_id, timeout=timeout)
+        )
+        if job_id:
+            self._tasks[job_id] = task
+            task.add_done_callback(lambda _t: self._tasks.pop(job_id, None))
+        return task
 
     def status(self) -> dict:
         """Current queue status per lane."""
@@ -118,3 +131,20 @@ class JobQueue:
                 if job.job_id == job_id:
                     return {"lane": lane, "position": 0, "status": "running"}
         return None
+
+    async def cancel(self, job_id: str) -> bool:
+        """Cancel a queued or running job by id.
+
+        Returns True if a matching job was found and cancellation was
+        requested, False if no such job exists.
+
+        For queued jobs, the task is cancelled before it acquires the
+        semaphore. For running jobs, the task is cancelled inside
+        `await asyncio.wait_for(coro, ...)` which propagates
+        CancelledError into the user coroutine.
+        """
+        task = self._tasks.get(job_id)
+        if task is None or task.done():
+            return False
+        task.cancel()
+        return True
