@@ -84,6 +84,21 @@
         <legend>Render</legend>
         <label><input type="radio" name="tier" value="draft" checked /> Draft (~73s)</label>
         <label><input type="radio" name="tier" value="final" /> Final (~5min)</label>
+        <label>Aspect
+          <select id="aspect-select">
+            <option value="1:1">1:1 (square)</option>
+            <option value="16:9">16:9</option>
+            <option value="9:16">9:16</option>
+            <option value="3:2">3:2</option>
+            <option value="2:3">2:3</option>
+            <option value="4:3">4:3</option>
+            <option value="3:4">3:4</option>
+            <option value="1:2">1:2</option>
+            <option value="2:1">2:1</option>
+            <option value="1:3">1:3</option>
+            <option value="3:1">3:1</option>
+          </select>
+        </label>
         <button type="button" id="render-btn" disabled>Render</button>
       </fieldset>
     </aside>

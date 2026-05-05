@@ -206,7 +206,7 @@ async function submitRender() {
     const body = {
       template_id: tpl.id,
       tier: getTier(),
-      aspect: '1:1',          // Task 17 will read from a real dropdown
+      aspect: document.getElementById('aspect-select').value,
       slots: harvestForm(tpl),
       image_refs: [],
     };
