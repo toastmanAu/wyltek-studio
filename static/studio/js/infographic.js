@@ -214,7 +214,25 @@ const _origOnTemplateChange = onTemplateChange;
 window.onTemplateChange = function () {
   _origOnTemplateChange();
   if (state.current) buildForm(state.current);
+  updateTemplatePreview();
 };
+
+function updateTemplatePreview() {
+  const prev = document.getElementById('template-preview');
+  if (!prev) return;
+  if (state.current && state.current.preview) {
+    prev.onerror = () => {
+      // Preview file missing — just hide instead of showing broken-image icon.
+      prev.hidden = true;
+      prev.onerror = null;
+    };
+    prev.onload = () => { prev.hidden = false; };
+    prev.src = '/' + state.current.preview;
+  } else {
+    prev.hidden = true;
+    prev.removeAttribute('src');
+  }
+}
 els.select.removeEventListener('change', onTemplateChange);
 els.select.addEventListener('change', window.onTemplateChange);
 window.onTemplateChange();

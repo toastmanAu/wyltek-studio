@@ -81,6 +81,8 @@ app.mount("/data/sample-packs", StaticFiles(directory="data/sample-packs"), name
 Path("uploads").mkdir(parents=True, exist_ok=True)
 Path("uploads/infographic").mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+Path("templates").mkdir(parents=True, exist_ok=True)
+app.mount("/templates", StaticFiles(directory="templates"), name="templates")
 
 
 @app.get("/")
