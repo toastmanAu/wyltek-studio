@@ -103,17 +103,29 @@ async def generate(*, prompt, image_paths, aspect, seed, tier,
     proc = await _start_subprocess(*argv,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
     stdout = bytearray()
-    try:
-        async for raw in proc.stdout:  # type: ignore[union-attr]
-            stdout.extend(raw)
-            if (time.monotonic() - start) > timeout:
-                proc.terminate()
-                raise SenseNovaError(f"SenseNova render exceeded {timeout}s")
-        rc = await proc.wait()
-    except asyncio.CancelledError:
-        proc.terminate()
-        await proc.wait()
-        raise
+
+    from progress_smooth import SmoothProgress
+
+    if on_progress is None:
+        async def _noop(_p, _m=""): return None
+        cb: ProgressCallback = _noop
+    else:
+        cb = on_progress
+
+    async with SmoothProgress(cb, tick_seconds=2.0, max_creep=85) as sp:
+        await sp.set(5, "loading model")
+        try:
+            async for raw in proc.stdout:  # type: ignore[union-attr]
+                stdout.extend(raw)
+                if (time.monotonic() - start) > timeout:
+                    proc.terminate()
+                    raise SenseNovaError(f"SenseNova render exceeded {timeout}s")
+            rc = await proc.wait()
+        except asyncio.CancelledError:
+            proc.terminate()
+            await proc.wait()
+            raise
+        await sp.set(95, "saving image")
 
     if rc != 0:
         raise SenseNovaError(
@@ -123,4 +135,6 @@ async def generate(*, prompt, image_paths, aspect, seed, tier,
     pngs = sorted(output_dir.glob("*.png"))
     if not pngs:
         raise SenseNovaError(f"No PNG produced in {output_dir}")
+    if on_progress is not None:
+        await on_progress(100, "done")
     return pngs[-1]
