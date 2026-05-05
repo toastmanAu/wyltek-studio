@@ -2796,6 +2796,21 @@ async def _run_infographic_job(job_id: str, params: dict) -> None:
             output_dir=output_dir,
             on_progress=on_progress,
         )
+        # Persist sidecar JSON for history pane (Task 28).
+        try:
+            sidecar = png.with_suffix(".json")
+            sidecar.write_text(json.dumps({
+                "template_id": params.get("template_id"),
+                "slots": params.get("slots", {}),
+                "image_paths": params.get("image_paths", []),
+                "aspect": params.get("aspect"),
+                "tier": params["tier"],
+                "prompt": params.get("prompt"),
+                "seed": params.get("seed", 42),
+            }, indent=2))
+        except Exception:
+            pass  # sidecar is best-effort; don't fail the job over it
+
         # png is an absolute path under output_dir; build a static URL relative to /outputs.
         try:
             rel = png.relative_to(Path("outputs"))
@@ -2856,6 +2871,39 @@ async def infographic_upload(file: UploadFile = File(...)):
         "url": f"/uploads/infographic/{name}",
         "path": str(out_path),
     }
+
+
+@app.get("/api/infographic/history")
+async def infographic_history(limit: int = 30):
+    """List recent infographic renders, newest first.
+
+    Walks ``outputs/infographic/{job_id}/`` directories that contain both
+    ``out.png`` and ``out.json``; skips any that don't have both.
+    """
+    base = Path("outputs/infographic")
+    if not base.exists():
+        return []
+    out: list[dict] = []
+    subdirs = sorted(
+        (p for p in base.iterdir() if p.is_dir()),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for sub in subdirs[:limit]:
+        png = sub / "out.png"
+        sidecar = sub / "out.json"
+        if not (png.exists() and sidecar.exists()):
+            continue
+        try:
+            data = json.loads(sidecar.read_text())
+        except json.JSONDecodeError:
+            continue
+        out.append({
+            "job_id": sub.name,
+            "png_url": f"/outputs/infographic/{sub.name}/out.png",
+            "sidecar": data,
+        })
+    return out
 
 
 @app.get("/api/sensenova/precheck")
