@@ -14,15 +14,22 @@ from pathlib import Path
 import aiofiles
 import uvicorn
 import yaml
-from fastapi import FastAPI, File, Form, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 import health_actions
 import storage as store
 from backends import registry
+from backends import sensenova as _sensenova
+from backends.sensenova import ASPECT_BUCKETS as _SENSENOVA_ASPECTS
 from job_queue import JobQueue
-from studio.infographics import load_templates as _load_infographic_templates
+from pydantic import BaseModel, Field
+from studio.infographics import (
+    load_templates as _load_infographic_templates,
+    SlotValidationError as _InfographicSlotError,
+    assemble_prompt as _assemble_infographic_prompt,
+)
 
 # Global state
 config = {}
@@ -2695,6 +2702,112 @@ async def infographic_templates():
         }
         for t in templates.values()
     ]
+
+
+class _InfographicRenderBody(BaseModel):
+    template_id: str
+    tier: str = Field(pattern="^(draft|final)$")
+    aspect: str | None = None
+    slots: dict
+    image_refs: list[str] = []
+
+
+@app.post("/api/infographic/render", status_code=202)
+async def infographic_render(body: _InfographicRenderBody):
+    if body.aspect is not None and body.aspect not in _SENSENOVA_ASPECTS:
+        raise HTTPException(400, f"aspect={body.aspect!r} not in supported buckets")
+
+    templates = _load_infographic_templates(_INFOGRAPHIC_TEMPLATES_DIR)
+    tpl = templates.get(body.template_id)
+    if tpl is None:
+        raise HTTPException(404, f"Unknown template_id: {body.template_id}")
+
+    try:
+        result = _assemble_infographic_prompt(tpl, body.slots)
+    except _InfographicSlotError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    # Merge slot-derived paths with externally-supplied refs (Task 21 will
+    # extend this; for now we just concat with simple de-dup).
+    all_paths = list(result.image_paths)
+    for u in body.image_refs:
+        if u not in all_paths:
+            all_paths.append(u)
+
+    job_id = uuid.uuid4().hex[:12]
+    params = {
+        "prompt": result.prompt,
+        "image_paths": all_paths,
+        "aspect": body.aspect,
+        "seed": 42,                       # Task 16+ may surface this
+        "tier": body.tier,
+        "template_id": body.template_id,
+        "slots": body.slots,
+    }
+    jobs[job_id] = {"status": "queued", "params": params, "progress": 0}
+    job_queue.submit_background(
+        _run_infographic_job(job_id, params),
+        lane="gpu",
+        job_id=job_id,
+    )
+    return {"job_id": job_id}
+
+
+async def _run_infographic_job(job_id: str, params: dict) -> None:
+    """Background runner for /studio/infographic renders.
+
+    Parallel to ``_run_job`` for image-gen backends — kept separate because
+    infographics use their own output directory (``outputs/infographic/{job_id}/``),
+    skip scoring/gallery, and persist a sidecar JSON (added in Task 28).
+    """
+    jobs[job_id]["status"] = "running"
+    await broadcast({
+        "type": "job_update", "job_id": job_id,
+        "status": "running", "progress": 0,
+    })
+
+    output_dir = Path("outputs/infographic") / job_id
+
+    async def on_progress(pct: int, msg: str = ""):
+        jobs[job_id]["progress"] = pct
+        await broadcast({
+            "type": "job_update", "job_id": job_id,
+            "status": "running", "progress": pct, "message": msg,
+        })
+
+    try:
+        png = await _sensenova.generate(
+            prompt=params["prompt"],
+            image_paths=params.get("image_paths") or [],
+            aspect=params.get("aspect"),
+            seed=params.get("seed", 42),
+            tier=params["tier"],
+            output_dir=output_dir,
+            on_progress=on_progress,
+        )
+        # png is an absolute path under output_dir; build a static URL relative to /outputs.
+        try:
+            rel = png.relative_to(Path("outputs"))
+            output_url = f"/outputs/{rel.as_posix()}"
+        except ValueError:
+            output_url = str(png)
+
+        jobs[job_id].update({
+            "status": "complete",
+            "progress": 100,
+            "output_url": output_url,
+        })
+        await broadcast({
+            "type": "job_update", "job_id": job_id,
+            "status": "complete", "progress": 100,
+            "output_url": output_url,
+        })
+    except Exception as e:
+        jobs[job_id].update({"status": "error", "error": str(e)})
+        await broadcast({
+            "type": "job_update", "job_id": job_id,
+            "status": "error", "error": str(e),
+        })
 
 
 if __name__ == "__main__":
