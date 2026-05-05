@@ -22,6 +22,7 @@ import health_actions
 import storage as store
 from backends import registry
 from job_queue import JobQueue
+from studio.infographics import load_templates as _load_infographic_templates
 
 # Global state
 config = {}
@@ -2676,6 +2677,24 @@ async def _cancel_in_flight(job_id: str) -> None:
     docs/superpowers/plans/2026-05-04-modly-tier1-ports.md DECISION D1.
     """
     return
+
+
+_INFOGRAPHIC_TEMPLATES_DIR = Path(__file__).resolve().parent / "templates" / "infographics"
+
+
+@app.get("/api/infographic/templates")
+async def infographic_templates():
+    templates = _load_infographic_templates(_INFOGRAPHIC_TEMPLATES_DIR)
+    return [
+        {
+            "id": t["id"],
+            "name": t["name"],
+            "description": t["description"],
+            "preview": t.get("preview"),
+            "slots": t["slots"],
+        }
+        for t in templates.values()
+    ]
 
 
 if __name__ == "__main__":
