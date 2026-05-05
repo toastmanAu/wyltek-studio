@@ -27,7 +27,13 @@
         "choices":  {"type": "array", "items": {"type": "string"}},
         "item_slots": {"type": "array", "items": {"$ref": "#/definitions/slot"}}
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if":   {"properties": {"type": {"const": "enum"}}, "required": ["type"]},
+          "then": {"required": ["choices"]}
+        }
+      ]
     }
   }
 }

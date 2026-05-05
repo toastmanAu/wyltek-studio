@@ -20,6 +20,15 @@ def test_missing_required_rejected(schema):
 def test_unknown_slot_type_rejected(schema):
     bad = _minimal(); bad["slots"][0]["type"] = "magic"
     with pytest.raises(jsonschema.ValidationError): jsonschema.validate(bad, schema)
+def test_unknown_slot_property_rejected(schema):
+    bad = _minimal()
+    bad["slots"][0]["bogus"] = "oops"
+    with pytest.raises(jsonschema.ValidationError): jsonschema.validate(bad, schema)
+def test_enum_without_choices_rejected(schema):
+    bad = _minimal()
+    bad["slots"][0]["type"] = "enum"
+    # No choices added.
+    with pytest.raises(jsonschema.ValidationError): jsonschema.validate(bad, schema)
 def test_list_slot_validates(schema):
     tpl = _minimal()
     tpl["slots"].append({"id":"rows","type":"list","min":2,"max":5,
