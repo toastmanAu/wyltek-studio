@@ -52,3 +52,40 @@ def test_render_invalid_aspect_400():
     with patch("job_queue.JobQueue.submit_background", return_value=None):
         r = TestClient(app).post("/api/infographic/render", json=body)
     assert r.status_code == 400
+
+
+def test_render_merges_external_image_refs():
+    """When the body supplies image_refs[] AND template slots include
+    image_ref typed slots, the resulting image_paths should be the union
+    in declaration order, slot-derived first, then external refs not
+    already present."""
+    body = _good()
+    body["image_refs"] = ["/u/a.png", "/u/b.png"]
+    body["slots"]["hub_desc"] = "See [Image 1] and [Image 2]"
+
+    from server import jobs as _jobs
+    _jobs.clear()
+    with patch("job_queue.JobQueue.submit_background", return_value=None):
+        r = TestClient(app).post("/api/infographic/render", json=body)
+    assert r.status_code == 202
+    job_id = r.json()["job_id"]
+    assert job_id in _jobs
+    params = _jobs[job_id]["params"]
+    # hub_and_spoke template has no image_ref slots filled in this body, so
+    # only the externals should be present, in user order.
+    assert params["image_paths"] == ["/u/a.png", "/u/b.png"]
+
+
+def test_render_dedupes_when_external_overlaps_slot_path():
+    """If an external ref has the same value as a slot-derived path, only
+    keep one (slot-derived comes first)."""
+    body = _good()
+    body["slots"]["hub_image"] = "/u/logo.png"   # image_ref slot
+    body["image_refs"] = ["/u/logo.png", "/u/extra.png"]
+    from server import jobs as _jobs
+    _jobs.clear()
+    with patch("job_queue.JobQueue.submit_background", return_value=None):
+        r = TestClient(app).post("/api/infographic/render", json=body)
+    assert r.status_code == 202
+    params = _jobs[r.json()["job_id"]]["params"]
+    assert params["image_paths"] == ["/u/logo.png", "/u/extra.png"]   # de-duped
