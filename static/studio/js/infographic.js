@@ -71,6 +71,13 @@ function renderSlot(slot, path, value) {
     if (slot.max_len) input.setAttribute('maxlength', slot.max_len);
     if (value != null) input.value = value;
     wrap.appendChild(input);
+    if (slot.max_len === undefined || slot.max_len > 60) {
+      const chips = document.createElement('div');
+      chips.className = 'image-chips';
+      chips.dataset.target = id;
+      chips.style.cssText = 'display:flex; flex-wrap:wrap; gap:4px; margin-top:4px;';
+      wrap.appendChild(chips);
+    }
   } else if (slot.type === 'color') {
     const lab = document.createElement('label');
     lab.htmlFor = id;
@@ -120,8 +127,19 @@ function renderSlot(slot, path, value) {
     });
     fs.appendChild(addBtn);
     wrap.appendChild(fs);
+  } else if (slot.type === 'image_ref') {
+    const lab = document.createElement('label');
+    lab.htmlFor = id;
+    lab.textContent = label;
+    wrap.appendChild(lab);
+    const sel = document.createElement('select');
+    sel.id = id;
+    sel.name = path;
+    sel.dataset.imageRef = '1';
+    rebuildImageRefSelect(sel);
+    if (value) sel.value = value;
+    wrap.appendChild(sel);
   }
-  // image_ref intentionally omitted in this task; Task 20 wires it.
   return wrap;
 }
 
@@ -144,6 +162,49 @@ function buildForm(template) {
   while (els.form.firstChild) els.form.removeChild(els.form.firstChild);
   for (const slot of template.slots) {
     els.form.appendChild(renderSlot(slot, slot.id, null));
+  }
+  rebuildChips();
+}
+
+function rebuildImageRefSelect(sel) {
+  const cur = sel.value;
+  while (sel.firstChild) sel.removeChild(sel.firstChild);
+  const noneOpt = document.createElement('option');
+  noneOpt.value = '';
+  noneOpt.textContent = '(none)';
+  sel.appendChild(noneOpt);
+  for (const [i, ref] of state.imageRefs.entries()) {
+    const o = document.createElement('option');
+    o.value = ref.path;            // server uses path (filesystem)
+    o.textContent = `Image ${i + 1}`;
+    sel.appendChild(o);
+  }
+  if (cur && Array.from(sel.options).some((o) => o.value === cur)) {
+    sel.value = cur;
+  }
+}
+
+function rebuildChips() {
+  for (const cont of els.form.querySelectorAll('.image-chips')) {
+    const targetId = cont.dataset.target;
+    while (cont.firstChild) cont.removeChild(cont.firstChild);
+    for (const i of state.imageRefs.keys()) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'chip';
+      b.textContent = `Insert Image ${i + 1}`;
+      b.addEventListener('click', () => {
+        const ta = document.getElementById(targetId);
+        if (!ta) return;
+        const tok = `[Image ${i + 1}]`;
+        const start = ta.selectionStart != null ? ta.selectionStart : ta.value.length;
+        const end = ta.selectionEnd != null ? ta.selectionEnd : ta.value.length;
+        ta.value = ta.value.slice(0, start) + tok + ta.value.slice(end);
+        ta.focus();
+        ta.selectionStart = ta.selectionEnd = start + tok.length;
+      });
+      cont.appendChild(b);
+    }
   }
 }
 
@@ -304,6 +365,8 @@ function renderImageRefs() {
     ul.appendChild(li);
   }
   document.getElementById('image-ref-add').disabled = state.imageRefs.length >= 4;
+  for (const sel of els.form.querySelectorAll('select[data-image-ref]')) rebuildImageRefSelect(sel);
+  rebuildChips();
 }
 
 document.getElementById('image-ref-add').addEventListener('click', () => {
