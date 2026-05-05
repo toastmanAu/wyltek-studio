@@ -125,6 +125,11 @@ async def frames_page():
     return FileResponse("static/studio/frames.html")
 
 
+@app.get("/studio/infographic")
+async def studio_infographic():
+    return FileResponse("static/studio/infographic.html")
+
+
 @app.get("/studio/image-tools")
 async def image_tools_page():
     return FileResponse("static/studio/image-tools.html")

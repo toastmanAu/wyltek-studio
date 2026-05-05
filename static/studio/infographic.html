@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Wyltek Studio — Infographic Builder</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+  <link rel="stylesheet" href="/static/css/nav.css" />
+  <script src="/static/js/nav.js"></script>
+  <style>
+    .infographic-page {
+      display: grid;
+      grid-template-columns: 320px 1fr 240px;
+      gap: 16px;
+      padding: 16px;
+      min-height: calc(100vh - 60px);
+    }
+    @media (max-width: 1100px) {
+      .infographic-page { grid-template-columns: 1fr; }
+    }
+    .template-pane, .preview-pane, .history-pane {
+      background: var(--card-bg, #1a1a1a);
+      border: 1px solid var(--border, #333);
+      border-radius: 12px;
+      padding: 16px;
+    }
+    .template-pane label { display: block; margin-bottom: 12px; font-size: 13px; }
+    .template-pane select, .template-pane input, .template-pane textarea {
+      width: 100%;
+      padding: 6px 8px;
+      background: var(--input-bg, #0d0d0d);
+      border: 1px solid var(--border, #333);
+      color: var(--text, #eee);
+      border-radius: 6px;
+    }
+    .template-pane fieldset.list-slot {
+      border: 1px solid var(--border, #333);
+      border-radius: 8px;
+      padding: 8px;
+      margin: 8px 0;
+    }
+    .template-pane .list-item {
+      border-top: 1px dashed var(--border, #333);
+      padding: 6px 0;
+      position: relative;
+    }
+    .template-pane .list-item:first-child { border-top: none; }
+    .template-pane .remove-row {
+      position: absolute; top: 6px; right: 0;
+      background: transparent; border: none; color: var(--text-dim, #888);
+      cursor: pointer; font-size: 16px;
+    }
+    .render-tier {
+      border: 1px solid var(--border, #333);
+      border-radius: 8px;
+      padding: 8px 12px;
+      margin-top: 12px;
+    }
+    .render-tier legend { padding: 0 6px; font-size: 12px; color: var(--text-dim, #888); }
+    .render-tier label { display: flex; align-items: center; gap: 6px; margin: 4px 0; }
+    #render-btn {
+      width: 100%; margin-top: 8px;
+      padding: 10px; border-radius: 8px;
+      background: var(--accent, #4a90e2); color: #fff;
+      border: none; cursor: pointer; font-weight: 600;
+    }
+    #render-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .preview-pane { display: flex; flex-direction: column; align-items: center; }
+    #preview-status { color: var(--text-dim, #888); padding: 24px; text-align: center; }
+    #preview-img { max-width: 100%; max-height: 80vh; border-radius: 8px; }
+    .history-pane h3 { margin: 0 0 8px; font-size: 14px; }
+    .history-pane ul { list-style: none; padding: 0; margin: 0; }
+  </style>
+</head>
+<body>
+  <main class="infographic-page">
+    <aside class="template-pane" id="template-pane">
+      <h2 style="margin-top:0">Infographic Builder</h2>
+      <label>Template
+        <select id="template-select" disabled><option>Loading…</option></select>
+      </label>
+      <form id="slot-form"></form>
+      <fieldset class="render-tier">
+        <legend>Render</legend>
+        <label><input type="radio" name="tier" value="draft" checked /> Draft (~73s)</label>
+        <label><input type="radio" name="tier" value="final" /> Final (~5min)</label>
+        <button type="button" id="render-btn" disabled>Render</button>
+      </fieldset>
+    </aside>
+    <section class="preview-pane">
+      <div id="preview-status">Pick a template, fill it in, hit Render.</div>
+      <img id="preview-img" alt="" hidden />
+    </section>
+    <aside class="history-pane" id="history-pane">
+      <h3>Recent</h3>
+      <ul id="history-list"></ul>
+    </aside>
+  </main>
+  <script type="module" src="/static/studio/js/infographic.js"></script>
+</body>
+</html>

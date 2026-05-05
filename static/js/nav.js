@@ -13,6 +13,7 @@
     { href: '/studio/image-tools', icon: '&#9986;', label: 'Image Tools', id: 'image-tools' },
     { href: '/studio/audio', icon: '&#127911;', label: 'Audio Tools', id: 'audio' },
     { href: '/studio/beats', icon: '&#127928;', label: 'Beat Builder', id: 'beats' },
+    { href: '/studio/infographic', icon: '&#128202;', label: 'Infographic', id: 'infographic' },
     { section: 'Manage' },
     { href: '/files',      icon: '&#128194;', label: 'Files',      id: 'files' },
     { section: 'Produce' },
@@ -32,6 +33,7 @@
   else if (path.startsWith('/studio/music')) activeId = 'music';
   else if (path.startsWith('/studio/beats')) activeId = 'beats';
   else if (path.startsWith('/studio/audio')) activeId = 'audio';
+  else if (path.startsWith('/studio/infographic')) activeId = 'infographic';
   else if (path.startsWith('/studio/tts')) activeId = 'tts';
   else if (path.startsWith('/projects')) activeId = 'projects';
   else if (path.startsWith('/files')) activeId = 'files';
