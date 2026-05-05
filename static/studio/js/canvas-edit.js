@@ -15,6 +15,24 @@ export class PreviewCanvas {
     this.layers = [];          // [{img, x, y, w, h}]
     this.selected = -1;
     this.drag = null;          // populated by Task 33
+
+    // Task 32: drag-drop PNG → addLayer at drop position.
+    canvas.addEventListener('dragover', (e) => { e.preventDefault(); });
+    canvas.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      const f = e.dataTransfer?.files?.[0];
+      if (!f || !f.type.startsWith('image/')) return;
+      const rect = canvas.getBoundingClientRect();
+      const x = (e.clientX - rect.left) * (canvas.width / rect.width);
+      const y = (e.clientY - rect.top) * (canvas.height / rect.height);
+      await this.addLayerFromBlob(f, x, y);
+    });
+
+    // Task 33: click to select, drag body to move, drag corner to resize.
+    canvas.addEventListener('mousedown', (e) => this._mousedown(e));
+    canvas.addEventListener('mousemove', (e) => this._mousemove(e));
+    canvas.addEventListener('mouseup', () => this._mouseup());
+    canvas.addEventListener('mouseleave', () => this._mouseup());
   }
 
   async setBase(url) {
@@ -66,6 +84,83 @@ export class PreviewCanvas {
   toBlob() {
     return new Promise((res) => this.canvas.toBlob(res, 'image/png'));
   }
+
+  _eventXY(e) {
+    const r = this.canvas.getBoundingClientRect();
+    return [
+      (e.clientX - r.left) * (this.canvas.width / r.width),
+      (e.clientY - r.top)  * (this.canvas.height / r.height),
+    ];
+  }
+
+  _hitCorner(L, x, y) {
+    const corners = [
+      [L.x,         L.y,         'tl'],
+      [L.x + L.w,   L.y,         'tr'],
+      [L.x,         L.y + L.h,   'bl'],
+      [L.x + L.w,   L.y + L.h,   'br'],
+    ];
+    for (const [cx, cy, name] of corners) {
+      if (Math.abs(x - cx) <= 8 && Math.abs(y - cy) <= 8) return name;
+    }
+    return null;
+  }
+
+  _mousedown(e) {
+    const [x, y] = this._eventXY(e);
+    // Topmost layer first.
+    for (let i = this.layers.length - 1; i >= 0; i--) {
+      const L = this.layers[i];
+      const corner = (i === this.selected) ? this._hitCorner(L, x, y) : null;
+      if (corner) {
+        this.drag = {
+          mode: 'resize', corner,
+          startX: x, startY: y, layer0: {...L},
+          shift: e.shiftKey,
+        };
+        return;
+      }
+      if (x >= L.x && x <= L.x + L.w && y >= L.y && y <= L.y + L.h) {
+        this.selected = i;
+        this.drag = {mode: 'move', startX: x, startY: y, layer0: {...L}};
+        this.render();
+        return;
+      }
+    }
+    // Click on empty: deselect.
+    this.selected = -1;
+    this.render();
+  }
+
+  _mousemove(e) {
+    if (!this.drag) return;
+    const [x, y] = this._eventXY(e);
+    const L = this.layers[this.selected];
+    if (!L) return;
+    const dx = x - this.drag.startX;
+    const dy = y - this.drag.startY;
+    const L0 = this.drag.layer0;
+
+    if (this.drag.mode === 'move') {
+      L.x = L0.x + dx;
+      L.y = L0.y + dy;
+    } else if (this.drag.mode === 'resize') {
+      let nx = L0.x, ny = L0.y, nw = L0.w, nh = L0.h;
+      if (this.drag.corner.includes('r')) nw = Math.max(8, L0.w + dx);
+      if (this.drag.corner.includes('l')) { nw = Math.max(8, L0.w - dx); nx = L0.x + dx; }
+      if (this.drag.corner.includes('b')) nh = Math.max(8, L0.h + dy);
+      if (this.drag.corner.includes('t')) { nh = Math.max(8, L0.h - dy); ny = L0.y + dy; }
+      // Shift constrains aspect to original.
+      if (this.drag.shift || e.shiftKey) {
+        const asp = L0.w / L0.h;
+        if (nw / nh > asp) nw = nh * asp; else nh = nw / asp;
+      }
+      L.x = nx; L.y = ny; L.w = nw; L.h = nh;
+    }
+    this.render();
+  }
+
+  _mouseup() { this.drag = null; }
 }
 
 function loadImage(src) {

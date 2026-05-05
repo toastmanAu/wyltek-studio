@@ -567,3 +567,19 @@ pollJob = async function (jobId) {
 
 // Initial load.
 loadHistory();
+
+// ── Task 32/33: Delete button + keyboard delete for selected canvas layer ─────
+
+const _canvasDeleteBtn = document.getElementById('canvas-delete');
+if (_canvasDeleteBtn) {
+  _canvasDeleteBtn.addEventListener('click', () => previewCanvas.deleteSelected());
+}
+
+document.addEventListener('keydown', (e) => {
+  if ((e.key === 'Delete' || e.key === 'Backspace') &&
+      previewCanvas.selected >= 0 &&
+      !['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) {
+    e.preventDefault();
+    previewCanvas.deleteSelected();
+  }
+});
