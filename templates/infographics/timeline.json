@@ -1,0 +1,16 @@
+{
+  "id": "timeline",
+  "name": "Timeline / Process",
+  "description": "Linear sequence of steps. Best for processes, milestones, project phases.",
+  "preview": "templates/infographics/_previews/timeline.png",
+  "slots": [
+    {"id": "title", "type": "text", "max_len": 60, "required": true},
+    {"id": "steps", "type": "list", "min": 3, "max": 7,
+     "item_slots": [
+       {"id": "label", "type": "text", "max_len": 24, "required": true},
+       {"id": "description", "type": "text", "max_len": 80, "required": false},
+       {"id": "image", "type": "image_ref"}
+     ]}
+  ],
+  "prompt_template": "A horizontal timeline infographic titled \"{{title}}\", flat illustration on cream paper with thick black outlines, an arrow connecting steps left-to-right. Steps:{{#steps}} → \"{{label}}\"{{#description}} ({{description}}){{/description}}{{#image}} illustrated with {{image}}{{/image}};{{/steps}} Each step a circular badge; soft drop shadows; monospaced descriptions."
+}
