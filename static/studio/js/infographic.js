@@ -5,12 +5,16 @@ const els = {
   select: document.getElementById('template-select'),
   form: document.getElementById('slot-form'),
   renderBtn: document.getElementById('render-btn'),
-  previewImg: document.getElementById('preview-img'),
   previewStatus: document.getElementById('preview-status'),
   tierInputs: () => Array.from(document.querySelectorAll('input[name="tier"]')),
 };
 
+import {PreviewCanvas} from './canvas-edit.js';
+
 const state = { templates: {}, current: null };
+
+const previewCanvas = new PreviewCanvas(document.getElementById('preview-canvas'));
+const canvasTools = document.getElementById('canvas-tools');
 
 async function loadTemplates() {
   const r = await fetch('/api/infographic/templates');
@@ -280,7 +284,8 @@ async function submitRender() {
   els.renderBtn.disabled = true;
   els.previewStatus.textContent = 'Submitting…';
   els.previewStatus.hidden = false;
-  els.previewImg.hidden = true;
+  // Don't hide the canvas during a new render — it's nice to keep the
+  // previous result visible while waiting. Status div will overlay.
   try {
     const body = {
       template_id: tpl.id,
@@ -324,8 +329,8 @@ async function pollJob(jobId) {
 
     if (job.status === 'complete') {
       const url = job.output_url || `/outputs/infographic/${jobId}/out.png`;
-      els.previewImg.src = url + `?t=${Date.now()}`;
-      els.previewImg.hidden = false;
+      await previewCanvas.setBase(url + `?t=${Date.now()}`);
+      canvasTools.hidden = false;
       els.previewStatus.hidden = true;
       els.renderBtn.disabled = false;
       return;
@@ -430,7 +435,7 @@ submitRender = async function () {
   els.renderBtn.disabled = true;
   els.previewStatus.hidden = false;
   els.previewStatus.textContent = 'Submitting…';
-  els.previewImg.hidden = true;
+  // Don't hide the canvas during a new render — keep previous result visible.
   try {
     const body = {
       template_id: tpl.id,
@@ -499,7 +504,7 @@ async function loadHistory() {
   }
 }
 
-function loadFromHistory(entry) {
+async function loadFromHistory(entry) {
   const sc = entry.sidecar || {};
 
   // 1. Switch template if needed.
@@ -520,8 +525,8 @@ function loadFromHistory(entry) {
 
   // 3. Load preview.
   if (entry.png_url) {
-    els.previewImg.src = entry.png_url + `?t=${Date.now()}`;
-    els.previewImg.hidden = false;
+    await previewCanvas.setBase(entry.png_url + `?t=${Date.now()}`);
+    canvasTools.hidden = false;
     els.previewStatus.hidden = true;
   }
 

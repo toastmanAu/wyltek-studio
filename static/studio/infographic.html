@@ -94,7 +94,13 @@
     .chip:hover { background: var(--accent, #4a90e2); color: #fff; }
     .preview-pane { display: flex; flex-direction: column; align-items: center; }
     #preview-status { color: var(--text-dim, #888); padding: 24px; text-align: center; }
-    #preview-img { max-width: 100%; max-height: 80vh; border-radius: 8px; }
+    .canvas-btn {
+      padding: 6px 12px; font-size: 12px;
+      background: var(--card-bg, #1a1a1a); color: var(--text, #eee);
+      border: 1px solid var(--border, #333); border-radius: 6px;
+      cursor: pointer;
+    }
+    .canvas-btn:hover { border-color: var(--accent, #4a90e2); }
     .history-pane h3 { margin: 0 0 8px; font-size: 14px; }
     .history-pane ul { list-style: none; padding: 0; margin: 0; }
     .history-pane ul li { margin-bottom: 6px; }
@@ -155,7 +161,14 @@
     </aside>
     <section class="preview-pane">
       <div id="preview-status">Pick a template, fill it in, hit Render.</div>
-      <img id="preview-img" alt="" hidden />
+      <div class="preview-wrap" style="position: relative; display: flex; flex-direction: column; align-items: center; gap: 8px; width: 100%;">
+        <canvas id="preview-canvas" hidden style="max-width: 100%; max-height: 75vh; border-radius: 8px; image-rendering: -webkit-optimize-contrast;"></canvas>
+        <div id="canvas-tools" hidden style="display: flex; gap: 8px; flex-wrap: wrap;">
+          <button type="button" id="canvas-paste" class="canvas-btn">Paste image</button>
+          <button type="button" id="canvas-delete" class="canvas-btn">Delete layer</button>
+          <button type="button" id="canvas-save" class="canvas-btn">Save composite</button>
+        </div>
+      </div>
     </section>
     <aside class="history-pane" id="history-pane">
       <h3>Recent</h3>
