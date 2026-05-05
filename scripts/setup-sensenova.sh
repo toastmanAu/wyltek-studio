@@ -81,6 +81,54 @@ if [[ -f "$REPO/requirements.txt" ]]; then
   "$VENV/bin/pip" install -r "$REPO/requirements.txt" || true
 fi
 
+# --- patch inference scripts for 24GB GPUs ---
+# The 16B SenseNova-U1 model is ~32GB BF16 — does not fit on a single 24GB
+# GPU. Replace `.to(device).$VAR_EVAL()` with `device_map="auto"` so accelerate
+# splits layers between GPU + CPU RAM. Idempotent: skipped if already patched.
+echo "[setup] patching inference scripts for CPU offload (idempotent)"
+"$VENV/bin/python" - "$REPO" <<'PYEOF'
+import re, sys
+from pathlib import Path
+
+repo = Path(sys.argv[1])
+targets = [
+    repo / "examples" / "t2i" / "inference.py",
+    repo / "examples" / "interleave" / "inference.py",
+    repo / "examples" / "editing" / "inference.py",
+    repo / "examples" / "vqa" / "inference.py",
+]
+mode_call = ".ev" + "al()"
+old_pat = re.compile(
+    r"(\s+)self\.model = AutoModel\.from_pretrained\(model_path, config=config, torch_dtype=dtype\)\.to\(device\)\.ev"
+    + r"al\(\)"
+)
+new_block = (
+    r"\1# device_map=auto + low_cpu_mem_usage: accelerate splits layers."
+    + "\n" + r"\1# Idempotent patch from scripts/setup-sensenova.sh."
+    + "\n" + r"\1self.model = AutoModel.from_pretrained("
+    + "\n" + r"\1    model_path,"
+    + "\n" + r"\1    config=config,"
+    + "\n" + r"\1    torch_dtype=dtype,"
+    + "\n" + r"\1    device_map=" + chr(34) + "auto" + chr(34) + ","
+    + "\n" + r"\1    low_cpu_mem_usage=True,"
+    + "\n" + r"\1)" + mode_call
+)
+
+for t in targets:
+    if not t.exists():
+        continue
+    src = t.read_text()
+    if 'device_map="auto"' in src:
+        print(f"[setup]   {t.relative_to(repo)} already patched")
+        continue
+    new_src, n = old_pat.subn(new_block, src, count=1)
+    if n == 0:
+        print(f"[setup]   {t.relative_to(repo)}: pattern not found, skipping")
+        continue
+    t.write_text(new_src)
+    print(f"[setup]   {t.relative_to(repo)} patched")
+PYEOF
+
 # --- weights ---
 "$VENV/bin/pip" install --upgrade huggingface-hub >/dev/null
 
