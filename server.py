@@ -5,6 +5,7 @@ import asyncio
 import base64
 import json
 import os
+import socket
 import tempfile
 import time
 import uuid
@@ -2808,6 +2809,25 @@ async def _run_infographic_job(job_id: str, params: dict) -> None:
             "type": "job_update", "job_id": job_id,
             "status": "error", "error": str(e),
         })
+
+
+def _comfyui_running(host: str = "127.0.0.1", port: int = 8188, timeout: float = 0.5) -> bool:
+    """Cheap TCP probe: is ComfyUI listening on its default port?"""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+@app.get("/api/sensenova/precheck")
+async def sensenova_precheck():
+    blockers: list[str] = []
+    if _comfyui_running():
+        blockers.append(
+            "ComfyUI is running on localhost:8188. SenseNova needs the full GPU; "
+            "stop ComfyUI before rendering.")
+    return {"ready": not blockers, "blockers": blockers}
 
 
 if __name__ == "__main__":
