@@ -260,3 +260,11 @@ async function pollJob(jobId) {
 }
 
 els.renderBtn.addEventListener('click', submitRender);
+
+async function uploadImage(file) {
+  const fd = new FormData();
+  fd.append('file', file);
+  const r = await fetch('/api/infographic/upload', {method: 'POST', body: fd});
+  if (!r.ok) throw new Error(`upload: ${r.status} ${await r.text()}`);
+  return await r.json();   // {url, path}
+}

@@ -78,6 +78,9 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 app.mount("/outputs", StaticFiles(directory="outputs"), name="outputs")
 app.mount("/audio", StaticFiles(directory="outputs/audio"), name="audio")
 app.mount("/data/sample-packs", StaticFiles(directory="data/sample-packs"), name="sample-packs")
+Path("uploads").mkdir(parents=True, exist_ok=True)
+Path("uploads/infographic").mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 
 @app.get("/")
@@ -2823,6 +2826,34 @@ def _comfyui_running(host: str = "127.0.0.1", port: int = 8188, timeout: float =
             return True
     except OSError:
         return False
+
+
+@app.post("/api/infographic/upload")
+async def infographic_upload(file: UploadFile = File(...)):
+    """Upload an image reference for the infographic builder.
+
+    Saves to ``uploads/infographic/{uuid}.{ext}`` and returns both the
+    static URL (for thumbnail display) and the on-disk path (for
+    SenseNova subprocess to read directly).
+    """
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(400, f"Expected image/*, got {file.content_type!r}")
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "Empty upload")
+    ext = Path(file.filename or "ref.png").suffix.lower() or ".png"
+    if ext not in (".png", ".jpg", ".jpeg", ".webp"):
+        ext = ".png"
+    name = f"{uuid.uuid4().hex[:12]}{ext}"
+    out_dir = Path("uploads/infographic")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / name
+    async with aiofiles.open(out_path, "wb") as f:
+        await f.write(data)
+    return {
+        "url": f"/uploads/infographic/{name}",
+        "path": str(out_path),
+    }
 
 
 @app.get("/api/sensenova/precheck")
