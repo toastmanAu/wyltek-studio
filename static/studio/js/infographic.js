@@ -432,6 +432,39 @@ const _origSubmitRender = submitRender;
 submitRender = async function () {
   const tpl = state.current;
   if (!tpl) return;
+  // Precheck — if ComfyUI is running on driveThree-class hardware, block.
+  const banner = document.getElementById('precheck-banner');
+  try {
+    const preR = await fetch('/api/sensenova/precheck');
+    const pre = await preR.json();
+    if (!pre.ready) {
+      while (banner.firstChild) banner.removeChild(banner.firstChild);
+      const strong = document.createElement('strong');
+      strong.textContent = 'Cannot render:';
+      banner.appendChild(strong);
+      const ul = document.createElement('ul');
+      for (const b of pre.blockers) {
+        const li = document.createElement('li');
+        li.textContent = b;
+        ul.appendChild(li);
+      }
+      banner.appendChild(ul);
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = 'Recheck';
+      btn.addEventListener('click', async () => {
+        banner.hidden = true;
+        await submitRender();
+      }, {once: true});
+      banner.appendChild(btn);
+      banner.hidden = false;
+      return;
+    }
+    banner.hidden = true;
+  } catch (e) {
+    // Precheck unreachable — let the user proceed; the actual render will surface errors.
+    console.warn('precheck failed:', e);
+  }
   els.renderBtn.disabled = true;
   els.previewStatus.hidden = false;
   els.previewStatus.textContent = 'Submitting…';

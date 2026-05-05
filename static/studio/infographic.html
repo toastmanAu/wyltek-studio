@@ -65,6 +65,13 @@
       border: none; cursor: pointer; font-weight: 600;
     }
     #render-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    #precheck-banner button {
+      margin-top: 8px; padding: 6px 12px;
+      background: var(--accent, #4a90e2); color: #fff;
+      border: none; border-radius: 6px; cursor: pointer;
+    }
+    #precheck-banner ul { margin: 4px 0 0 0; padding-left: 20px; }
+    #precheck-banner li { margin: 2px 0; }
     .image-ref {
       position: relative;
       width: 56px; height: 56px;
@@ -123,6 +130,7 @@
   </style>
 </head>
 <body>
+  <div id="precheck-banner" class="warning" hidden style="margin: 16px 16px 0; padding: 12px 16px; background: rgba(255,165,0,0.1); border: 1px solid rgba(255,165,0,0.5); border-radius: 8px; color: var(--text, #eee);"></div>
   <main class="infographic-page">
     <aside class="template-pane" id="template-pane">
       <h2 style="margin-top:0">Infographic Builder</h2>
