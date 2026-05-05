@@ -157,3 +157,106 @@ window.onTemplateChange = function () {
 els.select.removeEventListener('change', onTemplateChange);
 els.select.addEventListener('change', window.onTemplateChange);
 window.onTemplateChange();
+
+// ── Task 16: Slot harvest + render submit + job poll ──────────────────────────
+
+function harvestForm(template) {
+  function walk(slots) {
+    const acc = {};
+    for (const slot of slots) {
+      if (slot.type === 'list') {
+        const fsIdx = template.slots.findIndex((s) => s.id === slot.id);
+        const itemsContainer = els.form.querySelectorAll('.list-items')[fsIdx];
+        const list = [];
+        if (itemsContainer) {
+          for (const itemEl of itemsContainer.querySelectorAll('.list-item')) {
+            const itemVal = {};
+            for (const sub of slot.item_slots || []) {
+              const input = itemEl.querySelector(`[name$="${sub.id}"]`);
+              if (input && input.value) itemVal[sub.id] = input.value;
+            }
+            list.push(itemVal);
+          }
+        }
+        acc[slot.id] = list;
+      } else if (slot.type !== 'image_ref') {
+        // image_ref slots are wired in Task 20; ignored here.
+        const input = els.form.querySelector(`[name="${slot.id}"]`);
+        if (input && input.value) acc[slot.id] = input.value;
+      }
+    }
+    return acc;
+  }
+  return walk(template.slots);
+}
+
+function getTier() {
+  const checked = els.tierInputs().find((i) => i.checked);
+  return checked ? checked.value : 'draft';
+}
+
+async function submitRender() {
+  const tpl = state.current;
+  if (!tpl) return;
+  els.renderBtn.disabled = true;
+  els.previewStatus.textContent = 'Submitting…';
+  els.previewStatus.hidden = false;
+  els.previewImg.hidden = true;
+  try {
+    const body = {
+      template_id: tpl.id,
+      tier: getTier(),
+      aspect: '1:1',          // Task 17 will read from a real dropdown
+      slots: harvestForm(tpl),
+      image_refs: [],
+    };
+    const r = await fetch('/api/infographic/render', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      const text = await r.text();
+      throw new Error(`render: ${r.status} ${text}`);
+    }
+    const {job_id} = await r.json();
+    state.lastRenderId = job_id;
+    els.previewStatus.textContent = `Job ${job_id} submitted; polling…`;
+    pollJob(job_id);
+  } catch (e) {
+    els.previewStatus.textContent = `Error: ${e.message}`;
+    els.renderBtn.disabled = false;
+  }
+}
+
+async function pollJob(jobId) {
+  while (true) {
+    await new Promise((r) => setTimeout(r, 2000));
+    const r = await fetch(`/api/job/${jobId}`);
+    if (!r.ok) {
+      els.previewStatus.textContent = `Job poll failed: ${r.status}`;
+      els.renderBtn.disabled = false;
+      return;
+    }
+    const job = await r.json();
+    const pct = job.progress != null ? job.progress : '';
+    const msg = job.message ? ` ${job.message}` : '';
+    els.previewStatus.textContent = `${job.status} ${pct}%${msg}`;
+
+    if (job.status === 'complete') {
+      const url = job.output_url || `/outputs/infographic/${jobId}/out.png`;
+      els.previewImg.src = url + `?t=${Date.now()}`;
+      els.previewImg.hidden = false;
+      els.previewStatus.hidden = true;
+      els.renderBtn.disabled = false;
+      return;
+    }
+    if (job.status === 'error' || job.status === 'failed') {
+      els.previewStatus.textContent = `Failed: ${job.error || job.message || 'unknown'}`;
+      els.renderBtn.disabled = false;
+      return;
+    }
+  }
+}
+
+els.renderBtn.addEventListener('click', submitRender);
