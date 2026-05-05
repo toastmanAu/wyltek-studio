@@ -2906,6 +2906,36 @@ async def infographic_history(limit: int = 30):
     return out
 
 
+@app.post("/api/infographic/composite")
+async def infographic_composite(
+    file: UploadFile = File(...),
+    base_render_id: str = Form(""),
+):
+    """Save a flattened post-edit composite as a new entry that shows up in history."""
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(400, f"Expected image/*, got {file.content_type!r}")
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "Empty upload")
+    new_id = "c-" + uuid.uuid4().hex[:8]
+    out_dir = Path("outputs/infographic") / new_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    png_path = out_dir / "out.png"
+    async with aiofiles.open(png_path, "wb") as f:
+        await f.write(data)
+    sidecar = out_dir / "out.json"
+    sidecar.write_text(json.dumps({
+        "composite_of": base_render_id,
+        "template_id": "composite",
+        "slots": {},
+        "tier": "composite",
+    }, indent=2))
+    return {
+        "job_id": new_id,
+        "png_url": f"/outputs/infographic/{new_id}/out.png",
+    }
+
+
 @app.get("/api/sensenova/precheck")
 async def sensenova_precheck():
     blockers: list[str] = []

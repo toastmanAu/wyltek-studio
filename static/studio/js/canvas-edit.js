@@ -161,6 +161,24 @@ export class PreviewCanvas {
   }
 
   _mouseup() { this.drag = null; }
+
+  async pasteFromClipboard() {
+    try {
+      const items = await navigator.clipboard.read();
+      for (const it of items) {
+        for (const t of it.types) {
+          if (t.startsWith('image/')) {
+            const blob = await it.getType(t);
+            await this.addLayerFromBlob(blob, 60, 60);
+            return true;
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('clipboard read failed:', e);
+    }
+    return false;
+  }
 }
 
 function loadImage(src) {

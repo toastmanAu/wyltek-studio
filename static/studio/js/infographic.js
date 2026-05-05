@@ -583,3 +583,49 @@ document.addEventListener('keydown', (e) => {
     previewCanvas.deleteSelected();
   }
 });
+
+// ── Task 34: Paste image from clipboard ──────────────────────────────────────
+
+const _canvasPasteBtn = document.getElementById('canvas-paste');
+if (_canvasPasteBtn) {
+  _canvasPasteBtn.addEventListener('click', () => previewCanvas.pasteFromClipboard());
+}
+document.addEventListener('paste', (e) => {
+  // Ignore if user is typing in a form field.
+  if (['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)) return;
+  for (const it of (e.clipboardData?.items || [])) {
+    if (it.type.startsWith('image/')) {
+      const blob = it.getAsFile();
+      if (blob) previewCanvas.addLayerFromBlob(blob, 60, 60);
+      e.preventDefault();
+      return;
+    }
+  }
+});
+
+// ── Task 35: Save composite as new render ────────────────────────────────────
+
+const _canvasSaveBtn = document.getElementById('canvas-save');
+if (_canvasSaveBtn) {
+  _canvasSaveBtn.addEventListener('click', async () => {
+    const blob = await previewCanvas.toBlob();
+    if (!blob) return;
+    const fd = new FormData();
+    fd.append('file', blob, 'composite.png');
+    fd.append('base_render_id', state.lastRenderId || '');
+    try {
+      const r = await fetch('/api/infographic/composite', {method: 'POST', body: fd});
+      if (!r.ok) {
+        const text = await r.text();
+        throw new Error(`save: ${r.status} ${text}`);
+      }
+      const body = await r.json();
+      els.previewStatus.hidden = false;
+      els.previewStatus.textContent = `Composite saved as ${body.job_id}.`;
+      await loadHistory();
+    } catch (e) {
+      els.previewStatus.hidden = false;
+      els.previewStatus.textContent = `Save failed: ${e.message}`;
+    }
+  });
+}
