@@ -2698,6 +2698,7 @@ async def _cancel_in_flight(job_id: str) -> None:
 
 
 _INFOGRAPHIC_TEMPLATES_DIR = Path(__file__).resolve().parent / "templates" / "infographics"
+_INFOGRAPHIC_UPLOADS_DIR = Path("uploads/infographic").resolve()
 
 
 @app.get("/api/infographic/templates")
@@ -2740,8 +2741,15 @@ async def infographic_render(body: _InfographicRenderBody):
 
     # Merge slot-derived paths with externally-supplied refs (Task 21 will
     # extend this; for now we just concat with simple de-dup).
+    # Validate every external ref points inside uploads/infographic/.
     all_paths = list(result.image_paths)
     for u in body.image_refs:
+        try:
+            resolved = Path(u).resolve()
+        except (OSError, ValueError) as exc:
+            raise HTTPException(400, f"invalid image_ref path: {u!r}") from exc
+        if not str(resolved).startswith(str(_INFOGRAPHIC_UPLOADS_DIR) + "/"):
+            raise HTTPException(400, f"image_ref outside uploads dir: {u!r}")
         if u not in all_paths:
             all_paths.append(u)
 
@@ -2796,9 +2804,20 @@ async def _run_infographic_job(job_id: str, params: dict) -> None:
             output_dir=output_dir,
             on_progress=on_progress,
         )
+        # Normalize output name to out.png so the history endpoint can find it.
+        canonical_png = output_dir / "out.png"
+        if png != canonical_png:
+            try:
+                png.rename(canonical_png)
+                png = canonical_png
+            except OSError:
+                # If rename fails, fall back to the original name. History
+                # may miss this render, but the job still completes.
+                pass
+
         # Persist sidecar JSON for history pane (Task 28).
         try:
-            sidecar = png.with_suffix(".json")
+            sidecar = output_dir / "out.json"
             sidecar.write_text(json.dumps({
                 "template_id": params.get("template_id"),
                 "slots": params.get("slots", {}),

@@ -246,10 +246,11 @@ window.onTemplateChange();
 function harvestForm(template) {
   function walk(slots) {
     const acc = {};
+    let listIdx = 0;
+    const allListContainers = els.form.querySelectorAll('.list-items');
     for (const slot of slots) {
       if (slot.type === 'list') {
-        const fsIdx = template.slots.findIndex((s) => s.id === slot.id);
-        const itemsContainer = els.form.querySelectorAll('.list-items')[fsIdx];
+        const itemsContainer = allListContainers[listIdx++];
         const list = [];
         if (itemsContainer) {
           for (const itemEl of itemsContainer.querySelectorAll('.list-item')) {
@@ -263,9 +264,12 @@ function harvestForm(template) {
         }
         acc[slot.id] = list;
       } else if (slot.type !== 'image_ref') {
-        // image_ref slots are wired in Task 20; ignored here.
         const input = els.form.querySelector(`[name="${slot.id}"]`);
         if (input && input.value) acc[slot.id] = input.value;
+      } else {
+        // image_ref scalar slot — read the select dropdown if any.
+        const sel = els.form.querySelector(`select[name="${slot.id}"][data-image-ref]`);
+        if (sel && sel.value) acc[slot.id] = sel.value;
       }
     }
     return acc;
@@ -567,22 +571,23 @@ async function loadFromHistory(entry) {
 }
 
 function fillFormFromSlots(slotDefs, values) {
+  let listIdx = 0;
+  const allListContainers = els.form.querySelectorAll('.list-items');
   for (const slot of slotDefs) {
     const v = values?.[slot.id];
     if (slot.type === 'list' && Array.isArray(v)) {
-      // Find the matching .list-items container by index in template.slots.
-      const fsIdx = slotDefs.findIndex((s) => s.id === slot.id);
-      const items = els.form.querySelectorAll('.list-items')[fsIdx];
+      const items = allListContainers[listIdx++];
       if (items) {
         while (items.firstChild) items.removeChild(items.firstChild);
         for (const [i, item] of v.entries()) addListItem(slot, slot.id, items, i, item);
       }
+    } else if (slot.type === 'list') {
+      // List slot but no value to fill — still consume the index.
+      listIdx++;
     } else if (slot.type !== 'image_ref') {
       const input = els.form.querySelector(`[name="${slot.id}"]`);
       if (input && v != null) input.value = v;
     } else {
-      // image_ref slot: set the select if the path is in our refs list,
-      // else leave (none). User can re-upload if missing.
       const sel = els.form.querySelector(`select[name="${slot.id}"][data-image-ref]`);
       if (sel && v != null) {
         if (Array.from(sel.options).some((o) => o.value === v)) sel.value = v;
