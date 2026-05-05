@@ -35,7 +35,10 @@ async function loadTemplates() {
   if (list.length) {
     state.current = list[0];
     els.select.value = list[0].id;
-    onTemplateChange();
+    // Use the wrapped onTemplateChange (set up after Task 15 wiring) so the
+    // initial form is built. Falls back to the local function if for some
+    // reason the wrap hasn't happened yet (defensive — should never hit).
+    (window.onTemplateChange || onTemplateChange)();
   }
 }
 
@@ -116,6 +119,7 @@ function renderSlot(slot, path, value) {
     fs.appendChild(legend);
     const items = document.createElement('div');
     items.className = 'list-items';
+    items.dataset.path = path;   // unique per list slot in the form; harvest/fill use this
     fs.appendChild(items);
     const initial = Array.isArray(value)
       ? value
@@ -244,37 +248,55 @@ window.onTemplateChange();
 // ── Task 16: Slot harvest + render submit + job poll ──────────────────────────
 
 function harvestForm(template) {
-  function walk(slots) {
-    const acc = {};
-    let listIdx = 0;
-    const allListContainers = els.form.querySelectorAll('.list-items');
-    for (const slot of slots) {
-      if (slot.type === 'list') {
-        const itemsContainer = allListContainers[listIdx++];
-        const list = [];
-        if (itemsContainer) {
-          for (const itemEl of itemsContainer.querySelectorAll('.list-item')) {
-            const itemVal = {};
-            for (const sub of slot.item_slots || []) {
-              const input = itemEl.querySelector(`[name$="${sub.id}"]`);
-              if (input && input.value) itemVal[sub.id] = input.value;
-            }
-            list.push(itemVal);
-          }
+  // Walk the template recursively. Each list slot's `.list-items` container
+  // carries `data-path="<full path>"` so we can find it unambiguously even
+  // for deeply-nested lists (e.g. comparison's left[0].bullets, hierarchy's
+  // levels[0].nodes). Plain text/color/enum/image_ref slots are looked up
+  // by their full `name` attribute, which renderSlot built path-style.
+  function harvestSlot(slot, basePath, scope) {
+    const fullPath = basePath ? `${basePath}.${slot.id}` : slot.id;
+    if (slot.type === 'list') {
+      const container = scope.querySelector(
+        `.list-items[data-path="${cssEscape(fullPath)}"]`
+      );
+      if (!container) return [];
+      const list = [];
+      const items = container.querySelectorAll(':scope > .list-item');
+      items.forEach((itemEl, idx) => {
+        const itemVal = {};
+        for (const sub of slot.item_slots || []) {
+          const v = harvestSlot(sub, `${fullPath}[${idx}]`, itemEl);
+          if (v !== undefined) itemVal[sub.id] = v;
         }
-        acc[slot.id] = list;
-      } else if (slot.type !== 'image_ref') {
-        const input = els.form.querySelector(`[name="${slot.id}"]`);
-        if (input && input.value) acc[slot.id] = input.value;
-      } else {
-        // image_ref scalar slot — read the select dropdown if any.
-        const sel = els.form.querySelector(`select[name="${slot.id}"][data-image-ref]`);
-        if (sel && sel.value) acc[slot.id] = sel.value;
-      }
+        list.push(itemVal);
+      });
+      return list;
     }
-    return acc;
+    if (slot.type === 'image_ref') {
+      const sel = scope.querySelector(
+        `select[data-image-ref][name="${cssEscape(fullPath)}"]`
+      );
+      return sel && sel.value ? sel.value : undefined;
+    }
+    // text / color / enum scalar slot
+    const input = scope.querySelector(`[name="${cssEscape(fullPath)}"]`);
+    return input && input.value ? input.value : undefined;
   }
-  return walk(template.slots);
+
+  const result = {};
+  for (const slot of template.slots) {
+    const v = harvestSlot(slot, '', els.form);
+    if (v !== undefined) result[slot.id] = v;
+  }
+  return result;
+}
+
+// Minimal CSS attribute-value escaping for selectors. Path strings contain
+// brackets and dots which are valid inside an attribute-value string but
+// quotes themselves must be escaped. renderSlot never puts quotes in paths,
+// so this is conservative.
+function cssEscape(s) {
+  return String(s).replace(/"/g, '\\"');
 }
 
 function getTier() {
@@ -571,28 +593,39 @@ async function loadFromHistory(entry) {
 }
 
 function fillFormFromSlots(slotDefs, values) {
-  let listIdx = 0;
-  const allListContainers = els.form.querySelectorAll('.list-items');
-  for (const slot of slotDefs) {
-    const v = values?.[slot.id];
-    if (slot.type === 'list' && Array.isArray(v)) {
-      const items = allListContainers[listIdx++];
-      if (items) {
-        while (items.firstChild) items.removeChild(items.firstChild);
-        for (const [i, item] of v.entries()) addListItem(slot, slot.id, items, i, item);
+  // Recursive mirror of harvestForm: walk the template, look up each list
+  // slot's `.list-items` by `data-path`, rebuild from the saved values, and
+  // recurse into nested lists. addListItem already prefills leaf values
+  // passed via the `value` arg, so for fully-flat lists this is one re-render.
+  function fillSlot(slot, basePath, scope, value) {
+    const fullPath = basePath ? `${basePath}.${slot.id}` : slot.id;
+    if (slot.type === 'list') {
+      if (!Array.isArray(value)) return;
+      const container = scope.querySelector(
+        `.list-items[data-path="${cssEscape(fullPath)}"]`
+      );
+      if (!container) return;
+      while (container.firstChild) container.removeChild(container.firstChild);
+      for (const [i, item] of value.entries()) {
+        addListItem(slot, fullPath, container, i, item);
       }
-    } else if (slot.type === 'list') {
-      // List slot but no value to fill — still consume the index.
-      listIdx++;
-    } else if (slot.type !== 'image_ref') {
-      const input = els.form.querySelector(`[name="${slot.id}"]`);
-      if (input && v != null) input.value = v;
-    } else {
-      const sel = els.form.querySelector(`select[name="${slot.id}"][data-image-ref]`);
-      if (sel && v != null) {
-        if (Array.from(sel.options).some((o) => o.value === v)) sel.value = v;
-      }
+      return;
     }
+    if (slot.type === 'image_ref') {
+      const sel = scope.querySelector(
+        `select[data-image-ref][name="${cssEscape(fullPath)}"]`
+      );
+      if (sel && value != null && Array.from(sel.options).some((o) => o.value === value)) {
+        sel.value = value;
+      }
+      return;
+    }
+    const input = scope.querySelector(`[name="${cssEscape(fullPath)}"]`);
+    if (input && value != null) input.value = value;
+  }
+
+  for (const slot of slotDefs) {
+    fillSlot(slot, '', els.form, values?.[slot.id]);
   }
 }
 
