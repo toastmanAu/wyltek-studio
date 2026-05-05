@@ -268,3 +268,115 @@ async function uploadImage(file) {
   if (!r.ok) throw new Error(`upload: ${r.status} ${await r.text()}`);
   return await r.json();   // {url, path}
 }
+
+// ── Task 19: Image-ref state model + Add Image button ────────────────────────
+
+state.imageRefs = [];
+
+function renderImageRefs() {
+  const ul = document.getElementById('image-ref-list');
+  while (ul.firstChild) ul.removeChild(ul.firstChild);
+  for (const [i, ref] of state.imageRefs.entries()) {
+    const li = document.createElement('li');
+    li.className = 'image-ref';
+
+    const img = document.createElement('img');
+    img.src = ref.url;
+    img.alt = `Image ${i + 1}`;
+    li.appendChild(img);
+
+    const lab = document.createElement('span');
+    lab.className = 'ref-label';
+    lab.textContent = `Image ${i + 1}`;
+    li.appendChild(lab);
+
+    const rm = document.createElement('button');
+    rm.type = 'button';
+    rm.className = 'remove';
+    rm.textContent = '×';
+    rm.addEventListener('click', () => {
+      state.imageRefs.splice(i, 1);
+      renderImageRefs();
+      updateAspectDisabled();
+    });
+    li.appendChild(rm);
+
+    ul.appendChild(li);
+  }
+  document.getElementById('image-ref-add').disabled = state.imageRefs.length >= 4;
+}
+
+document.getElementById('image-ref-add').addEventListener('click', () => {
+  document.getElementById('image-ref-input').click();
+});
+
+document.getElementById('image-ref-input').addEventListener('change', async (ev) => {
+  const f = ev.target.files[0];
+  if (!f || state.imageRefs.length >= 4) {
+    ev.target.value = '';
+    return;
+  }
+  try {
+    const result = await uploadImage(f);   // {url, path}
+    state.imageRefs.push(result);
+    renderImageRefs();
+    updateAspectDisabled();
+  } catch (e) {
+    els.previewStatus.hidden = false;
+    els.previewStatus.textContent = `Upload failed: ${e.message}`;
+  }
+  ev.target.value = '';
+});
+
+function updateAspectDisabled() {
+  const sel = document.getElementById('aspect-select');
+  if (state.imageRefs.length > 0) {
+    sel.disabled = true;
+    sel.title = 'Output size auto-derived from Image 1 when refs are present';
+  } else {
+    sel.disabled = false;
+    sel.removeAttribute('title');
+  }
+}
+
+// Re-implement submitRender to include image_refs from state.imageRefs.
+// The original (Task 16) sends image_refs: []. We shadow it here so all
+// future renders carry the on-disk paths the SenseNova subprocess can read.
+const _origSubmitRender = submitRender;
+submitRender = async function () {
+  const tpl = state.current;
+  if (!tpl) return;
+  els.renderBtn.disabled = true;
+  els.previewStatus.hidden = false;
+  els.previewStatus.textContent = 'Submitting…';
+  els.previewImg.hidden = true;
+  try {
+    const body = {
+      template_id: tpl.id,
+      tier: getTier(),
+      aspect: document.getElementById('aspect-select').value,
+      slots: harvestForm(tpl),
+      image_refs: state.imageRefs.map((r) => r.path),
+    };
+    const r = await fetch('/api/infographic/render', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      const text = await r.text();
+      throw new Error(`render: ${r.status} ${text}`);
+    }
+    const {job_id} = await r.json();
+    state.lastRenderId = job_id;
+    els.previewStatus.textContent = `Job ${job_id} submitted; polling…`;
+    pollJob(job_id);
+  } catch (e) {
+    els.previewStatus.textContent = `Error: ${e.message}`;
+    els.renderBtn.disabled = false;
+  }
+};
+els.renderBtn.removeEventListener('click', _origSubmitRender);
+els.renderBtn.addEventListener('click', submitRender);
+
+renderImageRefs();
