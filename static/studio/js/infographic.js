@@ -461,3 +461,104 @@ els.renderBtn.removeEventListener('click', _origSubmitRender);
 els.renderBtn.addEventListener('click', submitRender);
 
 renderImageRefs();
+
+// ── Task 30: Render history list + click-to-load ──────────────────────────────
+
+async function loadHistory() {
+  const ul = document.getElementById('history-list');
+  if (!ul) return;
+  try {
+    const r = await fetch('/api/infographic/history?limit=30');
+    if (!r.ok) return;
+    const list = await r.json();
+    while (ul.firstChild) ul.removeChild(ul.firstChild);
+    for (const entry of list) {
+      const li = document.createElement('li');
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'history-item';
+      btn.dataset.job = entry.job_id;
+
+      const img = document.createElement('img');
+      img.src = entry.png_url;
+      img.alt = '';
+      btn.appendChild(img);
+
+      const lab = document.createElement('span');
+      const tplId = (entry.sidecar && entry.sidecar.template_id) || 'render';
+      const title = (entry.sidecar && entry.sidecar.slots && entry.sidecar.slots.title) || entry.job_id;
+      lab.textContent = `${tplId} — ${title}`;
+      btn.appendChild(lab);
+
+      btn.addEventListener('click', () => loadFromHistory(entry));
+      li.appendChild(btn);
+      ul.appendChild(li);
+    }
+  } catch (e) {
+    console.warn('history load failed:', e);
+  }
+}
+
+function loadFromHistory(entry) {
+  const sc = entry.sidecar || {};
+
+  // 1. Switch template if needed.
+  if (sc.template_id && state.current?.id !== sc.template_id) {
+    if (!state.templates[sc.template_id]) {
+      els.previewStatus.hidden = false;
+      els.previewStatus.textContent = `Template "${sc.template_id}" no longer available.`;
+      return;
+    }
+    els.select.value = sc.template_id;
+    window.onTemplateChange();
+  }
+
+  // 2. Repopulate slot values.
+  if (state.current && sc.slots) {
+    fillFormFromSlots(state.current.slots, sc.slots);
+  }
+
+  // 3. Load preview.
+  if (entry.png_url) {
+    els.previewImg.src = entry.png_url + `?t=${Date.now()}`;
+    els.previewImg.hidden = false;
+    els.previewStatus.hidden = true;
+  }
+
+  state.lastRenderId = entry.job_id;
+}
+
+function fillFormFromSlots(slotDefs, values) {
+  for (const slot of slotDefs) {
+    const v = values?.[slot.id];
+    if (slot.type === 'list' && Array.isArray(v)) {
+      // Find the matching .list-items container by index in template.slots.
+      const fsIdx = slotDefs.findIndex((s) => s.id === slot.id);
+      const items = els.form.querySelectorAll('.list-items')[fsIdx];
+      if (items) {
+        while (items.firstChild) items.removeChild(items.firstChild);
+        for (const [i, item] of v.entries()) addListItem(slot, slot.id, items, i, item);
+      }
+    } else if (slot.type !== 'image_ref') {
+      const input = els.form.querySelector(`[name="${slot.id}"]`);
+      if (input && v != null) input.value = v;
+    } else {
+      // image_ref slot: set the select if the path is in our refs list,
+      // else leave (none). User can re-upload if missing.
+      const sel = els.form.querySelector(`select[name="${slot.id}"][data-image-ref]`);
+      if (sel && v != null) {
+        if (Array.from(sel.options).some((o) => o.value === v)) sel.value = v;
+      }
+    }
+  }
+}
+
+// Refresh history after every successful render.
+const _origPollJob = pollJob;
+pollJob = async function (jobId) {
+  await _origPollJob(jobId);
+  loadHistory();
+};
+
+// Initial load.
+loadHistory();
