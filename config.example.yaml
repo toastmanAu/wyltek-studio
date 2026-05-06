@@ -8,7 +8,7 @@ prompt_optimizer:
   enabled: false
   ollama_url: "http://[::1]:11434"  # Native install (IPv6 localhost)
   # ollama_url: "http://ollama:11434"  # Docker Compose (use service name)
-  model: "qwen2.5:14b"             # Any Ollama model works — configure in Settings
+  model: "gemma4:26b"              # Any Ollama model works — configure in Settings
 
 server:
   host: "0.0.0.0"
