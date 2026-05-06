@@ -54,74 +54,63 @@ def test_render_invalid_aspect_400():
     assert r.status_code == 400
 
 
-def test_render_merges_external_image_refs(tmp_path, monkeypatch):
-    """When the body supplies image_refs[] AND template slots include
-    image_ref typed slots, the resulting image_paths should be the union
-    in declaration order, slot-derived first, then external refs not
-    already present."""
-    # Create real upload files so path-traversal validation passes.
-    uploads = tmp_path / "uploads" / "infographic"
-    uploads.mkdir(parents=True)
-    (uploads / "a.png").write_bytes(b"")
-    (uploads / "b.png").write_bytes(b"")
-    monkeypatch.chdir(tmp_path)
-    # Re-resolve the module-level constant to match tmp_path.
-    import server as _srv
-    monkeypatch.setattr(_srv, "_INFOGRAPHIC_UPLOADS_DIR", (tmp_path / "uploads" / "infographic").resolve())
-
+def test_render_ignores_image_refs_field():
+    """image_refs is accepted on the request schema for API back-compat
+    but always ignored — image refs were dropped from the infographic
+    builder because the model treats them as background style/palette
+    rather than literal placement. params["image_paths"] is always [].
+    Path-traversal validation is no longer needed because the field is
+    never used to access disk."""
     body = _good()
-    body["image_refs"] = [
-        str(uploads / "a.png"),
-        str(uploads / "b.png"),
-    ]
-    body["slots"]["hub_desc"] = "See [Image 1] and [Image 2]"
-
-    from server import jobs as _jobs
-    _jobs.clear()
-    with patch("job_queue.JobQueue.submit_background", return_value=None):
-        r = TestClient(app).post("/api/infographic/render", json=body)
-    assert r.status_code == 202
-    job_id = r.json()["job_id"]
-    assert job_id in _jobs
-    params = _jobs[job_id]["params"]
-    # hub_and_spoke template has no image_ref slots filled in this body, so
-    # only the externals should be present, in user order.
-    assert params["image_paths"] == [str(uploads / "a.png"), str(uploads / "b.png")]
-
-
-def test_render_dedupes_when_external_overlaps_slot_path(tmp_path, monkeypatch):
-    """If an external ref has the same value as a slot-derived path, only
-    keep one (slot-derived comes first)."""
-    uploads = tmp_path / "uploads" / "infographic"
-    uploads.mkdir(parents=True)
-    (uploads / "logo.png").write_bytes(b"")
-    (uploads / "extra.png").write_bytes(b"")
-    monkeypatch.chdir(tmp_path)
-    import server as _srv
-    monkeypatch.setattr(_srv, "_INFOGRAPHIC_UPLOADS_DIR", (tmp_path / "uploads" / "infographic").resolve())
-
-    body = _good()
-    body["slots"]["hub_image"] = str(uploads / "logo.png")   # image_ref slot
-    body["image_refs"] = [str(uploads / "logo.png"), str(uploads / "extra.png")]
+    body["image_refs"] = ["/etc/passwd",  # would have been rejected before
+                          "uploads/infographic/anything.png"]
     from server import jobs as _jobs
     _jobs.clear()
     with patch("job_queue.JobQueue.submit_background", return_value=None):
         r = TestClient(app).post("/api/infographic/render", json=body)
     assert r.status_code == 202
     params = _jobs[r.json()["job_id"]]["params"]
-    assert params["image_paths"] == [str(uploads / "logo.png"), str(uploads / "extra.png")]   # de-duped
+    assert params["image_paths"] == []
 
 
-def test_render_rejects_path_traversal_in_image_refs():
+def test_render_appends_style_notes_to_prompt():
+    """style_notes appears as the final 'Overall style:' sentence on the
+    assembled prompt — that's where the model attends most strongly to
+    aesthetic direction per the SenseNova showcase prompts."""
     body = _good()
-    body["image_refs"] = ["/etc/passwd"]
-    r = TestClient(app).post("/api/infographic/render", json=body)
-    assert r.status_code == 400
-    assert "outside uploads dir" in r.text or "invalid" in r.text.lower()
+    body["style_notes"] = "soft pastel palette, hand-lettered art-deco titles"
+    from server import jobs as _jobs
+    _jobs.clear()
+    with patch("job_queue.JobQueue.submit_background", return_value=None):
+        r = TestClient(app).post("/api/infographic/render", json=body)
+    assert r.status_code == 202
+    params = _jobs[r.json()["job_id"]]["params"]
+    prompt = params["prompt"]
+    assert prompt.endswith(
+        "Overall style: soft pastel palette, hand-lettered art-deco titles")
+    # Sidecar metadata should also carry the raw style_notes for reproducibility.
+    assert params["style_notes"] == "soft pastel palette, hand-lettered art-deco titles"
 
 
-def test_render_rejects_relative_path_traversal():
+def test_render_omits_style_notes_block_when_blank():
+    """Blank style_notes — no trailing 'Overall style:' sentence appears."""
     body = _good()
-    body["image_refs"] = ["uploads/infographic/../../../etc/passwd"]
-    r = TestClient(app).post("/api/infographic/render", json=body)
-    assert r.status_code == 400
+    body["style_notes"] = "   "  # whitespace-only counts as empty
+    from server import jobs as _jobs
+    _jobs.clear()
+    with patch("job_queue.JobQueue.submit_background", return_value=None):
+        r = TestClient(app).post("/api/infographic/render", json=body)
+    assert r.status_code == 202
+    params = _jobs[r.json()["job_id"]]["params"]
+    assert "Overall style:" not in params["prompt"]
+
+
+def test_render_style_notes_field_optional_for_back_compat():
+    """Body without style_notes at all (older client) still works."""
+    body = _good()  # has no style_notes key
+    assert "style_notes" not in body
+    from server import jobs as _jobs
+    _jobs.clear()
+    with patch("job_queue.JobQueue.submit_background", return_value=None):
+        r = TestClient(app).post("/api/infographic/render", json=body)
+    assert r.status_code == 202

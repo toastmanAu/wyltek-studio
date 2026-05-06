@@ -2722,6 +2722,11 @@ class _InfographicRenderBody(BaseModel):
     aspect: str | None = None
     slots: dict
     image_refs: list[str] = []
+    # Render-wide art direction appended to every template's assembled prompt.
+    # The SenseNova samples consistently put aesthetic notes in a trailing
+    # sentence outside any quoted content; that closing position is where the
+    # model attends most strongly to style / palette / typography cues.
+    style_notes: str = ""
 
 
 @app.post("/api/infographic/render", status_code=202)
@@ -2739,29 +2744,26 @@ async def infographic_render(body: _InfographicRenderBody):
     except _InfographicSlotError as exc:
         raise HTTPException(400, str(exc)) from exc
 
-    # Merge slot-derived paths with externally-supplied refs (Task 21 will
-    # extend this; for now we just concat with simple de-dup).
-    # Validate every external ref points inside uploads/infographic/.
-    all_paths = list(result.image_paths)
-    for u in body.image_refs:
-        try:
-            resolved = Path(u).resolve()
-        except (OSError, ValueError) as exc:
-            raise HTTPException(400, f"invalid image_ref path: {u!r}") from exc
-        if not str(resolved).startswith(str(_INFOGRAPHIC_UPLOADS_DIR) + "/"):
-            raise HTTPException(400, f"image_ref outside uploads dir: {u!r}")
-        if u not in all_paths:
-            all_paths.append(u)
+    # Image refs were dropped from the infographic builder UI: the model
+    # treats them as background style/palette rather than literal placement,
+    # which mismatched user expectations. body.image_refs is kept on the
+    # request schema for API back-compat but always ignored — every render
+    # now goes through the T2I path (no autoregressive prefill, no lm_head
+    # OOM risk on the worker, cleaner BF16 output).
+    final_prompt = result.prompt
+    if body.style_notes.strip():
+        final_prompt = f"{final_prompt}\n\nOverall style: {body.style_notes.strip()}"
 
     job_id = uuid.uuid4().hex[:12]
     params = {
-        "prompt": result.prompt,
-        "image_paths": all_paths,
+        "prompt": final_prompt,
+        "image_paths": [],
         "aspect": body.aspect,
         "seed": 42,                       # Task 16+ may surface this
         "tier": body.tier,
         "template_id": body.template_id,
         "slots": body.slots,
+        "style_notes": body.style_notes,
     }
     jobs[job_id] = {"status": "queued", "params": params, "progress": 0}
     job_queue.submit_background(
@@ -2826,6 +2828,7 @@ async def _run_infographic_job(job_id: str, params: dict) -> None:
                 "tier": params["tier"],
                 "prompt": params.get("prompt"),
                 "seed": params.get("seed", 42),
+                "style_notes": params.get("style_notes", ""),
             }, indent=2))
         except Exception:
             pass  # sidecar is best-effort; don't fail the job over it

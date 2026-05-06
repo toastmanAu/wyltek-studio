@@ -1,16 +1,35 @@
 {
   "id": "stats",
   "name": "Stat Showcase",
-  "description": "Big numbers grid. Best for impact summaries — 'by the numbers' panels.",
+  "description": "Big numbers grid. Best for impact summaries \u2014 'by the numbers' panels.",
   "preview": "templates/infographics/_previews/stats.png",
   "slots": [
-    {"id": "title", "type": "text", "max_len": 60, "required": true},
-    {"id": "cells", "type": "list", "min": 3, "max": 6,
-     "item_slots": [
-       {"id": "value", "type": "text", "max_len": 12, "required": true},
-       {"id": "label", "type": "text", "max_len": 40, "required": true},
-       {"id": "image", "type": "image_ref"}
-     ]}
+    {
+      "id": "title",
+      "type": "text",
+      "max_len": 200,
+      "required": true
+    },
+    {
+      "id": "cells",
+      "type": "list",
+      "min": 3,
+      "max": 6,
+      "item_slots": [
+        {
+          "id": "value",
+          "type": "text",
+          "max_len": 80,
+          "required": true
+        },
+        {
+          "id": "label",
+          "type": "text",
+          "max_len": 120,
+          "required": true
+        }
+      ]
+    }
   ],
-  "prompt_template": "A stat-showcase infographic titled \"{{title}}\", flat illustration on cream paper, thick black outlines. Stat cells:{{#cells}} \"{{value}}\" — {{label}}{{#image}} illustrated with {{image}}{{/image}};{{/cells}} Each cell soft-shadowed rectangle; value 4× label size; bold rounded sans-serif; generous whitespace."
+  "prompt_template": "A stat-showcase infographic titled \"{{title}}\", flat illustration on cream paper, thick black outlines. Stat cells:{{#cells}} \"{{value}}\" \u2014 {{label}};{{/cells}} Each cell soft-shadowed rectangle; value 4\u00d7 label size; bold rounded sans-serif; generous whitespace."
 }

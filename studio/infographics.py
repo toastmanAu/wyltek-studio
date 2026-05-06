@@ -8,7 +8,7 @@ time; the SenseNova backend rewrites those to native ``<image>``
 placeholders just before subprocess dispatch.
 """
 from __future__ import annotations
-import copy, json, logging, re
+import json, logging, re
 from dataclasses import dataclass, field
 from pathlib import Path
 import jsonschema
@@ -76,9 +76,6 @@ def _validate_slot(slot: dict, value, path: str) -> None:
         ml = slot.get("max_len")
         if ml and len(value) > ml:
             raise SlotValidationError(f"{path}{sid} exceeds max_len {ml}")
-    elif typ == "image_ref":
-        if not isinstance(value, str):
-            raise SlotValidationError(f"Expected path for {path}{sid}")
     elif typ == "color":
         if not (isinstance(value, str) and value.startswith("#")):
             raise SlotValidationError(f"Expected hex color for {path}{sid}")
@@ -110,30 +107,20 @@ def _render_section(body: str, value) -> str:
 
 
 def assemble_prompt(template: dict, values: dict) -> AssemblyResult:
-    """Render ``template['prompt_template']`` against ``values``."""
+    """Render ``template['prompt_template']`` against ``values``.
+
+    Pure text-only assembly: image refs were dropped from the infographic
+    builder because the model treats them as background style/palette
+    rather than literal placement, which mismatches user expectations.
+    The model still draws icons/illustrations inline based on prompt text.
+    ``image_paths`` is kept on the return type for API back-compat but is
+    always empty.
+    """
     for slot in template["slots"]:
         _validate_slot(slot, values.get(slot["id"]), "")
 
-    image_paths: list[str] = []
-    rewritten = copy.deepcopy(values)
-
-    def _walk(slots: list, vals: dict) -> None:
-        for slot in slots:
-            sid = slot["id"]
-            v = vals.get(sid)
-            if v in (None, "", [], {}):
-                continue
-            if slot["type"] == "image_ref":
-                image_paths.append(v)
-                vals[sid] = f"[Image {len(image_paths)}]"
-            elif slot["type"] == "list":
-                for item in v:
-                    _walk(slot.get("item_slots", []), item)
-
-    _walk(template["slots"], rewritten)
-
     body = template["prompt_template"]
     body = _SECTION_RE.sub(
-        lambda m: _render_section(m.group(2), rewritten.get(m.group(1))), body)
-    body = _VAR_RE.sub(lambda m: str(rewritten.get(m.group(1), "")), body)
-    return AssemblyResult(prompt=body, image_paths=image_paths)
+        lambda m: _render_section(m.group(2), values.get(m.group(1))), body)
+    body = _VAR_RE.sub(lambda m: str(values.get(m.group(1), "")), body)
+    return AssemblyResult(prompt=body, image_paths=[])

@@ -72,33 +72,6 @@
     }
     #precheck-banner ul { margin: 4px 0 0 0; padding-left: 20px; }
     #precheck-banner li { margin: 2px 0; }
-    .image-ref {
-      position: relative;
-      width: 56px; height: 56px;
-      border: 1px solid var(--border, #333); border-radius: 6px;
-      overflow: hidden;
-    }
-    .image-ref img { width: 100%; height: 100%; object-fit: cover; display: block; }
-    .image-ref .ref-label {
-      position: absolute; left: 0; bottom: 0; right: 0;
-      background: rgba(0,0,0,0.6); color: #fff; font-size: 10px;
-      text-align: center; padding: 1px 0;
-    }
-    .image-ref .remove {
-      position: absolute; top: -4px; right: -4px;
-      background: var(--accent, #4a90e2); color: #fff; border: none;
-      width: 18px; height: 18px; border-radius: 50%; font-size: 12px;
-      line-height: 18px; padding: 0; cursor: pointer;
-    }
-    #image-ref-add:disabled { opacity: 0.4; cursor: not-allowed; }
-    .chip {
-      font-size: 11px; padding: 2px 8px;
-      background: var(--accent-dim, rgba(74,144,226,0.15));
-      color: var(--accent, #4a90e2);
-      border: 1px solid var(--accent, #4a90e2); border-radius: 999px;
-      cursor: pointer;
-    }
-    .chip:hover { background: var(--accent, #4a90e2); color: #fff; }
     .preview-pane { display: flex; flex-direction: column; align-items: center; }
     #preview-status { color: var(--text-dim, #888); padding: 24px; text-align: center; }
     .canvas-btn {
@@ -139,12 +112,22 @@
       </label>
       <img id="template-preview" alt="" hidden style="max-width: 100%; border-radius: 8px; margin: 6px 0 12px; border: 1px solid var(--border, #333);" />
       <form id="slot-form"></form>
-      <section class="image-refs">
-        <h4 style="margin: 12px 0 6px; font-size: 13px; color: var(--text-dim, #888);">Image references (optional, max 4)</h4>
-        <ul id="image-ref-list" style="list-style:none; padding:0; margin:0; display:flex; flex-wrap:wrap; gap:6px;"></ul>
-        <input type="file" id="image-ref-input" accept="image/png,image/jpeg,image/webp" hidden />
-        <button type="button" id="image-ref-add" style="margin-top:6px; padding:6px 10px; background:transparent; border:1px dashed var(--border, #333); color:var(--text, #eee); border-radius:6px; cursor:pointer;">+ Add image</button>
-      </section>
+      <p style="margin: 8px 0 0; font-size: 12px; color: var(--text-dim, #888); line-height: 1.4;">
+        Tip: describe icons or illustrations in plain English inside any text field
+        (e.g. <em>"a small lock icon"</em>, <em>"stylized mountain silhouette"</em>) — the model
+        draws them inline.
+      </p>
+      <fieldset class="style-notes" style="margin-top:12px;">
+        <legend>Overall style notes (optional)</legend>
+        <textarea id="style-notes" rows="2"
+          placeholder="e.g. soft pastel watercolour palette, hand-lettered art-deco titles, paper-grain background, monospaced bullets"
+          style="width:100%; box-sizing:border-box; padding:6px 8px; font:inherit; resize:vertical; min-height:48px;"></textarea>
+        <p style="margin: 4px 0 0; font-size: 11px; color: var(--text-dim, #888); line-height: 1.4;">
+          Appended to the prompt as the final art-direction sentence.
+          Mention colour palette, typography, finish, mood — anything that
+          should apply across the whole image.
+        </p>
+      </fieldset>
       <fieldset class="render-tier">
         <legend>Render</legend>
         <label><input type="radio" name="tier" value="draft" checked /> Draft (~73s)</label>

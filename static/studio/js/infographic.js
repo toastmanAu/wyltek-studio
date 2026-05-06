@@ -78,13 +78,6 @@ function renderSlot(slot, path, value) {
     if (slot.max_len) input.setAttribute('maxlength', slot.max_len);
     if (value != null) input.value = value;
     wrap.appendChild(input);
-    if (slot.max_len === undefined || slot.max_len > 60) {
-      const chips = document.createElement('div');
-      chips.className = 'image-chips';
-      chips.dataset.target = id;
-      chips.style.cssText = 'display:flex; flex-wrap:wrap; gap:4px; margin-top:4px;';
-      wrap.appendChild(chips);
-    }
   } else if (slot.type === 'color') {
     const lab = document.createElement('label');
     lab.htmlFor = id;
@@ -135,18 +128,6 @@ function renderSlot(slot, path, value) {
     });
     fs.appendChild(addBtn);
     wrap.appendChild(fs);
-  } else if (slot.type === 'image_ref') {
-    const lab = document.createElement('label');
-    lab.htmlFor = id;
-    lab.textContent = label;
-    wrap.appendChild(lab);
-    const sel = document.createElement('select');
-    sel.id = id;
-    sel.name = path;
-    sel.dataset.imageRef = '1';
-    rebuildImageRefSelect(sel);
-    if (value) sel.value = value;
-    wrap.appendChild(sel);
   }
   return wrap;
 }
@@ -170,49 +151,6 @@ function buildForm(template) {
   while (els.form.firstChild) els.form.removeChild(els.form.firstChild);
   for (const slot of template.slots) {
     els.form.appendChild(renderSlot(slot, slot.id, null));
-  }
-  rebuildChips();
-}
-
-function rebuildImageRefSelect(sel) {
-  const cur = sel.value;
-  while (sel.firstChild) sel.removeChild(sel.firstChild);
-  const noneOpt = document.createElement('option');
-  noneOpt.value = '';
-  noneOpt.textContent = '(none)';
-  sel.appendChild(noneOpt);
-  for (const [i, ref] of state.imageRefs.entries()) {
-    const o = document.createElement('option');
-    o.value = ref.path;            // server uses path (filesystem)
-    o.textContent = `Image ${i + 1}`;
-    sel.appendChild(o);
-  }
-  if (cur && Array.from(sel.options).some((o) => o.value === cur)) {
-    sel.value = cur;
-  }
-}
-
-function rebuildChips() {
-  for (const cont of els.form.querySelectorAll('.image-chips')) {
-    const targetId = cont.dataset.target;
-    while (cont.firstChild) cont.removeChild(cont.firstChild);
-    for (const i of state.imageRefs.keys()) {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.className = 'chip';
-      b.textContent = `Insert Image ${i + 1}`;
-      b.addEventListener('click', () => {
-        const ta = document.getElementById(targetId);
-        if (!ta) return;
-        const tok = `[Image ${i + 1}]`;
-        const start = ta.selectionStart != null ? ta.selectionStart : ta.value.length;
-        const end = ta.selectionEnd != null ? ta.selectionEnd : ta.value.length;
-        ta.value = ta.value.slice(0, start) + tok + ta.value.slice(end);
-        ta.focus();
-        ta.selectionStart = ta.selectionEnd = start + tok.length;
-      });
-      cont.appendChild(b);
-    }
   }
 }
 
@@ -251,8 +189,8 @@ function harvestForm(template) {
   // Walk the template recursively. Each list slot's `.list-items` container
   // carries `data-path="<full path>"` so we can find it unambiguously even
   // for deeply-nested lists (e.g. comparison's left[0].bullets, hierarchy's
-  // levels[0].nodes). Plain text/color/enum/image_ref slots are looked up
-  // by their full `name` attribute, which renderSlot built path-style.
+  // levels[0].nodes). Plain text/color/enum slots are looked up by their
+  // full `name` attribute, which renderSlot built path-style.
   function harvestSlot(slot, basePath, scope) {
     const fullPath = basePath ? `${basePath}.${slot.id}` : slot.id;
     if (slot.type === 'list') {
@@ -271,12 +209,6 @@ function harvestForm(template) {
         list.push(itemVal);
       });
       return list;
-    }
-    if (slot.type === 'image_ref') {
-      const sel = scope.querySelector(
-        `select[data-image-ref][name="${cssEscape(fullPath)}"]`
-      );
-      return sel && sel.value ? sel.value : undefined;
     }
     // text / color / enum scalar slot
     const input = scope.querySelector(`[name="${cssEscape(fullPath)}"]`);
@@ -313,12 +245,14 @@ async function submitRender() {
   // Don't hide the canvas during a new render — it's nice to keep the
   // previous result visible while waiting. Status div will overlay.
   try {
+    const styleNotesEl = document.getElementById('style-notes');
     const body = {
       template_id: tpl.id,
       tier: getTier(),
       aspect: document.getElementById('aspect-select').value,
       slots: harvestForm(tpl),
       image_refs: [],
+      style_notes: styleNotesEl ? styleNotesEl.value.trim() : '',
     };
     const r = await fetch('/api/infographic/render', {
       method: 'POST',
@@ -378,153 +312,6 @@ async function uploadImage(file) {
   if (!r.ok) throw new Error(`upload: ${r.status} ${await r.text()}`);
   return await r.json();   // {url, path}
 }
-
-// ── Task 19: Image-ref state model + Add Image button ────────────────────────
-
-state.imageRefs = [];
-
-function renderImageRefs() {
-  const ul = document.getElementById('image-ref-list');
-  while (ul.firstChild) ul.removeChild(ul.firstChild);
-  for (const [i, ref] of state.imageRefs.entries()) {
-    const li = document.createElement('li');
-    li.className = 'image-ref';
-
-    const img = document.createElement('img');
-    img.src = ref.url;
-    img.alt = `Image ${i + 1}`;
-    li.appendChild(img);
-
-    const lab = document.createElement('span');
-    lab.className = 'ref-label';
-    lab.textContent = `Image ${i + 1}`;
-    li.appendChild(lab);
-
-    const rm = document.createElement('button');
-    rm.type = 'button';
-    rm.className = 'remove';
-    rm.textContent = '×';
-    rm.addEventListener('click', () => {
-      state.imageRefs.splice(i, 1);
-      renderImageRefs();
-      updateAspectDisabled();
-    });
-    li.appendChild(rm);
-
-    ul.appendChild(li);
-  }
-  document.getElementById('image-ref-add').disabled = state.imageRefs.length >= 4;
-  for (const sel of els.form.querySelectorAll('select[data-image-ref]')) rebuildImageRefSelect(sel);
-  rebuildChips();
-}
-
-document.getElementById('image-ref-add').addEventListener('click', () => {
-  document.getElementById('image-ref-input').click();
-});
-
-document.getElementById('image-ref-input').addEventListener('change', async (ev) => {
-  const f = ev.target.files[0];
-  if (!f || state.imageRefs.length >= 4) {
-    ev.target.value = '';
-    return;
-  }
-  try {
-    const result = await uploadImage(f);   // {url, path}
-    state.imageRefs.push(result);
-    renderImageRefs();
-    updateAspectDisabled();
-  } catch (e) {
-    els.previewStatus.hidden = false;
-    els.previewStatus.textContent = `Upload failed: ${e.message}`;
-  }
-  ev.target.value = '';
-});
-
-function updateAspectDisabled() {
-  const sel = document.getElementById('aspect-select');
-  if (state.imageRefs.length > 0) {
-    sel.disabled = true;
-    sel.title = 'Output size auto-derived from Image 1 when refs are present';
-  } else {
-    sel.disabled = false;
-    sel.removeAttribute('title');
-  }
-}
-
-// Re-implement submitRender to include image_refs from state.imageRefs.
-// The original (Task 16) sends image_refs: []. We shadow it here so all
-// future renders carry the on-disk paths the SenseNova subprocess can read.
-const _origSubmitRender = submitRender;
-submitRender = async function () {
-  const tpl = state.current;
-  if (!tpl) return;
-  // Precheck — if ComfyUI is running on driveThree-class hardware, block.
-  const banner = document.getElementById('precheck-banner');
-  try {
-    const preR = await fetch('/api/sensenova/precheck');
-    const pre = await preR.json();
-    if (!pre.ready) {
-      while (banner.firstChild) banner.removeChild(banner.firstChild);
-      const strong = document.createElement('strong');
-      strong.textContent = 'Cannot render:';
-      banner.appendChild(strong);
-      const ul = document.createElement('ul');
-      for (const b of pre.blockers) {
-        const li = document.createElement('li');
-        li.textContent = b;
-        ul.appendChild(li);
-      }
-      banner.appendChild(ul);
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.textContent = 'Recheck';
-      btn.addEventListener('click', async () => {
-        banner.hidden = true;
-        await submitRender();
-      }, {once: true});
-      banner.appendChild(btn);
-      banner.hidden = false;
-      return;
-    }
-    banner.hidden = true;
-  } catch (e) {
-    // Precheck unreachable — let the user proceed; the actual render will surface errors.
-    console.warn('precheck failed:', e);
-  }
-  els.renderBtn.disabled = true;
-  els.previewStatus.hidden = false;
-  els.previewStatus.textContent = 'Submitting…';
-  // Don't hide the canvas during a new render — keep previous result visible.
-  try {
-    const body = {
-      template_id: tpl.id,
-      tier: getTier(),
-      aspect: document.getElementById('aspect-select').value,
-      slots: harvestForm(tpl),
-      image_refs: state.imageRefs.map((r) => r.path),
-    };
-    const r = await fetch('/api/infographic/render', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(body),
-    });
-    if (!r.ok) {
-      const text = await r.text();
-      throw new Error(`render: ${r.status} ${text}`);
-    }
-    const {job_id} = await r.json();
-    state.lastRenderId = job_id;
-    els.previewStatus.textContent = `Job ${job_id} submitted; polling…`;
-    pollJob(job_id);
-  } catch (e) {
-    els.previewStatus.textContent = `Error: ${e.message}`;
-    els.renderBtn.disabled = false;
-  }
-};
-els.renderBtn.removeEventListener('click', _origSubmitRender);
-els.renderBtn.addEventListener('click', submitRender);
-
-renderImageRefs();
 
 // ── Task 30: Render history list + click-to-load ──────────────────────────────
 
@@ -608,15 +395,6 @@ function fillFormFromSlots(slotDefs, values) {
       while (container.firstChild) container.removeChild(container.firstChild);
       for (const [i, item] of value.entries()) {
         addListItem(slot, fullPath, container, i, item);
-      }
-      return;
-    }
-    if (slot.type === 'image_ref') {
-      const sel = scope.querySelector(
-        `select[data-image-ref][name="${cssEscape(fullPath)}"]`
-      );
-      if (sel && value != null && Array.from(sel.options).some((o) => o.value === value)) {
-        sel.value = value;
       }
       return;
     }
