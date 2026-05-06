@@ -452,6 +452,30 @@ document.addEventListener('paste', (e) => {
   }
 });
 
+// ── Download current canvas to device (mobile-friendly: <a download>) ───────
+
+const _canvasDownloadBtn = document.getElementById('canvas-download');
+if (_canvasDownloadBtn) {
+  _canvasDownloadBtn.addEventListener('click', async () => {
+    // Mobile browsers don't expose long-press → save on canvas elements,
+    // so we synthesise a download via a hidden anchor. Works on iOS Safari
+    // (opens preview, user taps "Download" / share-sheet), Android Chrome
+    // (direct download), and desktop (file save dialog).
+    const blob = await previewCanvas.toBlob();
+    if (!blob) return;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    a.download = `infographic-${ts}.png`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+}
+
+
 // ── Task 35: Save composite as new render ────────────────────────────────────
 
 const _canvasSaveBtn = document.getElementById('canvas-save');
