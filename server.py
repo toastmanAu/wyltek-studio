@@ -262,9 +262,24 @@ async def api_audio_serve(path: str) -> FileResponse:
     return FileResponse(str(p))
 
 
+# Whitelist of rembg session names accepted by /api/image/bg-remove. Keep in
+# sync with the dropdown in static/studio/image-tools.html. New models in
+# rembg's sessions_class registry (e.g. via rembg upgrade) need to be added
+# here AND in the UI before they're selectable. Verify with:
+#   /data/venvs/rembg/bin/python -c "from rembg.sessions import sessions_class; \
+#       print(sorted(s.name() for s in sessions_class))"
 _REMBG_MODELS = {
+    # BiRefNet family — modern SOTA, recommended defaults
+    "birefnet-general", "birefnet-general-lite", "birefnet-massive",
+    "birefnet-portrait", "birefnet-dis", "birefnet-hrsod", "birefnet-cod",
+    # BRIA RMBG-2.0 — non-commercial license but very strong
+    "bria-rmbg",
+    # ISNet family
+    "isnet-general-use", "isnet-anime",
+    # u2net family — older but fast
     "u2net", "u2netp", "u2net_human_seg",
-    "isnet-general-use", "birefnet-general", "silueta",
+    # Other fast options
+    "silueta",
 }
 
 _REMBG_BIN = Path("/data/venvs/rembg/bin/rembg")
@@ -383,8 +398,122 @@ async def api_image_bg_remove(request: Request):
             tmp_path.unlink(missing_ok=True)
 
 
+_IOPAINT_BIN = Path("/data/venvs/iopaint/bin/iopaint")
+
+
+@app.post("/api/image/object-remove")
+async def api_image_object_remove(request: Request):
+    """Remove an object from an image via iopaint/LaMa.
+
+    Body: {path, mask_b64}. The white pixels in mask_b64 are removed and
+    inpainted by LaMa. Mask is auto-resized to source by iopaint.
+    """
+    import storage as store
+    import shutil as _shutil
+
+    if not _IOPAINT_BIN.exists():
+        return JSONResponse(
+            {"error": "iopaint not installed at /data/venvs/iopaint/"},
+            status_code=503,
+        )
+
+    data = await request.json()
+    mask_b64: str = data.get("mask_b64", "")
+    if not mask_b64:
+        return JSONResponse({"error": "mask_b64 required"}, status_code=400)
+    # SAM2 produces pixel-tight masks; LaMa needs a few px margin to avoid
+    # bleeding the object's edge back into the fill. Default 8 px is gentle
+    # enough that loose brush/lasso masks aren't visibly affected. Caller
+    # can pass 0 to disable.
+    mask_dilate: int = int(data.get("mask_dilate", 8))
+
+    # Resolve input: storage path or inline base64 (mirrors /api/image/bg-remove).
+    upload_tmp: Path | None = None
+    if "path" in data:
+        in_path = Path(data["path"]).resolve()
+        try:
+            _assert_under_storage(in_path)
+        except PermissionError:
+            return JSONResponse({"error": "Access denied"}, status_code=403)
+        if not in_path.exists():
+            return JSONResponse({"error": "Source file not found"}, status_code=404)
+    elif "image_b64" in data:
+        img_bytes = base64.b64decode(data["image_b64"])
+        upload_tmp = Path(tempfile.mkstemp(suffix=".png", prefix="objrm-src-")[1])
+        upload_tmp.write_bytes(img_bytes)
+        in_path = upload_tmp
+    else:
+        return JSONResponse({"error": "path or image_b64 required"}, status_code=400)
+
+    out_filename = f"{in_path.stem}-objrm-{uuid.uuid4().hex[:6]}.png"
+    out_path = store.unsorted_dir() / out_filename
+
+    # iopaint takes file paths; stage image + mask in matched dirs.
+    tmp_dir = Path(tempfile.mkdtemp(prefix="iopaint-"))
+    img_dir = tmp_dir / "img"; img_dir.mkdir()
+    mask_dir = tmp_dir / "mask"; mask_dir.mkdir()
+    out_dir = tmp_dir / "out"; out_dir.mkdir()
+    src_link = img_dir / in_path.name
+    src_link.symlink_to(in_path)
+    # Mask basename must match the image basename (iopaint dir-mode rule).
+    mask_path = mask_dir / in_path.name
+    mask_path.write_bytes(base64.b64decode(mask_b64))
+    if mask_dilate > 0:
+        from PIL import Image as _PIL, ImageFilter as _ImageFilter
+        # MaxFilter kernel size must be odd. Convert px radius → kernel size.
+        ksize = max(3, mask_dilate * 2 + 1)
+        if ksize % 2 == 0:
+            ksize += 1
+        m = _PIL.open(mask_path).convert("L")
+        m = m.filter(_ImageFilter.MaxFilter(size=ksize))
+        m.save(mask_path)
+
+    cmd = [
+        str(_IOPAINT_BIN), "run",
+        "--model", "lama",
+        "--device", "cpu",
+        "--image", str(img_dir),
+        "--mask", str(mask_dir),
+        "--output", str(out_dir),
+    ]
+
+    t0 = time.time()
+    try:
+        # Argv list, no shell — same safe pattern as /api/image/bg-remove.
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        elapsed_ms = int((time.time() - t0) * 1000)
+
+        produced = next(out_dir.glob("*.png"), None)
+        if produced is None:
+            lines = stderr.decode(errors="replace").strip().splitlines()
+            last = lines[-1] if lines else "iopaint produced no output"
+            return JSONResponse({"error": last}, status_code=500)
+
+        produced.rename(out_path)
+        return JSONResponse({
+            "result_url": f"/api/frame/serve?path={out_path}",
+            "filename": out_filename,
+            "output_path": str(out_path),
+            "elapsed_ms": elapsed_ms,
+        })
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+    finally:
+        _shutil.rmtree(tmp_dir, ignore_errors=True)
+        if upload_tmp and upload_tmp.exists():
+            upload_tmp.unlink(missing_ok=True)
+
+
 _SAM_MODEL_PATH = Path.home() / "ComfyUI/models/sams/sam_vit_l_0b3195.pth"
+_SAM2_CHECKPOINT = Path.home() / "ComfyUI/models/sams/sam2.1_hiera_large.pt"
+_SAM2_CONFIG = "configs/sam2.1/sam2.1_hiera_l.yaml"
 _sam_predictor = None  # loaded lazily, kept in memory
+_sam2_predictor = None  # SAM2 predictor, lazy
 
 
 def _load_sam():
@@ -400,20 +529,57 @@ def _load_sam():
     return _sam_predictor
 
 
+def _load_sam2():
+    """Load SAM2.1 hiera-large lazily; reuse across requests."""
+    global _sam2_predictor
+    if _sam2_predictor is not None:
+        return _sam2_predictor
+    import torch
+    from sam2.build_sam import build_sam2
+    from sam2.sam2_image_predictor import SAM2ImagePredictor
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    sam2_model = build_sam2(_SAM2_CONFIG, str(_SAM2_CHECKPOINT), device=device)
+    _sam2_predictor = SAM2ImagePredictor(sam2_model)
+    return _sam2_predictor
+
+
 @app.post("/api/image/sam-segment")
 async def api_image_sam_segment(request: Request):
-    """Click-to-segment using SAM ViT-L. Returns a B&W mask PNG as base64."""
+    """Click-to-segment. Prefers SAM2.1 (hiera-large), falls back to SAM v1
+    if the SAM2 checkpoint is missing. Returns a B&W mask PNG as base64."""
     import io
     import numpy as np
 
-    if not _SAM_MODEL_PATH.exists():
-        return JSONResponse({"error": "SAM model not found at ~/ComfyUI/models/sams/"}, status_code=503)
+    use_sam2 = _SAM2_CHECKPOINT.exists()
+    if not use_sam2 and not _SAM_MODEL_PATH.exists():
+        return JSONResponse(
+            {"error": "No SAM checkpoint found at ~/ComfyUI/models/sams/"},
+            status_code=503,
+        )
 
     data = await request.json()
     click_x: int = int(data.get("x", 0))
     click_y: int = int(data.get("y", 0))
 
-    # Resolve image
+    # Sensitivity knobs:
+    #  - mask_size: 'auto' (default; pick by SAM confidence), or
+    #               'small'/'medium'/'large' (pick by mask area). SAM returns
+    #               3 ambiguity-aware masks per click — for a dog-fur click
+    #               that's roughly (the brown patch / the leg / the whole dog).
+    #  - dilate: int pixels. Positive = grow mask outward, negative = erode.
+    #            Useful for tightening tight selections or feathering edges.
+    mask_size = str(data.get("mask_size", "auto")).lower()
+    dilate = int(data.get("dilate", 0))
+    if mask_size not in ("auto", "small", "medium", "large"):
+        mask_size = "auto"
+    dilate = max(-30, min(30, dilate))
+
+    # Resolve image. Three accepted forms:
+    #  - path: absolute filesystem path (legacy, used by image-tools)
+    #  - url: /storage/<...> URL — resolved via the shared storage helper
+    #         so callers like remix.js don't need to round-trip pixels
+    #         through base64 just to point SAM at a server-resident asset
+    #  - image_b64: pixels embedded in the request body (any source)
     tmp_path: Path | None = None
     if "path" in data:
         in_path = Path(data["path"]).resolve()
@@ -423,6 +589,11 @@ async def api_image_sam_segment(request: Request):
             return JSONResponse({"error": "Access denied"}, status_code=403)
         if not in_path.exists():
             return JSONResponse({"error": "File not found"}, status_code=404)
+    elif "url" in data:
+        resolved = _resolve_storage_url(data["url"])
+        if resolved is None:
+            return JSONResponse({"error": "Image URL did not resolve"}, status_code=404)
+        in_path = resolved
     elif "image_b64" in data:
         img_bytes = base64.b64decode(data["image_b64"])
         tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
@@ -434,31 +605,59 @@ async def api_image_sam_segment(request: Request):
         return JSONResponse({"error": "No image source"}, status_code=400)
 
     try:
-        # Run SAM in a thread so we don't block the event loop
-        def _run_sam() -> str:
+        def _run_sam() -> tuple[str, str]:
             from PIL import Image as PILImage
             img_pil = PILImage.open(in_path).convert("RGB")
             img_np = np.array(img_pil)
 
-            predictor = _load_sam()
-            predictor.set_image(img_np)
+            if use_sam2:
+                predictor = _load_sam2()
+                predictor.set_image(img_np)
+                masks, scores, _ = predictor.predict(
+                    point_coords=np.array([[click_x, click_y]]),
+                    point_labels=np.array([1]),
+                    multimask_output=True,
+                )
+                backend = "sam2.1"
+            else:
+                predictor = _load_sam()
+                predictor.set_image(img_np)
+                masks, scores, _ = predictor.predict(
+                    point_coords=np.array([[click_x, click_y]]),
+                    point_labels=np.array([1]),
+                    multimask_output=True,
+                )
+                backend = "sam_v1"
 
-            masks, scores, _ = predictor.predict(
-                point_coords=np.array([[click_x, click_y]]),
-                point_labels=np.array([1]),
-                multimask_output=True,
-            )
-            # Pick the mask with the highest score
-            best_mask = masks[int(np.argmax(scores))]  # H×W bool
-
-            # Encode as grayscale PNG
+            # Pick the mask. 'auto' = SAM's highest-confidence; sized
+            # selectors ('small'/'medium'/'large') sort the 3 multimasks
+            # by area and pick rank 0/1/2. Lets the user dial in "the
+            # brown patch" vs "the whole leg" vs "the whole animal".
+            if mask_size == "auto":
+                chosen = int(np.argmax(scores))
+            else:
+                areas = np.array([int(m.sum()) for m in masks])
+                order = np.argsort(areas)  # ascending: small → large
+                rank = {"small": 0, "medium": 1, "large": 2}[mask_size]
+                chosen = int(order[min(rank, len(order) - 1)])
+            best_mask = masks[chosen]
             mask_img = PILImage.fromarray((best_mask * 255).astype(np.uint8), mode="L")
+
+            # Dilate/erode via PIL's morphological filters. MaxFilter grows
+            # the white region; MinFilter shrinks it. Filter size is the
+            # diameter, so radius=N → size=2N+1 (must be odd).
+            if dilate != 0:
+                from PIL import ImageFilter
+                size = 2 * abs(dilate) + 1
+                op = ImageFilter.MaxFilter(size) if dilate > 0 else ImageFilter.MinFilter(size)
+                mask_img = mask_img.filter(op)
+
             buf = io.BytesIO()
             mask_img.save(buf, format="PNG")
-            return base64.b64encode(buf.getvalue()).decode()
+            return base64.b64encode(buf.getvalue()).decode(), backend
 
-        mask_b64 = await asyncio.get_event_loop().run_in_executor(None, _run_sam)
-        return JSONResponse({"mask_b64": mask_b64})
+        mask_b64, backend = await asyncio.get_event_loop().run_in_executor(None, _run_sam)
+        return JSONResponse({"mask_b64": mask_b64, "backend": backend})
 
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
