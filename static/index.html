@@ -353,6 +353,24 @@
         <button class="btn btn-filter" data-filter="all">All</button>
         <button class="btn btn-filter" data-filter="none">Clear</button>
       </div>
+      <div class="compare-modifiers" style="display:flex;gap:12px;margin:10px 0;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;flex-wrap:wrap">
+        <div style="flex:1;min-width:220px">
+          <label style="font-size:12px;color:var(--text-dim);display:block;margin-bottom:4px">LoRA</label>
+          <select id="cmp-lora-select" style="width:100%"><option value="">None</option></select>
+          <div class="range-row" style="margin-top:6px">
+            <input type="range" id="cmp-lora-strength" min="0" max="1.5" step="0.05" value="1.0" style="flex:1">
+            <span class="range-value" id="cmp-lora-val" style="font-size:12px;color:var(--text-dim);min-width:36px;text-align:right">1.00</span>
+          </div>
+        </div>
+        <div style="flex:1;min-width:220px">
+          <label style="font-size:12px;color:var(--text-dim);display:block;margin-bottom:4px">IP-Adapter <span id="cmp-ipa-refnote" style="color:var(--text-dim);font-style:italic"></span></label>
+          <select id="cmp-ipa-select" style="width:100%"><option value="">None (text only)</option></select>
+          <div class="range-row" style="margin-top:6px">
+            <input type="range" id="cmp-ipa-strength" min="0" max="1" step="0.05" value="0.6" style="flex:1">
+            <span class="range-value" id="cmp-ipa-val" style="font-size:12px;color:var(--text-dim);min-width:36px;text-align:right">0.60</span>
+          </div>
+        </div>
+      </div>
       <div class="compare-options" id="compare-options"></div>
       <div class="modal-footer">
         <button class="btn" id="compare-cancel">Cancel</button>
@@ -428,6 +446,6 @@
        fully local-first. Defines the <model-viewer> custom element used in
        result-container + gallery thumbs for .glb output. -->
   <script type="module" src="/static/js/model-viewer.min.js"></script>
-  <script src="/static/js/app.js"></script>
+  <script src="/static/js/app.js?v=20260507-cmp-modifiers"></script>
 </body>
 </html>

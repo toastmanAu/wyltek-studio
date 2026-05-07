@@ -810,6 +810,18 @@ function bindEvents() {
   document.getElementById('compare-cancel').addEventListener('click', closeCompareModal);
   document.getElementById('compare-start').addEventListener('click', startComparison);
 
+  // Compare-modal LoRA / IP-Adapter interactions: ghost incompatible models
+  // the moment a modifier changes, and show live strength values.
+  ['cmp-lora-select', 'cmp-ipa-select'].forEach(id => {
+    document.getElementById(id).addEventListener('change', applyCompareGhosting);
+  });
+  document.getElementById('cmp-lora-strength').addEventListener('input', (e) => {
+    document.getElementById('cmp-lora-val').textContent = parseFloat(e.target.value).toFixed(2);
+  });
+  document.getElementById('cmp-ipa-strength').addEventListener('input', (e) => {
+    document.getElementById('cmp-ipa-val').textContent = parseFloat(e.target.value).toFixed(2);
+  });
+
   // Compare modal filter buttons
   document.querySelectorAll('.btn-filter').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -1422,36 +1434,138 @@ function openCompareModal() {
 
     if (availableModels.length === 0) {
       // Backend with no specific models (e.g. pollinations default)
-      container.appendChild(makeCompareOption(name, '', name, info.type));
+      container.appendChild(makeCompareOption(name, '', name, info.type, 'other'));
     } else {
       availableModels.forEach(m => {
         const id = typeof m === 'string' ? m : m.id;
         const label = typeof m === 'string' ? m : m.label;
-        container.appendChild(makeCompareOption(name, id, `${name} / ${label}`, info.type));
+        const arch = (typeof m === 'object' && m.arch) || 'other';
+        container.appendChild(makeCompareOption(name, id, `${name} / ${label}`, info.type, arch));
       });
     }
   }
 
+  populateCompareModifiers();
+  applyCompareGhosting();
   document.getElementById('compare-modal').classList.add('active');
 }
 
-function makeCompareOption(backend, model, label, type) {
+// Populate the compare modal's LoRA / IP-Adapter dropdowns from the comfyui
+// backend's live catalog, prefilling with whatever is already selected on the
+// single-gen page. The ref-image note reflects what's already uploaded there.
+function populateCompareModifiers() {
+  const comfy = state.backends.comfyui;
+  if (!comfy) {
+    console.warn('[compare] state.backends.comfyui missing — backends not loaded?', state.backends);
+    toast('LoRA/IP-Adapter list unavailable: ComfyUI backend not loaded yet', 'error');
+  }
+  const cats = (comfy || {}).model_categories || {};
+  const loras = (cats.loras || []).filter(m => m.available !== false);
+  const ipas = (cats.ip_adapters || []).filter(m => m.available !== false);
+  console.log('[compare] populating modifiers:', {
+    has_comfy: !!comfy,
+    cat_keys: Object.keys(cats),
+    raw_loras: (cats.loras || []).length,
+    raw_ipas: (cats.ip_adapters || []).length,
+    visible_loras: loras.length,
+    visible_ipas: ipas.length,
+  });
+
+  function rebuildSelect(selectId, currentValue, noneLabel, items) {
+    const sel = document.getElementById(selectId);
+    while (sel.firstChild) sel.removeChild(sel.firstChild);
+    const noneOpt = document.createElement('option');
+    noneOpt.value = '';
+    noneOpt.textContent = noneLabel;
+    sel.appendChild(noneOpt);
+    items.forEach(m => {
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = m.label || m.id;
+      opt.dataset.arch = m.arch || 'other';
+      if (m.id === currentValue) opt.selected = true;
+      sel.appendChild(opt);
+    });
+  }
+
+  rebuildSelect('cmp-lora-select', document.getElementById('lora-select').value, 'None', loras);
+  rebuildSelect('cmp-ipa-select', document.getElementById('ip-adapter-select').value, 'None (text only)', ipas);
+
+  // Prefill strengths from the single-gen page values
+  const lStrength = parseFloat(document.getElementById('lora-strength').value) || 1.0;
+  document.getElementById('cmp-lora-strength').value = lStrength;
+  document.getElementById('cmp-lora-val').textContent = lStrength.toFixed(2);
+  const iStrengthEl = document.getElementById('ip-strength');
+  const iStrength = iStrengthEl ? (parseFloat(iStrengthEl.value) || 0.6) : 0.6;
+  document.getElementById('cmp-ipa-strength').value = iStrength;
+  document.getElementById('cmp-ipa-val').textContent = iStrength.toFixed(2);
+
+  // Ref-image note — IP-Adapter needs at least one to do anything
+  const refCount = (state.refImages || []).filter(Boolean).length;
+  const note = document.getElementById('cmp-ipa-refnote');
+  note.textContent = refCount > 0
+    ? `(using ${refCount} ref image${refCount > 1 ? 's' : ''} from main page)`
+    : '(no ref images uploaded — upload on main page first)';
+}
+
+// Ghost any compare-option whose model arch doesn't match the selected
+// LoRA or IP-Adapter arch. "other" on either side is a wildcard so we
+// don't accidentally ghost things we can't classify.
+function applyCompareGhosting() {
+  const loraOpt = document.getElementById('cmp-lora-select').selectedOptions[0];
+  const ipaOpt = document.getElementById('cmp-ipa-select').selectedOptions[0];
+  const loraArch = loraOpt && loraOpt.value ? (loraOpt.dataset.arch || 'other') : null;
+  const ipaArch = ipaOpt && ipaOpt.value ? (ipaOpt.dataset.arch || 'other') : null;
+
+  document.querySelectorAll('.compare-option').forEach(opt => {
+    const modelArch = opt.dataset.arch || 'other';
+    const reasons = [];
+    if (loraArch && loraArch !== 'other' && modelArch !== 'other' && modelArch !== loraArch) {
+      reasons.push(`LoRA is ${loraArch}, model is ${modelArch}`);
+    }
+    if (ipaArch && ipaArch !== 'other' && modelArch !== 'other' && modelArch !== ipaArch) {
+      reasons.push(`IP-Adapter is ${ipaArch}, model is ${modelArch}`);
+    }
+    const ghost = reasons.length > 0;
+    const cb = opt.querySelector('input');
+    if (ghost) {
+      cb.checked = false;
+      cb.disabled = true;
+      opt.classList.add('ghosted');
+      opt.classList.remove('selected');
+      opt.style.opacity = '0.35';
+      opt.style.cursor = 'not-allowed';
+      opt.title = `Incompatible: ${reasons.join('; ')}`;
+    } else {
+      cb.disabled = false;
+      opt.classList.remove('ghosted');
+      opt.style.opacity = '';
+      opt.style.cursor = '';
+      opt.title = '';
+    }
+  });
+}
+
+function makeCompareOption(backend, model, label, type, arch) {
   const div = document.createElement('div');
   div.className = 'compare-option';
   div.dataset.backend = backend;
   div.dataset.model = model;
   div.dataset.type = type;
-  div.innerHTML = `
-    <input type="checkbox">
-    <span class="opt-label">${label}</span>
-    <span class="opt-type ${type}">${type}</span>
-  `;
+  div.dataset.arch = arch || 'other';
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  const lab = document.createElement('span');
+  lab.className = 'opt-label';
+  lab.textContent = label;
+  const typeTag = document.createElement('span');
+  typeTag.className = `opt-type ${type}`;
+  typeTag.textContent = type;
+  div.append(cb, lab, typeTag);
   div.addEventListener('click', (e) => {
-    if (e.target.type !== 'checkbox') {
-      const cb = div.querySelector('input');
-      cb.checked = !cb.checked;
-    }
-    div.classList.toggle('selected', div.querySelector('input').checked);
+    if (cb.disabled) return;  // ghosted — no-op
+    if (e.target !== cb) cb.checked = !cb.checked;
+    div.classList.toggle('selected', cb.checked);
   });
   return div;
 }
@@ -1523,13 +1637,19 @@ async function startComparison() {
   formData.append('steps', document.getElementById('steps').value);
   formData.append('cfg_scale', document.getElementById('cfg-scale').value);
   formData.append('seed', document.getElementById('seed').value);
-  // LoRA — applied per-job in backend; only meaningful for SDXL-arch options.
-  // For mixed-architecture compares, backend will inject for all and ComfyUI will
-  // error visibly on incompatible combos rather than silently skipping.
-  formData.append('lora_model', document.getElementById('lora-select').value);
-  formData.append('lora_strength', document.getElementById('lora-strength').value);
-  formData.append('lora_strength_model', document.getElementById('lora-strength').value);
+  // LoRA / IP-Adapter from the compare modal's own controls (defaults copied
+  // from the single-gen page on open). Ghosting has already excluded any
+  // incompatible model chips, so we can apply these to every selected job.
+  const cmpLora = document.getElementById('cmp-lora-select').value;
+  const cmpLoraStrength = document.getElementById('cmp-lora-strength').value;
+  const cmpIpa = document.getElementById('cmp-ipa-select').value;
+  const cmpIpaStrength = document.getElementById('cmp-ipa-strength').value;
+  formData.append('lora_model', cmpLora);
+  formData.append('lora_strength', cmpLoraStrength);
+  formData.append('lora_strength_model', cmpLoraStrength);
   formData.append('lora_strength_clip', document.getElementById('lora-clip-strength').value);
+  formData.append('ip_adapter_model', cmpIpa);
+  formData.append('ip_adapter_strength', cmpIpaStrength);
   state.refImages.forEach(file => { if (file) formData.append('reference_images', file); });
 
   try {
