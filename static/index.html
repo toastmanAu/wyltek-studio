@@ -20,14 +20,144 @@
     </header>
 
     <aside class="sidebar">
-      <!-- Prompt -->
+      <!-- Output Mode (2D image vs 3D mesh) — moved to top of sidebar so the
+           highest-level decision is the first thing the user sees. -->
       <div>
+        <div class="section-title">Output</div>
+        <div class="form-group">
+          <div class="mode-toggle" role="radiogroup" aria-label="Output mode">
+            <button type="button" class="mode-pill active" data-mode="2d" role="radio" aria-checked="true">2D Image</button>
+            <button type="button" class="mode-pill" data-mode="3d" role="radio" aria-checked="false">3D Mesh</button>
+          </div>
+          <!-- 3D pipeline picker — hidden in 2D mode. Pill labels swap based
+               on the engine of the selected model (Hy3D: Shape/PBR;
+               TRELLIS: Shape/Textured). -->
+          <div id="mode-3d-options" style="display:none; margin-top:8px;">
+            <label style="font-size:12px; opacity:0.75;">Pipeline</label>
+            <div class="mode-toggle" role="radiogroup" aria-label="3D pipeline">
+              <button type="button" class="mode-pill mode-pill-sub active" data-pipeline="shape" role="radio" aria-checked="true" title="Untextured white mesh — fastest path.">Shape only</button>
+              <button type="button" class="mode-pill mode-pill-sub" data-pipeline="textured" role="radio" aria-checked="false" title="Full-color textured mesh.">Textured</button>
+            </div>
+            <!-- TRELLIS-only: model format / quant picker (ignored for Hy3D)
+                 Default is Q8_0: it's the largest quant with a working
+                 city96 GPU dequant kernel on ROCm. K-quants (Q4_K_M /
+                 Q5_K_M / Q6_K) silently fall back to single-thread CPU
+                 NumPy and stall mid-Slat-shape sampling. BF16 is bigger
+                 still but uses the safetensors path. -->
+            <div id="trellis-options" style="display:none; margin-top:8px;">
+              <label style="font-size:12px; opacity:0.75;">TRELLIS quant (smaller=faster, larger=higher fidelity)</label>
+              <select id="trellis-format" style="width:100%;">
+                <option value="GGUF Q8_0" selected>GGUF Q8_0 (~5 GB, recommended on ROCm)</option>
+                <option value="Safetensors (BF16)">Safetensors BF16 (best quality, ~8 GB)</option>
+                <option value="GGUF Q4_K_M">GGUF Q4_K_M (⚠ K-quant: slow / may hang on ROCm)</option>
+                <option value="GGUF Q5_K_M">GGUF Q5_K_M (⚠ K-quant: slow / may hang on ROCm)</option>
+                <option value="GGUF Q6_K">GGUF Q6_K (⚠ K-quant: slow / may hang on ROCm)</option>
+                <!-- FP8 deliberately omitted on ROCm: PyTorch ROCm has no
+                     addmm kernel for Float8_e4m3fn. Use GGUF Q8_0 above for
+                     similar memory footprint with full ROCm kernel support. -->
+              </select>
+              <label style="font-size:12px; opacity:0.75; margin-top:4px; display:block;">Voxel resolution</label>
+              <select id="trellis-pipeline-type" style="width:100%;">
+                <option value="512" selected>512 (fast)</option>
+                <option value="1024">1024 (detailed)</option>
+                <option value="1024_cascade">1024 cascade (max quality, ~3x time)</option>
+                <option value="1536_cascade">1536 cascade (max quality, multi-view only, ~6x time)</option>
+              </select>
+              <div id="trellis-compat-note" style="display:none; font-size:11px; opacity:0.85; margin-top:6px; padding:6px 8px; background:rgba(255,180,0,0.12); border-left:2px solid #f5b400; border-radius:3px;"></div>
+              <label style="font-size:12px; opacity:0.75; margin-top:8px; display:block;">Style preset</label>
+              <select id="trellis-preset" style="width:100%;">
+                <option value="balanced" selected>Balanced (default)</option>
+                <option value="hard_surface">Hard surface (mech / object)</option>
+                <option value="organic">Organic (creature / character)</option>
+                <option value="asymmetric">Asymmetric / detailed</option>
+                <option value="max_quality">Max quality (slow)</option>
+              </select>
+              <div id="trellis-tweaks" style="margin-top:8px; display:flex; flex-direction:column; gap:4px;">
+                <label style="font-size:12px; opacity:0.85; display:flex; align-items:center; gap:6px; cursor:pointer;">
+                  <input type="checkbox" id="trellis-tweak-faithful">
+                  <span>Faithful to reference <span style="opacity:0.6;">(stick to source asymmetry)</span></span>
+                </label>
+                <label style="font-size:12px; opacity:0.85; display:flex; align-items:center; gap:6px; cursor:pointer;">
+                  <input type="checkbox" id="trellis-tweak-fine-detail">
+                  <span>Fine detail <span style="opacity:0.6;">(bump voxel budget)</span></span>
+                </label>
+                <label style="font-size:12px; opacity:0.85; display:flex; align-items:center; gap:6px; cursor:pointer;">
+                  <input type="checkbox" id="trellis-tweak-sharp-edges">
+                  <span>Sharp edges <span style="opacity:0.6;">(RK4 sampler, ~30% slower)</span></span>
+                </label>
+              </div>
+            </div>
+            <!-- Hy3D advanced knobs — only meaningful when engine='hy3d'.
+                 Hidden by default; toggle via the disclosure summary. -->
+            <details id="hy3d-advanced" style="display:none; margin-top:8px;">
+              <summary style="font-size:12px; opacity:0.75; cursor:pointer;">Hy3D advanced</summary>
+              <div style="margin-top:6px;">
+                <label style="font-size:12px; opacity:0.75;">Paint variant</label>
+                <select id="hy3d-paint-model" style="width:100%;">
+                  <option value="hunyuan3d-paint-v2-0" selected>v2-0 (standard, ~3-5 min)</option>
+                  <option value="hunyuan3d-paint-v2-0-turbo">v2-0-turbo (~2x faster)</option>
+                </select>
+                <label style="font-size:12px; opacity:0.75; margin-top:6px; display:block;">Camera rig (azimuths / elevations)</label>
+                <input type="text" id="hy3d-cam-azimuths" placeholder="0, 90, 180, 270, 0, 180" style="width:100%; font-size:11px;">
+                <input type="text" id="hy3d-cam-elevations" placeholder="0, 0, 0, 0, 90, -90" style="width:100%; font-size:11px; margin-top:2px;">
+                <div style="font-size:10px; opacity:0.55; margin-top:4px;">Defaults: 4 horizon views + top + bottom. Override only if your subject has unusual axis orientation.</div>
+              </div>
+            </details>
+            <!-- Auto background removal — Hy3D path now also applies rembg
+                 server-side via preprocess_hy3d_image. Off when you upload a
+                 transparent PNG you've already cut yourself; on for raw photos. -->
+            <div style="margin-top:8px;">
+              <label style="font-size:12px; opacity:0.85; display:flex; align-items:center; gap:6px; cursor:pointer;">
+                <input type="checkbox" id="auto-bg-removal" checked style="margin:0;">
+                Auto-remove background (rembg)
+              </label>
+              <div class="model-info" style="font-size:11px; opacity:0.6; margin-top:2px;">
+                Uncheck if your reference image already has a transparent background.
+                rembg can over-segment devices/keyboards as shadows.
+              </div>
+            </div>
+            <!-- Multi-view hint — TRELLIS only; clarifies how the 4 ref slots
+                 are interpreted in 3D mode. -->
+            <div id="multiview-hint" class="model-info" style="display:none; margin-top:8px; padding:8px; background:var(--accent-dim); border-radius:6px; font-size:11px; line-height:1.5;">
+              💡 <strong>Multi-view tip (TRELLIS):</strong> the 4 reference slots below map to <strong>Front / Back / Left / Right</strong>. Front is required; add any of the others to constrain side/back geometry. More views → less guessing.
+            </div>
+            <!-- VRAM ceiling indicator — shows estimated peak VRAM for the
+                 current settings combo, color-coded against your card's total.
+                 Updates live as quant/voxel/views/mode change. -->
+            <div id="vram-badge" class="vram-badge" style="display:none; margin-top:8px;">
+              <span class="vram-label">Estimated VRAM</span>
+              <span class="vram-value" id="vram-value">— / —</span>
+              <span class="vram-bar"><span class="vram-bar-fill" id="vram-bar-fill"></span></span>
+            </div>
+            <div class="model-info" style="margin-top:6px;">
+              3D mode requires a reference image — upload below.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Model Selection — second-most-fundamental decision after Output
+           mode, so positioned here at the top of the sidebar instead of
+           buried below Prompt + References. Backend selector still lives
+           lower since the active backend is auto-detected at startup. -->
+      <div>
+        <div class="section-title" id="model-section-title">Model</div>
+        <div class="form-group">
+          <select id="model-select">
+            <option value="">Loading...</option>
+          </select>
+          <div class="model-info" id="model-info"></div>
+        </div>
+      </div>
+
+      <!-- Prompt -->
+      <div id="prompt-section">
         <div class="section-title">Prompt</div>
         <div class="form-group prompt-group">
           <textarea id="prompt" placeholder="Describe the image you want to generate..."></textarea>
           <div class="op-controls" id="op-controls">
             <select id="op-model-select" class="op-model-select" title="Which Ollama model enhances your prompt"></select>
-            <button class="btn btn-op-prompt" id="btn-op-prompt" disabled title="Enhance prompt with local AI">OP my prompt</button>
+            <button class="btn btn-op-prompt" id="btn-op-prompt" title="Enhance prompt with local AI">OP my prompt</button>
           </div>
         </div>
         <div class="form-group">
@@ -38,12 +168,15 @@
 
       <!-- Reference Images -->
       <div>
-        <div class="section-title">Reference Images (optional)</div>
+        <div class="section-title" id="ref-section-title">Reference Images (optional)</div>
         <div class="ref-images" id="ref-images">
-          <div class="ref-slot" data-index="0"><span class="plus">+</span><button class="remove-ref">&times;</button></div>
-          <div class="ref-slot" data-index="1"><span class="plus">+</span><button class="remove-ref">&times;</button></div>
-          <div class="ref-slot" data-index="2"><span class="plus">+</span><button class="remove-ref">&times;</button></div>
-          <div class="ref-slot" data-index="3"><span class="plus">+</span><button class="remove-ref">&times;</button></div>
+          <!-- Slot labels swap to Front/Back/Left/Right when 3D + TRELLIS is
+               active (set by _refreshEngine3d in app.js). For 2D / Hy3D they
+               stay as plain numbered slots. -->
+          <div class="ref-slot" data-index="0"><span class="plus">+</span><button class="remove-ref">&times;</button><span class="ref-slot-label"></span></div>
+          <div class="ref-slot" data-index="1"><span class="plus">+</span><button class="remove-ref">&times;</button><span class="ref-slot-label"></span></div>
+          <div class="ref-slot" data-index="2"><span class="plus">+</span><button class="remove-ref">&times;</button><span class="ref-slot-label"></span></div>
+          <div class="ref-slot" data-index="3"><span class="plus">+</span><button class="remove-ref">&times;</button><span class="ref-slot-label"></span></div>
         </div>
         <input type="file" id="ref-file-input" accept="image/*" hidden>
       </div>
@@ -56,17 +189,6 @@
         </div>
       </div>
 
-      <!-- Model Selection -->
-      <div>
-        <div class="section-title">Model</div>
-        <div class="form-group">
-          <select id="model-select">
-            <option value="">Loading...</option>
-          </select>
-          <div class="model-info" id="model-info"></div>
-        </div>
-      </div>
-
       <!-- Advanced Settings -->
       <div>
         <div class="advanced-toggle" id="advanced-toggle">
@@ -74,7 +196,7 @@
           Advanced Settings
         </div>
         <div class="advanced-content" id="advanced-content">
-          <div class="form-row">
+          <div class="form-row" id="size-row">
             <div class="form-group">
               <label>Width</label>
               <input type="number" id="width" value="1024" step="64" min="256" max="2048">
@@ -84,58 +206,62 @@
               <input type="number" id="height" value="1024" step="64" min="256" max="2048">
             </div>
           </div>
-          <div class="form-group">
+          <div class="form-group" id="steps-group">
             <label>Steps</label>
             <div class="range-row">
               <input type="range" id="steps" min="1" max="100" value="30">
               <span class="range-value" id="steps-val">30</span>
             </div>
           </div>
-          <div class="form-group">
+          <div class="form-group" id="cfg-group">
             <label>CFG Scale</label>
             <div class="range-row">
               <input type="range" id="cfg-scale" min="1" max="20" step="0.5" value="7">
               <span class="range-value" id="cfg-val">7.0</span>
             </div>
           </div>
-          <div class="form-group">
+          <div class="form-group" id="seed-group">
             <label>Seed (-1 = random)</label>
             <input type="number" id="seed" value="-1">
           </div>
-          <div class="form-group">
-            <label>LoRA Style</label>
-            <select id="lora-select">
-              <option value="">None</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label>LoRA Model Strength</label>
-            <div class="range-row">
-              <input type="range" id="lora-strength" min="0" max="1.5" step="0.05" value="1.0">
-              <span class="range-value" id="lora-val">1.00</span>
+          <div id="lora-section">
+            <div class="form-group">
+              <label>LoRA Style</label>
+              <select id="lora-select">
+                <option value="">None</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>LoRA Model Strength</label>
+              <div class="range-row">
+                <input type="range" id="lora-strength" min="0" max="1.5" step="0.05" value="1.0">
+                <span class="range-value" id="lora-val">1.00</span>
+              </div>
+            </div>
+            <div class="form-group">
+              <label>LoRA CLIP Strength</label>
+              <div class="range-row">
+                <input type="range" id="lora-clip-strength" min="0" max="1.5" step="0.05" value="0.6">
+                <span class="range-value" id="lora-clip-val">0.60</span>
+              </div>
             </div>
           </div>
-          <div class="form-group">
-            <label>LoRA CLIP Strength</label>
-            <div class="range-row">
-              <input type="range" id="lora-clip-strength" min="0" max="1.5" step="0.05" value="0.6">
-              <span class="range-value" id="lora-clip-val">0.60</span>
+          <div id="ipadapter-section">
+            <div class="form-group">
+              <label>IP-Adapter Model</label>
+              <select id="ip-adapter-select">
+                <option value="">None (text only)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>IP-Adapter Strength</label>
+              <div class="range-row">
+                <input type="range" id="ip-strength" min="0" max="1" step="0.05" value="0.6">
+                <span class="range-value" id="ip-val">0.6</span>
+              </div>
             </div>
           </div>
-          <div class="form-group">
-            <label>IP-Adapter Model</label>
-            <select id="ip-adapter-select">
-              <option value="">None (text only)</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label>IP-Adapter Strength</label>
-            <div class="range-row">
-              <input type="range" id="ip-strength" min="0" max="1" step="0.05" value="0.6">
-              <span class="range-value" id="ip-val">0.6</span>
-            </div>
-          </div>
-          <div class="form-group">
+          <div class="form-group" id="upscaler-group">
             <label>Upscaler</label>
             <select id="upscaler-select">
               <option value="">None</option>
@@ -178,6 +304,17 @@
         </div>
         <div class="result-image-container" id="result-container">
           <img id="result-image" alt="Generated image">
+          <!-- 3D viewer for .glb output. Loaded lazily below; remains hidden
+               in 2D mode. <model-viewer> is a Web Component (~30KB) that
+               wraps three.js — orbit-drag, pinch-zoom, AR-quick-look on iOS. -->
+          <model-viewer id="result-mesh"
+                        camera-controls
+                        auto-rotate
+                        shadow-intensity="1"
+                        exposure="1"
+                        environment-image="neutral"
+                        style="display:none; width:100%; height:480px; background:#0e0e12; border-radius:8px;">
+          </model-viewer>
           <div class="result-actions">
             <button class="btn" id="btn-save">
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M7 1v9M3 6l4 4 4-4"/><path d="M1 11v2h12v-2"/></svg>
@@ -287,6 +424,10 @@
 
   <div class="toast-container" id="toasts"></div>
 
+  <!-- 3D mesh viewer (Web Component) — vendored locally to keep wyltek-studio
+       fully local-first. Defines the <model-viewer> custom element used in
+       result-container + gallery thumbs for .glb output. -->
+  <script type="module" src="/static/js/model-viewer.min.js"></script>
   <script src="/static/js/app.js"></script>
 </body>
 </html>

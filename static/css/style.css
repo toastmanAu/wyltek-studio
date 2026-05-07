@@ -155,6 +155,26 @@ select {
 
 .ref-slot.has-image { border-style: solid; }
 
+/* Positional label (Front/Back/Left/Right) shown when 3D + TRELLIS is
+   active. Empty in 2D and Hy3D modes — set by _refreshEngine3d in app.js. */
+.ref-slot-label {
+  position: absolute;
+  bottom: 4px;
+  left: 4px;
+  right: 4px;
+  text-align: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.65);
+  border-radius: 4px;
+  padding: 2px 4px;
+  pointer-events: none;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+.ref-slot-label:empty { display: none; }
+
 .ref-slot img {
   width: 100%;
   height: 100%;
@@ -217,6 +237,75 @@ select {
 }
 
 .backend-chip .dot.local { background: var(--success); }
+
+/* 2D/3D mode toggle — same pill aesthetic as backend chips. */
+.mode-toggle {
+  display: inline-flex;
+  gap: 6px;
+}
+.mode-pill {
+  padding: 6px 14px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.mode-pill:hover { border-color: var(--accent); color: var(--text); }
+.mode-pill.active {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+/* Sub-pills (the shape/PBR pipeline picker) are smaller / quieter */
+.mode-pill-sub {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+/* VRAM ceiling indicator — shown only in 3D mode. Bar tracks estimated peak
+   VRAM relative to total; color shifts green→yellow→red as the combo gets
+   tight. The estimate is coarse (per-format coefficients, not measured), so
+   green doesn't *guarantee* it fits — but red is reliably "you'll OOM". */
+.vram-badge {
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 11px;
+}
+.vram-label { color: var(--text-dim); flex-shrink: 0; }
+.vram-value {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-weight: 600;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.vram-bar {
+  width: 100%;
+  height: 4px;
+  background: var(--surface-3, #2e2e2e);
+  border-radius: 2px;
+  overflow: hidden;
+  flex-basis: 100%;
+}
+.vram-bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--success);
+  transition: width 0.2s, background 0.2s;
+}
+.vram-badge.tight .vram-bar-fill { background: #f59e0b; }
+.vram-badge.tight .vram-value     { color: #f59e0b; }
+.vram-badge.over  .vram-bar-fill { background: var(--error); }
+.vram-badge.over  .vram-value     { color: var(--error); }
 .backend-chip .dot.free { background: var(--warning); }
 .backend-chip .dot.paid { background: var(--error); }
 
@@ -388,6 +477,30 @@ select {
 .gallery-thumb:hover { border-color: var(--accent); }
 .gallery-thumb.active { border-color: var(--accent); }
 .gallery-thumb img { width: 100%; height: 100%; object-fit: cover; }
+
+/* 3D mesh placeholder tile — cheap icon+label instead of a live model-viewer
+   per thumb (which would kill scroll perf). Click still routes through
+   showResult() which loads the .glb in the result-panel orbit viewer.
+   Solid accent fill makes the tile visible against the dark theme; the
+   --surface-2/accent-dim gradient we tried first ended up near-black. */
+.gallery-thumb.is-mesh { border-color: var(--accent); }
+.mesh-thumb {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  background: var(--accent);
+  color: #fff;
+}
+.mesh-thumb svg { opacity: 0.95; }
+.mesh-thumb span {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
 
 /* Advanced settings toggle */
 .advanced-toggle {

@@ -26,6 +26,7 @@ ASSET_DIRS = {
     "image": "images",
     "audio": "audio",
     "video": "video",
+    "mesh": "meshes",  # 3D models (.glb, .obj, .ply, .stl) from Hy3D / TRELLIS
     "asset": "assets",
 }
 
@@ -299,6 +300,14 @@ def list_unsorted(limit: int = 50) -> list[dict]:
                 continue
             for f in sorted(subdir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
                 if f.suffix == ".json":
+                    continue
+                # Skip cache sidecars: e.g. `<basename>.texture.png` written
+                # by /api/3d/extract-texture next to its source GLB. These
+                # live in meshes/ (so they'd inherit type='mesh') but are
+                # not user assets — typing them would let pickers send a
+                # PNG path to a GLB-only endpoint and crash pygltflib.
+                stem_parts = f.name.split(".")
+                if len(stem_parts) >= 3 and stem_parts[-2] in ("texture", "uv"):
                     continue
                 asset_type = None
                 for atype, dname in ASSET_DIRS.items():

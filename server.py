@@ -14,7 +14,7 @@ from pathlib import Path
 import aiofiles
 import uvicorn
 import yaml
-from fastapi import FastAPI, File, Form, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -61,6 +61,42 @@ async def lifespan(app):
 
 
 app = FastAPI(title="Wyltek Studio", lifespan=lifespan)
+
+
+# 3D job timeouts — empirically tuned per engine/mode. The OUTER timeout
+# (asyncio.wait_for in JobQueue) MUST be larger than the INNER timeout
+# (ComfyUI poll in backends/comfyui.py) so that on a healthy completion
+# the inner finishes first and the outer never fires. 180s slack covers
+# post-completion copy, sidecar write, and gallery cache invalidation.
+#
+# Keys: ("engine", "mode-flag")
+# Values: inner ComfyUI-poll timeout in seconds (outer = inner + 180)
+#
+# Note: TRELLIS terminology in our code is "shape"/"textured" (mirroring
+# Hy3D's "shape"/"pbr" UX). The plan that authored this table used "white"
+# for TRELLIS shape-only — corrected here to match actual mode_3d values.
+_3D_INNER_TIMEOUTS = {
+    ("trellis", "textured"): 3000,  # ~32 min observed on 7900 XTX
+    ("trellis", "shape"):     600,  # ~1–2 min observed
+    ("hy3d",    "pbr"):      2100,  # ~3–5 min typical, 35 min hard cap
+    ("hy3d",    "shape"):     300,  # ~30s typical
+    ("worldgen", "t2s"):      540,  # ~3 min observed at 1024 panorama; bump for higher res
+    ("worldgen", "i2s"):      540,
+}
+_3D_INNER_TIMEOUT_DEFAULT = 1800
+_3D_OUTER_HANDOFF_SLACK = 180
+
+
+def resolve_3d_timeouts(engine: str, mode_flag: str) -> tuple[int, int]:
+    """Return (outer_job_timeout, inner_comfy_timeout) in seconds.
+
+    `engine` is "trellis" or "hy3d". `mode_flag` is the resolved per-engine
+    mode-string used by the inner backend ("textured"/"shape" for TRELLIS,
+    "pbr"/"shape" for Hy3D). Outer is always inner + slack so a healthy run
+    never trips the outer.
+    """
+    inner = _3D_INNER_TIMEOUTS.get((engine, mode_flag), _3D_INNER_TIMEOUT_DEFAULT)
+    return inner + _3D_OUTER_HANDOFF_SLACK, inner
 
 
 # --- Static files & SPA ---
@@ -116,9 +152,22 @@ async def frames_page():
     return FileResponse("static/studio/frames.html")
 
 
+@app.get("/studio/image-edit")
+async def image_edit_page():
+    return FileResponse("static/studio/image-edit.html")
+
+
 @app.get("/studio/image-tools")
-async def image_tools_page():
-    return FileResponse("static/studio/image-tools.html")
+async def image_tools_legacy_redirect():
+    """Back-compat alias — old bookmarks / sessionStorage 'imagetools-source'
+    code paths still hit /studio/image-tools. Redirect to the new home."""
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/studio/image-edit", status_code=308)
+
+
+@app.get("/studio/video-tools")
+async def video_tools_page():
+    return FileResponse("static/studio/video-tools.html")
 
 
 @app.get("/studio/audio")
@@ -134,6 +183,110 @@ async def beats_page():
 @app.get("/studio/remix")
 async def remix_page():
     return FileResponse("static/studio/remix.html")
+
+
+@app.get("/studio/worldgen")
+async def worldgen_page():
+    return FileResponse("static/studio/worldgen.html")
+
+
+@app.get("/studio/mesh-edit")
+async def mesh_edit_page():
+    return FileResponse("static/studio/mesh-edit.html")
+
+
+@app.get("/api/worldgen/status")
+async def api_worldgen_status():
+    """Report whether the WorldGen subprocess backend is ready to accept jobs."""
+    from pathlib import Path
+
+    repo = Path("/home/phill/repos/WorldGen")
+    smoke_log = Path("/tmp/worldgen-smoke2.log")
+
+    if not repo.exists():
+        return {"ready": False, "reason": "WorldGen repo not cloned at ~/repos/WorldGen"}
+
+    # Check our patched modules exist
+    patched_files = [
+        repo / "src/worldgen/pano_gen.py",
+        repo / "src/worldgen/utils/lora_utils.py",
+        repo / "src/worldgen/utils/splat_utils.py",
+    ]
+    missing = [str(p) for p in patched_files if not p.exists()]
+    if missing:
+        return {"ready": False, "reason": f"WorldGen source incomplete: missing {missing}"}
+
+    # Smoke-test status — set to true once a successful end-to-end run lands a mesh
+    smoke_ok_marker = Path("/data/wyltek/worldgen/smoke_ok")
+    if not smoke_ok_marker.exists():
+        return {
+            "ready": False,
+            "reason": "End-to-end smoke test not yet verified on this machine. "
+                      "Run scripts/worldgen_smoke.sh to populate /data/wyltek/worldgen/smoke_ok.",
+        }
+
+    return {
+        "ready": True,
+        "notes": (
+            "Subprocess executor live. Typical run 3-5 min; first request after "
+            "boot triggers FLUX.1-dev pipeline build (~5s + denoise time)."
+        ),
+    }
+
+
+@app.post("/api/worldgen")
+async def api_worldgen(
+    prompt: str = Form(""),
+    mode: str = Form("t2s"),
+    resolution: int = Form(1600),
+    seed: int = Form(42),
+    output_format: str = Form("mesh"),
+    reference_image: UploadFile | None = File(None),
+):
+    """Queue a Worldgen scene generation job.
+
+    Routes through the same job_queue + _run_job pipeline as 3D Hy3D/TRELLIS
+    jobs (engine="worldgen"). Output GLB lands in storage/unsorted/<date>/meshes/
+    and the gallery picks it up automatically.
+    """
+    from pathlib import Path as _P
+    from uuid import uuid4
+
+    if mode == "t2s" and not prompt.strip():
+        raise HTTPException(400, "text-to-scene mode requires a prompt")
+    if mode == "i2s" and not reference_image:
+        raise HTTPException(400, "image-to-scene mode requires a reference image")
+
+    job_id = str(uuid4())
+    params: dict = {
+        "backend": "worldgen",
+        "engine": "worldgen",
+        "mode": "3d",                 # routes through is_3d branch in _run_job
+        "worldgen_mode": mode,        # t2s vs i2s for the worker
+        "mode_3d": mode,              # used by resolve_3d_timeouts
+        "prompt": prompt,
+        "resolution": resolution,
+        "seed": seed,
+        "output_format": output_format,
+        "reference_images": [],
+    }
+
+    # Persist any uploaded reference image into a per-job staging dir, then
+    # pass its path through to the worker via params["reference_images"].
+    if reference_image:
+        ref_dir = _P("/tmp/worldgen-refs") / job_id
+        ref_dir.mkdir(parents=True, exist_ok=True)
+        suffix = _P(reference_image.filename or "ref.png").suffix or ".png"
+        ref_path = ref_dir / f"ref0{suffix}"
+        async with aiofiles.open(ref_path, "wb") as f:
+            await f.write(await reference_image.read())
+        params["reference_images"] = [str(ref_path)]
+
+    jobs[job_id] = {"status": "queued", "progress": 0, "params": params}
+    outer, _inner = resolve_3d_timeouts("worldgen", mode)
+    job_queue.submit_background(_run_job(job_id, params), lane="gpu",
+                                job_id=job_id, timeout=outer)
+    return {"job_id": job_id}
 
 
 @app.post("/api/audio/extract")
@@ -949,6 +1102,54 @@ async def get_backends():
                     if not any((m["id"] if isinstance(m, dict) else m) == unet for m in info["models"]):
                         info["models"].append({"id": unet, "label": unet.replace(".gguf", " (GGUF)").replace(".safetensors", ""), "available": True, "discovered": True, "format": "gguf" if unet.endswith(".gguf") else "safetensors"})
 
+                # Surface 3D DiT models in their own list so the frontend's
+                # 3D dropdown can be populated independently of 2D checkpoints.
+                # We don't add these to `info["models"]` (the 2D list) — that's
+                # exactly the bug we're fixing. Both Hy3D and TRELLIS land here;
+                # the `engine` field tells the frontend which workflow to use.
+                info["models_3d"] = []
+                for entry in live.get("3d_models", []):
+                    if entry in _hidden:
+                        continue
+                    if entry.startswith("trellis:"):
+                        # Synthetic TRELLIS entry — auto-downloads on first use,
+                        # so it's "available" without a file on disk. Quant
+                        # format is picked separately via `trellis_format` form
+                        # field; we surface it in the model label as a hint.
+                        tname = entry.removeprefix("trellis:")
+                        info["models_3d"].append({
+                            "id": entry,
+                            "label": f"{tname} (TRELLIS — quant configurable)",
+                            "engine": "trellis",
+                            "available": True,
+                            "discovered": True,
+                            "format": "managed",
+                        })
+                    else:
+                        info["models_3d"].append({
+                            "id": entry,
+                            # Strip subfolder + extension for a readable label:
+                            # "hy3dgen/hunyuan3d-dit-v2-0-fp16.safetensors"
+                            # → "hunyuan3d-dit-v2-0-fp16"
+                            "label": Path(entry).stem,
+                            "engine": "hy3d",
+                            "available": True,
+                            "discovered": True,
+                            "format": "safetensors" if entry.endswith(".safetensors") else "gguf",
+                        })
+
+            # Tag arch on every dict entry so the UI can ghost incompatible
+            # combos in Compare mode. Additive; the generate path keeps its
+            # own inline sniffs.
+            from backends.arch import arch_of
+            for m in info.get("models", []):
+                if isinstance(m, dict) and "arch" not in m:
+                    m["arch"] = arch_of(m.get("id", ""))
+            for cat in ("ip_adapters", "upscalers", "loras"):
+                for m in info.get("model_categories", {}).get(cat, []):
+                    if isinstance(m, dict) and "arch" not in m:
+                        m["arch"] = arch_of(m.get("id", ""))
+
         result[name] = info
     return result
 
@@ -986,6 +1187,42 @@ async def _probe_comfyui(url: str) -> dict | None:
             gguf_unet = data.get("UnetLoaderGGUF", {}).get("input", {}).get("required", {}).get("unet_name", [])
             if gguf_unet and isinstance(gguf_unet[0], list):
                 result["unets"] = list(set(result.get("unets", []) + gguf_unet[0]))
+            # 3D models — Hy3DModelLoader scans diffusion_models/ for the DiT.
+            # We surface these in their OWN category so the frontend can route
+            # picks to the 3D workflow instead of CheckpointLoaderSimple
+            # (mismatched routing was the root cause of "Value not in list").
+            #
+            # Hy3DModelLoader's dropdown is the same folder as UNETLoader,
+            # so it lists every diffusion_models file (Flux, Lightning, etc.) —
+            # we filter to known 3D-mesh model patterns so the 3D dropdown
+            # only contains things that will actually work in the Hy3D pipeline.
+            hy3d = data.get("Hy3DModelLoader", {}).get("input", {}).get("required", {}).get("model", [])
+            if hy3d and isinstance(hy3d[0], list):
+                _3D_PATTERNS = ("hunyuan3d", "hy3d", "trellis")
+                result["3d_models"] = [
+                    m for m in hy3d[0]
+                    if any(p in m.lower() for p in _3D_PATTERNS)
+                ]
+                # And subtract them from `unets` so they don't double-list as
+                # 2D pickables — Hy3D files in diffusion_models/ aren't valid
+                # 2D unets even though UNETLoader sees the same folder.
+                if "unets" in result:
+                    result["unets"] = [u for u in result["unets"] if u not in result["3d_models"]]
+            else:
+                result["3d_models"] = []
+
+            # TRELLIS uses its own model_manager (auto-downloads from HuggingFace),
+            # not the diffusion_models/ folder, so it doesn't surface via the
+            # Hy3DModelLoader scan. Detect it by presence of its loader node and
+            # synthesize a virtual entry so the UI can offer it as a 3D engine.
+            trellis = data.get("Trellis2LoadModel_GGUF", {})
+            if trellis:
+                tr_modelnames = trellis.get("input", {}).get("required", {}).get("modelname", [])
+                if tr_modelnames and isinstance(tr_modelnames[0], list):
+                    for tname in tr_modelnames[0]:
+                        # Use a "trellis:" prefix so the frontend can route picks
+                        # to the trellis engine without separate dropdowns.
+                        result["3d_models"].append(f"trellis:{tname}")
             # IP-Adapters
             ipa = data.get("IPAdapterModelLoader", {}).get("input", {}).get("required", {}).get("ipadapter_file", [])
             if ipa and isinstance(ipa[0], list):
@@ -1012,19 +1249,34 @@ async def _probe_comfyui(url: str) -> dict | None:
 async def get_gallery(type: str = "image"):
     """Return list of generated assets with metadata (cached).
 
-    Query param `type` filters by asset type: image (default), audio, or all.
+    Query param `type` filters by asset type: image (default — also includes
+    3D meshes since they're visual outputs from the same Generate panel),
+    audio, video, mesh, or all.
     """
     cache_key = f"gallery_{type}"
     now = time.monotonic()
     if _gallery_cache.get(cache_key) is not None and now - _gallery_cache["ts"] < GALLERY_TTL:
         return _gallery_cache[cache_key]
 
+    # Type-name → set of asset types to include. The 'image' default includes
+    # meshes so 3D outputs surface in the same gallery strip — they're produced
+    # by the same Generate flow and the user mentally groups them together.
+    type_groups = {
+        "image": {"image", "mesh"},
+        "visual": {"image", "mesh"},
+        "mesh": {"mesh"},
+        "audio": {"audio"},
+        "video": {"video"},
+        "all": None,  # no filter
+    }
+    allowed = type_groups.get(type, {type})
+
     import storage as store
     # Gallery pulls from unsorted (recent quick generations)
     # plus the old outputs/ dir for backwards compat during migration
     items = []
     for item in store.list_unsorted(limit=100):
-        if type != "all" and item["type"] != type:
+        if allowed is not None and item["type"] not in allowed:
             continue
         items.append({
             "filename": item["filename"],
@@ -1062,7 +1314,7 @@ async def get_gallery(type: str = "image"):
 
 @app.post("/api/generate")
 async def generate(
-    prompt: str = Form(...),
+    prompt: str = Form(""),  # not required for 3D mode (image-conditioned)
     negative_prompt: str = Form(""),
     backend: str = Form("comfyui"),
     model: str = Form(""),
@@ -1078,10 +1330,26 @@ async def generate(
     lora_strength: float = Form(0.8),
     lora_strength_model: float = Form(0.0),
     lora_strength_clip: float = Form(0.0),
+    # 3D-mode fields. Default mode='2d' preserves the existing image
+    # generation flow byte-for-byte; only mode='3d' enters a 3D engine path.
+    mode: str = Form("2d"),
+    mode_3d: str = Form("shape"),  # Hy3D: "shape"|"pbr"; TRELLIS: "shape"|"textured"
+    engine: str = Form("hy3d"),     # "hy3d" | "trellis" — picks which 3D backend to use
+    paint_model: str = Form("hunyuan3d-paint-v2-0"),  # Hy3D paint variant
+    hy3d_cam_azimuths: str = Form(""),                # Hy3D advanced: camera azimuths CSV (empty = defaults)
+    hy3d_cam_elevations: str = Form(""),              # Hy3D advanced: camera elevations CSV (empty = defaults)
+    trellis_format: str = Form("GGUF Q4_K_M"),  # only used when engine='trellis'
+    trellis_pipeline_type: str = Form("512"),    # "512" | "1024" | "1024_cascade"
+    trellis_preset: str = Form("balanced"),      # quality preset bucket
+    trellis_tweak_faithful: str = Form("0"),     # "1"|"0" — bump shape CFG
+    trellis_tweak_fine_detail: str = Form("0"),  # "1"|"0" — bump voxel budget
+    trellis_tweak_sharp_edges: str = Form("0"),  # "1"|"0" — switch to RK4 sampler
+    auto_bg_removal: str = Form("1"),  # "1"|"0" — disable when uploading already-cut PNGs
     reference_images: list[UploadFile] = File(default=[]),
 ):
-    """Start an image generation job."""
+    """Start a generation job — 2D image or 3D mesh depending on `mode`."""
     job_id = str(uuid.uuid4())[:8]
+    is_3d = mode == "3d"
 
     # Save uploaded reference images
     ref_paths = []
@@ -1092,6 +1360,43 @@ async def generate(
             async with aiofiles.open(path, "wb") as f:
                 await f.write(await ref.read())
             ref_paths.append(str(path))
+
+    # Validation diverges by mode:
+    # - 2D: reference images require an IP-Adapter model (CLIP-vision conditioning).
+    # - 3D: at least one reference image is REQUIRED (Hy3D is image-conditioned),
+    #       and IP-Adapter doesn't apply.
+    if is_3d:
+        if backend != "comfyui":
+            return JSONResponse(
+                {"error": "3D generation only supported on the ComfyUI backend."},
+                status_code=400,
+            )
+        if not ref_paths:
+            return JSONResponse(
+                {"error": "3D generation requires a reference image — Hy3D and "
+                          "TRELLIS are both image-conditioned."},
+                status_code=400,
+            )
+        if engine not in ("hy3d", "trellis"):
+            return JSONResponse(
+                {"error": f"engine must be 'hy3d' or 'trellis', got {engine!r}"},
+                status_code=400,
+            )
+        # mode_3d vocabulary depends on the engine:
+        # - Hy3D: shape | pbr
+        # - TRELLIS: shape | textured
+        valid_modes = {"hy3d": ("shape", "pbr"), "trellis": ("shape", "textured")}
+        if mode_3d not in valid_modes[engine]:
+            return JSONResponse(
+                {"error": f"mode_3d for {engine} must be one of {valid_modes[engine]}, got {mode_3d!r}"},
+                status_code=400,
+            )
+    elif ref_paths and backend == "comfyui" and not ip_adapter_model:
+        return JSONResponse(
+            {"error": "Reference images require an IP-Adapter model on the ComfyUI backend. "
+                      "Pick one from the IP-Adapter Model dropdown, or remove the reference images."},
+            status_code=400,
+        )
 
     params = {
         "prompt": prompt,
@@ -1111,10 +1416,52 @@ async def generate(
         "lora_strength_model": lora_strength_model if lora_strength_model > 0 else 0,
         "lora_strength_clip": lora_strength_clip if lora_strength_clip > 0 else 0,
         "reference_images": ref_paths,
+        "mode": mode,
+        "mode_3d": mode_3d,
+        "engine": engine,
+        "paint_model": paint_model,
+        "hy3d_cam_azimuths": hy3d_cam_azimuths,
+        "hy3d_cam_elevations": hy3d_cam_elevations,
+        "trellis_format": trellis_format,
+        "trellis_pipeline_type": trellis_pipeline_type,
+        "trellis_preset": trellis_preset,
+        "trellis_tweak_faithful": trellis_tweak_faithful == "1",
+        "trellis_tweak_fine_detail": trellis_tweak_fine_detail == "1",
+        "trellis_tweak_sharp_edges": trellis_tweak_sharp_edges == "1",
+        "auto_bg_removal": auto_bg_removal == "1",
     }
 
+    # Server-side guard: FP8 has no ROCm `addmm` kernel for Float8_e4m3fn at all.
+    # We initially thought this was cascade-only, but observed failures on the
+    # non-cascade `sample_shape_slat_multiview` path too (Apr 30, 21:06). The
+    # wrapper's GGUF/SDNQ dequant only handles certain code paths — anywhere
+    # raw FP8 weights reach a torch matmul, ROCm fails.
+    # Safest stance on ROCm: silently fall back FP8 → BF16 for any TRELLIS run.
+    # Once a ROCm FP8 kernel ships, this guard can be relaxed.
+    if (is_3d and engine == "trellis"
+            and trellis_format == "Safetensors (FP8)"):
+        params["trellis_format"] = "Safetensors (BF16)"
+
     jobs[job_id] = {"status": "queued", "params": params, "progress": 0}
-    job_queue.submit_background(_run_job(job_id, params), lane="gpu", job_id=job_id)
+    # 2D jobs are <1min so the default 300s gpu-lane timeout is fine.
+    # 3D jobs vary wildly (TRELLIS textured ~32 min, Hy3D shape ~30s),
+    # so look up the per-(engine, mode) outer timeout. Outer is sized
+    # so a healthy ComfyUI run finishes inside the inner timeout first;
+    # the outer is just a backstop for genuine hangs. Stash the inner
+    # timeout on params so backends/comfyui.py can read it without
+    # re-deriving the same logic.
+    if is_3d:
+        if engine == "trellis":
+            mode_flag = "textured" if params.get("mode_3d") in ("pbr", "textured") else "shape"
+        else:
+            mode_flag = params.get("mode_3d", "shape")
+        outer, inner = resolve_3d_timeouts(engine, mode_flag)
+        params["_inner_timeout_s"] = inner
+        job_timeout = outer
+    else:
+        job_timeout = 0  # use lane default (300s)
+    job_queue.submit_background(_run_job(job_id, params), lane="gpu",
+                                job_id=job_id, timeout=job_timeout)
 
     return {"job_id": job_id}
 
@@ -1123,6 +1470,34 @@ async def generate(
 async def get_queue_status():
     """Current queue status across all resource lanes."""
     return job_queue.status()
+
+
+@app.get("/api/gpu-stats")
+async def get_gpu_stats():
+    """Proxy ComfyUI's /system_stats so the browser can surface VRAM info
+    in the 3D mode UI. Direct fetch from the browser would CORS-fail
+    (open-palette is on :7860, ComfyUI on :8188)."""
+    comfy_url = config.get("backends", {}).get("comfyui", {}).get("url", "")
+    if not comfy_url:
+        return {"available": False}
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=3) as client:
+            resp = await client.get(f"{comfy_url.rstrip('/')}/system_stats")
+            if resp.status_code != 200:
+                return {"available": False}
+            data = resp.json()
+            dev = (data.get("devices") or [{}])[0]
+            return {
+                "available": True,
+                "device_name": dev.get("name", "?"),
+                "vram_total_gb": round((dev.get("vram_total") or 0) / (1024 ** 3), 1),
+                "vram_free_gb": round((dev.get("vram_free") or 0) / (1024 ** 3), 1),
+                "torch_vram_used_gb": round(((dev.get("torch_vram_total") or 0) -
+                                             (dev.get("torch_vram_free") or 0)) / (1024 ** 3), 1),
+            }
+    except Exception:
+        return {"available": False}
 
 
 @app.get("/api/health/components")
@@ -2659,77 +3034,121 @@ async def _run_job(job_id: str, params: dict):
 
     try:
         backend_name = params["backend"]
-        backend = registry.get_backend(backend_name)
-        if not backend:
-            raise ValueError(f"Backend '{backend_name}' not available")
+        # Worldgen runs as its own subprocess pipeline outside the registry —
+        # see backends/worldgen.py and memory/project_worldgen_rocm.md. Skip
+        # the registry lookup for it; the dispatch later in this function
+        # routes worldgen-engine jobs to that module directly.
+        if backend_name == "worldgen":
+            backend = None
+        else:
+            backend = registry.get_backend(backend_name)
+            if not backend:
+                raise ValueError(f"Backend '{backend_name}' not available")
 
         import storage as store
-        output_path = store.asset_path(job_id, "image", ".png")
+        # Asset type and extension diverge for 3D mode — Hy3D/TRELLIS/Worldgen
+        # produce .glb; 2D image gen produces .png.
+        is_3d = params.get("mode") == "3d"
+        if is_3d:
+            output_path = store.asset_path(job_id, "mesh", ".glb")
+        else:
+            output_path = store.asset_path(job_id, "image", ".png")
 
         async def on_progress(pct: int, msg: str = ""):
-            jobs[job_id]["progress"] = pct
+            # Tolerate None for cosmetic status updates that don't move the bar.
+            if pct is not None:
+                jobs[job_id]["progress"] = pct
             await broadcast({
                 "type": "job_update", "job_id": job_id,
-                "status": "running", "progress": pct, "message": msg,
+                "status": "running",
+                "progress": jobs[job_id].get("progress", 0),
+                "message": msg,
             })
 
-        if params.get("remix"):
+        if is_3d:
+            # 3D dispatch: Hy3D vs TRELLIS vs Worldgen all share the same .glb
+            # output contract, so the rest of _run_job (sidecar JSON, gallery
+            # cache) treats them identically. Only the workflow + engine call
+            # differs. Worldgen is the odd one out — runs as its own subprocess
+            # pipeline (FLUX.1-dev + DA-2) rather than via ComfyUI.
+            engine = params.get("engine")
+            if engine == "worldgen":
+                from backends.worldgen import generate_world
+                worldgen_meta = await generate_world(
+                    params, str(output_path), on_progress,
+                )
+                # Merge worldgen-specific metadata into params so the sidecar
+                # JSON written below records what we actually produced.
+                params.update({k: v for k, v in worldgen_meta.items()
+                              if k not in params})
+            elif engine == "trellis":
+                await backend.generate_trellis(params, str(output_path), on_progress)
+            else:
+                await backend.generate_3d(params, str(output_path), on_progress)
+        elif params.get("remix"):
             await backend.generate_remix(params, str(output_path), on_progress)
         else:
             await backend.generate(params, str(output_path), on_progress)
 
-        # Save metadata alongside image + embed in PNG
+        # Save metadata sidecar for both 2D and 3D outputs.
         meta = {**params, "job_id": job_id, "created": datetime.now().isoformat()}
         ref_count = len(meta.pop("reference_images", []))
         meta["reference_image_count"] = ref_count
         async with aiofiles.open(output_path.with_suffix(".json"), "w") as f:
             await f.write(json.dumps(meta, indent=2))
 
-        # Embed metadata in PNG tEXt chunks (survives file sharing)
-        try:
-            from PIL import Image
-            from PIL.PngImagePlugin import PngInfo
-            img = Image.open(output_path)
-            png_meta = PngInfo()
-            png_meta.add_text("prompt", meta["prompt"])
-            if meta.get("negative_prompt"):
-                png_meta.add_text("negative_prompt", meta["negative_prompt"])
-            png_meta.add_text("backend", meta.get("backend", ""))
-            png_meta.add_text("model", meta.get("model", ""))
-            png_meta.add_text("steps", str(meta.get("steps", "")))
-            png_meta.add_text("cfg_scale", str(meta.get("cfg_scale", "")))
-            png_meta.add_text("seed", str(meta.get("seed", "")))
-            png_meta.add_text("size", f"{meta.get('width', '')}x{meta.get('height', '')}")
-            if ref_count > 0:
-                png_meta.add_text("reference_images", str(ref_count))
-            png_meta.add_text("generator", "Wyltek Studio")
-            img.save(output_path, pnginfo=png_meta)
-        except Exception:
-            pass  # metadata embedding is best-effort
-
-        # Score the image (~50ms, runs in thread executor)
         scores = None
-        try:
-            import scoring
-            scores = await scoring.score_and_save(
-                str(output_path), job_id, params.get("model", ""),
-                params.get("backend", ""), params.get("prompt", ""),
-                meta["created"],
-            )
-        except Exception:
-            pass  # scoring is best-effort
+        if not is_3d:
+            # PNG metadata + scoring are 2D-only. Embed text chunks in the PNG
+            # so prompts survive file sharing, then run the aesthetic scorer.
+            try:
+                from PIL import Image
+                from PIL.PngImagePlugin import PngInfo
+                img = Image.open(output_path)
+                png_meta = PngInfo()
+                png_meta.add_text("prompt", meta["prompt"])
+                if meta.get("negative_prompt"):
+                    png_meta.add_text("negative_prompt", meta["negative_prompt"])
+                png_meta.add_text("backend", meta.get("backend", ""))
+                png_meta.add_text("model", meta.get("model", ""))
+                png_meta.add_text("steps", str(meta.get("steps", "")))
+                png_meta.add_text("cfg_scale", str(meta.get("cfg_scale", "")))
+                png_meta.add_text("seed", str(meta.get("seed", "")))
+                png_meta.add_text("size", f"{meta.get('width', '')}x{meta.get('height', '')}")
+                if ref_count > 0:
+                    png_meta.add_text("reference_images", str(ref_count))
+                png_meta.add_text("generator", "Wyltek Studio")
+                img.save(output_path, pnginfo=png_meta)
+            except Exception:
+                pass  # metadata embedding is best-effort
+
+            try:
+                import scoring
+                scores = await scoring.score_and_save(
+                    str(output_path), job_id, params.get("model", ""),
+                    params.get("backend", ""), params.get("prompt", ""),
+                    meta["created"],
+                )
+            except Exception:
+                pass  # scoring is best-effort
+
+        # Output URL: storage layer resolves via filename (.png or .glb).
+        ext = ".glb" if is_3d else ".png"
+        output_url = f"/storage/{job_id}{ext}"
 
         _gallery_cache["items"] = None  # invalidate gallery cache
         jobs[job_id].update({
             "status": "complete",
             "progress": 100,
-            "output_url": f"/storage/{job_id}.png",
+            "output_url": output_url,
+            "asset_type": "mesh" if is_3d else "image",
             "scores": scores,
         })
         await broadcast({
             "type": "job_update", "job_id": job_id,
             "status": "complete", "progress": 100,
-            "output_url": f"/storage/{job_id}.png",
+            "output_url": output_url,
+            "asset_type": "mesh" if is_3d else "image",
             "scores": scores,
         })
 
