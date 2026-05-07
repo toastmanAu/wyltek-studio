@@ -94,15 +94,6 @@ MODEL_DEFAULTS = {
         "sampler": "euler", "scheduler": "simple",
         "steps": 4, "cfg": 1.0,
     },
-    # --- FLUX.2-klein (4-step distilled, qwen3_4b encoder) ---
-    # cfg=1.0 is non-negotiable — klein is guidance-distilled. The klein
-    # workflow branch in generate() also explicitly sets these values; the
-    # entry here ensures _resolve_defaults rewrites the generic UI defaults
-    # (steps=30, cfg=7.0) before they reach the workflow builder.
-    "flux-2-klein-base-4b.safetensors": {
-        "sampler": "euler", "scheduler": "simple",
-        "steps": 4, "cfg": 1.0,
-    },
     # --- SD3 / SD3.5 (MMDiT, triple CLIP: CLIP-L + CLIP-G + T5-XXL) ---
     # Shared defaults: dpmpp_2m + sgm_uniform, cfg ~4.5-5, steps ~25-30.
     # Use TripleCLIPLoaderGGUF so the GGUF T5 is picked up alongside the
@@ -134,6 +125,17 @@ MODEL_DEFAULTS = {
     "pixart_sigma_xl_1024.safetensors": {
         "sampler": "dpmpp_2m", "scheduler": "karras",
         "steps": 20, "cfg": 4.5, "width": 1024, "height": 1024,
+    },
+    # --- FLUX.2 Klein base (non-distilled) ---
+    # Klein has its own sampler chain (Flux2Scheduler + SamplerCustomAdvanced)
+    # so sampler/scheduler are omitted — they don't apply to this branch.
+    # cfg routes to FluxGuidance.guidance (see klein branch ~line 2110); BFL
+    # recommends 1.0-5.0. Without this entry, /api/compare's generic cfg=7.0
+    # over-bakes Klein output and reads as waxy / under-detailed next to other
+    # backends in the comparison. 34 steps + guidance 3.25 sits between the
+    # bring-up-verified sweet spot (28/3.5) and a detail-heavy profile (40/3.0).
+    "flux-2-klein-base-4b.safetensors": {
+        "steps": 34, "cfg": 3.25,
     },
 }
 
