@@ -42,6 +42,40 @@ except ImportError:
     # fail with a clearer error downstream.
     pass
 
+# Compatibility shim for torchcodec on ROCm
+#
+# torchaudio 2.9+ removed its native backends and routes torchaudio.load()
+# directly through torchcodec. The torchcodec C extension links
+# libnvrtc.so.13 (a CUDA library); on a ROCm-only box the dlopen fails and
+# every reference-WAV load in XTTS's clone path raises RuntimeError. We
+# can't uninstall torchcodec because coqui-tts's TTS/__init__.py:45 raises
+# if the package metadata is missing, and we can't monkey-patch the
+# transformers helper alone because torchaudio doesn't go through it.
+# Instead, replace torchaudio.load with a soundfile-backed equivalent that
+# returns the same (tensor[channel, time], sample_rate) shape XTTS expects.
+try:
+    import torchaudio as _ta
+    import soundfile as _sf
+    import torch as _torch_for_load
+    import numpy as _np
+
+    def _load_via_soundfile(uri, frame_offset=0, num_frames=-1, normalize=True,
+                            channels_first=True, format=None, buffer_size=4096,
+                            backend=None):
+        data, sr = _sf.read(str(uri), dtype="float32", always_2d=True)
+        if frame_offset:
+            data = data[frame_offset:]
+        if num_frames > 0:
+            data = data[:num_frames]
+        tensor = _torch_for_load.from_numpy(_np.ascontiguousarray(data.T))
+        if not channels_first:
+            tensor = tensor.transpose(0, 1)
+        return tensor, sr
+
+    _ta.load = _load_via_soundfile
+except ImportError:
+    pass
+
 VOICES_DIR = Path(__file__).parent.parent / "engines" / "xtts_voices"
 
 # XTTS v2 ships 58 built-in speakers. Their embeddings live in speakers_xtts.pth
