@@ -126,6 +126,21 @@ async def index():
     return FileResponse("static/index.html")
 
 
+@app.get("/manifest.json")
+async def pwa_manifest():
+    return FileResponse("static/manifest.json", media_type="application/manifest+json")
+
+
+@app.get("/sw.js")
+async def pwa_service_worker():
+    # Served from root so its scope covers the whole app, not just /static/*.
+    return FileResponse(
+        "static/sw.js",
+        media_type="application/javascript",
+        headers={"Service-Worker-Allowed": "/", "Cache-Control": "no-cache"},
+    )
+
+
 @app.get("/settings")
 async def settings_page():
     return FileResponse("static/settings.html")

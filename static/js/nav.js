@@ -1,6 +1,52 @@
 /* Shared sidebar navigation — include on every page */
 
 (function() {
+  // PWA wiring — inject manifest link, theme color, and apple-touch icon
+  // into <head> so every page is installable without per-page edits.
+  // Uses safe DOM APIs (createElement + setAttribute) — no innerHTML.
+  function injectPwaTags() {
+    const head = document.head;
+    if (!head) return;
+    const ensureLink = (rel, href, extra) => {
+      if (head.querySelector(`link[rel="${rel}"][href="${href}"]`)) return;
+      const link = document.createElement('link');
+      link.setAttribute('rel', rel);
+      link.setAttribute('href', href);
+      if (extra) Object.entries(extra).forEach(([k, v]) => link.setAttribute(k, v));
+      head.appendChild(link);
+    };
+    const ensureMeta = (name, content) => {
+      if (head.querySelector(`meta[name="${name}"]`)) return;
+      const meta = document.createElement('meta');
+      meta.setAttribute('name', name);
+      meta.setAttribute('content', content);
+      head.appendChild(meta);
+    };
+    ensureLink('manifest', '/manifest.json');
+    ensureLink('icon', '/static/images/logo-192.png', { type: 'image/png', sizes: '192x192' });
+    ensureLink('icon', '/static/images/logo-512.png', { type: 'image/png', sizes: '512x512' });
+    ensureLink('apple-touch-icon', '/static/images/logo-192.png');
+    ensureMeta('theme-color', '#0f0f0f');
+    ensureMeta('mobile-web-app-capable', 'yes');
+    ensureMeta('apple-mobile-web-app-capable', 'yes');
+    ensureMeta('apple-mobile-web-app-title', 'Wyltek');
+  }
+
+  function registerServiceWorker() {
+    if (!('serviceWorker' in navigator)) return;
+    // Only register on http(s) — file:// loads will throw.
+    if (window.location.protocol !== 'http:' && window.location.protocol !== 'https:') return;
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch((err) => {
+        // Surface in console only; never block UI on SW failure.
+        console.warn('[wyltek] service worker registration failed:', err);
+      });
+    });
+  }
+
+  injectPwaTags();
+  registerServiceWorker();
+
   const NAV_ITEMS = [
     { section: 'Create' },
     { href: '/',           icon: '&#9998;',  label: 'Generate',    id: 'generate' },
@@ -70,7 +116,7 @@
 
   sidebar.innerHTML = `
     <div class="sidebar-brand">
-      <div class="brand-icon">W</div>
+      <img class="brand-icon" src="/static/images/logo-icon.png" alt="Wyltek Studio">
       <span class="brand-text">Wyltek Studio</span>
     </div>
     <div class="sidebar-links">${linksHtml}</div>
@@ -91,6 +137,7 @@
   mobileHeader.className = 'mobile-header';
   mobileHeader.innerHTML = `
     <button class="hamburger" onclick="window._openMobileNav()">&#9776;</button>
+    <img class="mobile-logo" src="/static/images/logo-icon.png" alt="">
     <span class="mobile-title">Wyltek Studio</span>
   `;
 
