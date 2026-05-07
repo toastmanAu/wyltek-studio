@@ -24,3 +24,6 @@ engines/
 
 # Git worktrees
 .worktrees/
+
+# Local debug artifacts (model output dumps, prompt iteration notes)
+wyltek-infographic-*.md
