@@ -2608,18 +2608,31 @@ async def list_crypto_logos():
 # --- Music Generation API ---
 
 _music_engine = None
+_music_engine_error: str | None = None
 
 
 def _get_music_engine():
-    global _music_engine
+    global _music_engine, _music_engine_error
     if _music_engine is None:
         try:
             from studio.music_gen import MusicGenEngine
             engine = MusicGenEngine(config.get("music", {}))
-            if engine.available():
-                _music_engine = engine
-        except Exception:
-            pass
+            # Force the real import so a missing transitive dep surfaces its
+            # actual name instead of collapsing to a generic "not installed".
+            import audiocraft  # noqa: F401
+            _music_engine = engine
+            _music_engine_error = None
+        except ImportError as e:
+            missing = getattr(e, "name", None) or "audiocraft"
+            if missing == "audiocraft":
+                _music_engine_error = "audiocraft not installed. Run: pip install audiocraft"
+            else:
+                _music_engine_error = (
+                    f"audiocraft is installed but its import requires '{missing}', "
+                    f"which is not installed. Run: pip install {missing}"
+                )
+        except Exception as e:
+            _music_engine_error = f"audiocraft failed to load: {e.__class__.__name__}: {e}"
     return _music_engine
 
 
@@ -2677,7 +2690,10 @@ async def music_status():
     engine = _get_music_engine()
     if engine:
         return {"available": True, "models": engine.models(), "modes": engine.modes()}
-    return {"available": False, "reason": "audiocraft not installed (pip install audiocraft)"}
+    return {
+        "available": False,
+        "reason": _music_engine_error or "audiocraft not installed (pip install audiocraft)",
+    }
 
 
 @app.post("/api/music/generate")

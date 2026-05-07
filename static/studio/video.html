@@ -219,6 +219,9 @@
     <div class="progress-msg" id="progress-msg"></div>
 
     <div class="result-area" id="result-area" style="display:none">
+      <div style="display:flex;justify-content:flex-end;margin-bottom:6px">
+        <button id="btn-save-video" style="padding:4px 12px;font-size:11px;border-radius:6px;cursor:pointer;background:var(--accent);color:#fff;border:1px solid var(--accent)" onclick="saveVideo()">💾 Save</button>
+      </div>
       <video id="result-video" controls loop autoplay muted></video>
       <div class="result-meta" id="result-meta"></div>
     </div>
@@ -537,6 +540,33 @@
     document.getElementById('motion-model').addEventListener('change', onMotionModelChange);
     checkStatus();
     checkOpStatus();
+
+    // Save video to device — share sheet on mobile, download on desktop.
+    async function saveVideo() {
+      const v = document.getElementById('result-video');
+      const url = v && v.src && v.src.split('?')[0];
+      if (!url) { toast('Generate a video first'); return; }
+      try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const blob = await res.blob();
+        const inferred = url.split('/').pop() || ('video-' + Date.now() + '.mp4');
+        const file = new File([blob], inferred, { type: blob.type || 'video/mp4' });
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file], title: inferred });
+        } else {
+          const objUrl = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = objUrl; a.download = inferred;
+          document.body.appendChild(a); a.click(); a.remove();
+          setTimeout(() => URL.revokeObjectURL(objUrl), 1000);
+          toast('Downloaded ' + inferred);
+        }
+      } catch (err) {
+        if (err && err.name === 'AbortError') return;
+        toast('Save failed: ' + err.message);
+      }
+    }
   </script>
 </body>
 </html>
