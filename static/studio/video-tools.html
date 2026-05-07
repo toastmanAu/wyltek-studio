@@ -1,0 +1,629 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Wyltek Studio — Video Tools</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="stylesheet" href="/static/css/nav.css">
+  <script src="/static/js/nav.js"></script>
+  <script src="/static/js/project-picker.js"></script>
+  <style>
+    /* Match image-tools' shell — same .studio-page, .studio-header,
+       .tab-bar, .img-panel idiom — so theme tokens apply consistently. */
+    .studio-page { max-width: 1100px; margin: 0 auto; padding: 32px 24px; }
+    .studio-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; flex-wrap: wrap; gap: 8px; }
+    .studio-header h2 { margin: 0; }
+    .studio-header .subtitle { font-size: 13px; color: var(--text-dim); }
+
+    .tab-bar { display: flex; gap: 4px; margin-bottom: 20px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+    .tab-btn { padding: 8px 16px; font-size: 12px; font-weight: 600; border: none; background: var(--surface-2); color: var(--text-dim); border-radius: 6px 6px 0 0; cursor: pointer; transition: all 0.15s; }
+    .tab-btn:hover { color: var(--text); background: var(--surface-3); }
+    .tab-btn.active { color: var(--accent); background: var(--accent-dim); }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+    .badge-soon { font-size: 10px; padding: 2px 7px; background: var(--surface-3); color: var(--text-dim); border-radius: 10px; border: 1px solid var(--border); margin-left: 6px; }
+
+    /* Two-column layout — matches image-tools */
+    .tool-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    @media (max-width: 750px) { .tool-columns { grid-template-columns: 1fr; } }
+
+    .img-panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+    .img-panel-header { padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 12px; font-weight: 600; color: var(--text-dim); display: flex; align-items: center; justify-content: space-between; }
+    .img-panel-body { background: repeating-conic-gradient(var(--surface-2) 0% 25%, var(--surface-3) 0% 50%) 50% / 16px 16px; min-height: 280px; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+    .img-panel-body video { max-width: 100%; max-height: 420px; display: block; }
+    .img-placeholder { font-size: 13px; color: var(--text-dim); text-align: center; padding: 40px; cursor: pointer; }
+    .img-placeholder:hover, .img-placeholder.drag-over { color: var(--accent); }
+    .img-placeholder .drop-icon { font-size: 32px; display: block; margin-bottom: 8px; }
+    .img-placeholder .drop-hint { font-size: 11px; opacity: 0.7; margin-top: 6px; }
+
+    /* Tool controls — match image-tools spacing */
+    .tool-controls { padding: 14px 16px; border-top: 1px solid var(--border); }
+    .control-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+    .control-row:last-child { margin-bottom: 0; }
+    .control-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; min-width: 70px; }
+    .control-row select, .control-row input[type=number] {
+      background: var(--surface-2); color: var(--text);
+      border: 1px solid var(--border); border-radius: 6px;
+      padding: 6px 10px; font-size: 13px; flex: 1; min-width: 120px;
+    }
+    .control-row input[type=range] { flex: 1; accent-color: var(--accent); }
+    .crf-value {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px; color: var(--accent); min-width: 28px; text-align: right;
+    }
+    .custom-row { display: flex; gap: 6px; align-items: center; flex: 1; }
+    .custom-row input { width: 90px; flex: 0 0 auto; }
+    .custom-row .x { color: var(--text-dim); font-size: 12px; }
+
+    /* Source meta strip */
+    .meta-strip {
+      padding: 8px 14px; font-size: 11px; color: var(--text-dim);
+      display: flex; gap: 14px; flex-wrap: wrap;
+      border-top: 1px solid var(--border);
+    }
+    .meta-strip span { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+    /* Loading overlay shown in either source or result panel while a
+       long-running operation (upload, ffprobe, ffmpeg) is in progress.
+       Centered spinner + label, no background — the panel checkerboard
+       stays visible underneath so it doesn't feel like a new layer. */
+    .loading-overlay {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 12px; padding: 40px;
+      color: var(--text-dim); font-size: 13px; font-weight: 600;
+    }
+    .spinner {
+      width: 36px; height: 36px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .loading-label { letter-spacing: 0.5px; }
+
+    /* Estimate badge — like the VRAM badge on the main page */
+    .estimate-box {
+      margin: 14px 16px 0;
+      padding: 12px 14px;
+      background: var(--accent-dim);
+      border: 1px solid var(--accent);
+      border-radius: 8px;
+      display: grid; gap: 4px;
+    }
+    .estimate-row {
+      display: flex; justify-content: space-between; align-items: baseline;
+      font-size: 12px;
+    }
+    .estimate-label { color: var(--text-dim); }
+    .estimate-val {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-weight: 600; color: var(--accent);
+    }
+    .estimate-val.smaller { color: var(--success); }
+    .estimate-val.larger  { color: #f59e0b; }
+
+    .progress-bar { height: 3px; background: var(--border); border-radius: 2px; margin: 10px 16px 0; display: none; overflow: hidden; }
+    .progress-bar.active { display: block; }
+    .progress-fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width 0.4s; width: 0%; }
+
+    .status-msg { font-size: 12px; color: var(--text-dim); padding: 8px 16px; }
+    .status-msg.ok { color: var(--success); }
+    .status-msg.err { color: var(--error); }
+
+    .result-actions { padding: 10px 14px; border-top: 1px solid var(--border); display: flex; gap: 8px; flex-wrap: wrap; }
+
+    .btn-primary { padding: 9px 22px; font-size: 13px; font-weight: 600; background: var(--accent); color: #fff; border: none; border-radius: 8px; cursor: pointer; }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-secondary { padding: 8px 14px; font-size: 12px; font-weight: 600; background: var(--surface-2); color: var(--accent); border: 1px solid var(--accent); border-radius: 6px; cursor: pointer; }
+    .btn-secondary:hover { background: var(--accent-dim); }
+    .btn-outline { padding: 7px 12px; font-size: 12px; background: transparent; color: var(--text-dim); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; }
+    .btn-outline:hover { color: var(--text); background: var(--surface-2); }
+  </style>
+</head>
+<body>
+<div class="studio-page">
+  <div class="studio-header">
+    <div>
+      <h2>Video Tools</h2>
+      <div class="subtitle">Local FFmpeg processing — files stay on your server</div>
+    </div>
+  </div>
+
+  <div class="tab-bar">
+    <button class="tab-btn active" data-tab="resize">Resize / Reformat</button>
+    <button class="tab-btn" data-tab="mix" disabled>Mix Audio <span class="badge-soon">soon</span></button>
+    <button class="tab-btn" data-tab="trim" disabled>Trim <span class="badge-soon">soon</span></button>
+  </div>
+
+  <!-- ═══ RESIZE / REFORMAT ═══ -->
+  <div class="tab-panel active" id="tab-resize">
+    <div class="tool-columns">
+
+      <!-- Source -->
+      <div class="img-panel">
+        <div class="img-panel-header"><span>Source</span><span id="src-name"></span></div>
+        <div class="img-panel-body" id="src-body">
+          <div class="img-placeholder" id="drop-zone">
+            <span class="drop-icon">📹</span>
+            Drop a video here or click to choose
+            <div class="drop-hint">mp4 / mov / webm / mkv</div>
+          </div>
+          <!-- Loading overlay — shown in the source box while upload+probe
+               run, so users get an immediate visual cue at the upload site
+               (the progress bar in the output column is correct but easy to
+               miss because it lives on the other side of the layout). -->
+          <div class="loading-overlay" id="src-loading" style="display:none">
+            <div class="spinner"></div>
+            <div class="loading-label" id="src-loading-label">Loading…</div>
+          </div>
+          <video id="src-video" style="display:none" controls></video>
+          <input type="file" id="src-file" accept="video/*" style="display:none">
+        </div>
+        <div class="meta-strip" id="src-meta" style="display:none">
+          <span id="src-dim">—</span>
+          <span id="src-fps">—</span>
+          <span id="src-codec">—</span>
+          <span id="src-dur">—</span>
+          <span id="src-size">—</span>
+        </div>
+      </div>
+
+      <!-- Output controls + result -->
+      <div class="img-panel">
+        <div class="img-panel-header"><span>Output</span><span id="result-name"></span></div>
+        <div class="img-panel-body" id="result-body">
+          <div class="img-placeholder" id="result-placeholder">Result will appear here</div>
+          <div class="loading-overlay" id="result-loading" style="display:none">
+            <div class="spinner"></div>
+            <div class="loading-label">Transcoding…</div>
+          </div>
+          <video id="result-video" style="display:none" controls></video>
+        </div>
+        <div class="tool-controls">
+          <div class="control-row">
+            <span class="control-label">Resolution</span>
+            <select id="res-preset">
+              <option value="orig">Keep original</option>
+              <option value="2160">4K UHD (2160 tall)</option>
+              <option value="1080">1080p (1080 tall)</option>
+              <option value="720" selected>720p (720 tall)</option>
+              <option value="480">480p (480 tall)</option>
+              <option value="360">360p (360 tall)</option>
+              <option value="custom">Custom…</option>
+            </select>
+            <span id="res-resolved" style="font-size:11px;color:var(--text-dim);font-family:ui-monospace,monospace;margin-left:8px"></span>
+          </div>
+          <div class="control-row" id="custom-row" style="display:none">
+            <span class="control-label">Custom</span>
+            <div class="custom-row">
+              <input type="number" id="custom-w" placeholder="w" min="64" step="2">
+              <span class="x">×</span>
+              <input type="number" id="custom-h" placeholder="h" min="64" step="2">
+            </div>
+            <label style="font-size:11px;color:var(--text-dim);display:flex;align-items:center;gap:4px;cursor:pointer;margin-left:8px">
+              <input type="checkbox" id="lock-aspect" checked> Lock AR
+            </label>
+          </div>
+          <div class="control-row">
+            <span class="control-label">FPS</span>
+            <select id="fps-preset">
+              <option value="0">Keep original</option>
+              <option value="60">60 fps</option>
+              <option value="30">30 fps</option>
+              <option value="24">24 fps</option>
+              <option value="15">15 fps</option>
+            </select>
+          </div>
+          <div class="control-row">
+            <span class="control-label">Container</span>
+            <select id="format-sel">
+              <option value="mp4" selected>MP4 (.mp4)</option>
+              <option value="webm">WebM (.webm)</option>
+              <option value="mov">QuickTime (.mov)</option>
+              <option value="mkv">Matroska (.mkv)</option>
+            </select>
+          </div>
+          <div class="control-row">
+            <span class="control-label">Codec</span>
+            <select id="codec-sel">
+              <option value="h264" selected>H.264 (most compatible)</option>
+              <option value="h265">H.265 / HEVC (~2× smaller)</option>
+              <option value="vp9">VP9 (WebM)</option>
+              <option value="av1">AV1 (smallest, slow)</option>
+            </select>
+          </div>
+          <div class="control-row">
+            <span class="control-label">Quality</span>
+            <input type="range" id="crf" min="0" max="51" value="26">
+            <span class="crf-value" id="crf-val">26</span>
+          </div>
+        </div>
+
+        <div class="estimate-box">
+          <div class="estimate-row">
+            <span class="estimate-label">Estimated bitrate</span>
+            <span class="estimate-val" id="est-bitrate">—</span>
+          </div>
+          <div class="estimate-row">
+            <span class="estimate-label">Estimated output size</span>
+            <span class="estimate-val" id="est-size">—</span>
+          </div>
+          <div class="estimate-row">
+            <span class="estimate-label">vs source</span>
+            <span class="estimate-val" id="est-delta">—</span>
+          </div>
+        </div>
+
+        <div class="progress-bar" id="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+        <div class="status-msg" id="status"></div>
+
+        <div class="result-actions">
+          <button class="btn-primary" id="run-btn" disabled>Transcode</button>
+          <button class="btn-secondary" id="save-btn" style="display:none">💾 Save</button>
+          <button class="btn-outline" id="send-btn" style="display:none">Send to Project</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+  const els = {
+    drop: document.getElementById('drop-zone'),
+    fileInput: document.getElementById('src-file'),
+    srcVideo: document.getElementById('src-video'),
+    srcName: document.getElementById('src-name'),
+    srcMeta: document.getElementById('src-meta'),
+    srcDim: document.getElementById('src-dim'),
+    srcFps: document.getElementById('src-fps'),
+    srcCodec: document.getElementById('src-codec'),
+    srcDur: document.getElementById('src-dur'),
+    srcSize: document.getElementById('src-size'),
+    resPreset: document.getElementById('res-preset'),
+    customRow: document.getElementById('custom-row'),
+    customW: document.getElementById('custom-w'),
+    customH: document.getElementById('custom-h'),
+    fpsPreset: document.getElementById('fps-preset'),
+    formatSel: document.getElementById('format-sel'),
+    codecSel: document.getElementById('codec-sel'),
+    crf: document.getElementById('crf'),
+    crfVal: document.getElementById('crf-val'),
+    estBitrate: document.getElementById('est-bitrate'),
+    estSize: document.getElementById('est-size'),
+    estDelta: document.getElementById('est-delta'),
+    runBtn: document.getElementById('run-btn'),
+    saveBtn: document.getElementById('save-btn'),
+    sendBtn: document.getElementById('send-btn'),
+    status: document.getElementById('status'),
+    progBar: document.getElementById('progress-bar'),
+    progFill: document.getElementById('progress-fill'),
+    resultBody: document.getElementById('result-body'),
+    resultVideo: document.getElementById('result-video'),
+    resultName: document.getElementById('result-name'),
+  };
+
+  const src = { path: null, duration: 0, width: 0, height: 0, fps: 0, size: 0, codec: '', filename: '' };
+  let lastResult = null;
+
+  // ── Bitrate model ────────────────────────────────────────────────────────
+  // H.264 at 1080p30 CRF23 ≈ ~5 Mbps for typical content.
+  // Per-px-per-sec coefficient: 5e6 / (1920*1080*30) ≈ 8.04e-2 bits/(px·s).
+  // Each CRF step ≈ 12 % bitrate change (logarithmic).
+  // Codec efficiency relative to H.264: H.265=0.55, VP9=0.60, AV1=0.40.
+  const BITRATE_BASE = 8.04e-2;
+  const CODEC_EFF = { h264: 1.0, h265: 0.55, vp9: 0.60, av1: 0.40 };
+  const REF_CRF = 23;
+
+  function estimateBitrateBps(width, height, fps, codec, crf) {
+    if (!width || !height || !fps) return 0;
+    const eff = CODEC_EFF[codec] || 1.0;
+    const crfMult = Math.pow(1.12, REF_CRF - crf);
+    const videoBps = BITRATE_BASE * width * height * fps * eff * crfMult;
+    const audioBps = 192_000;
+    return videoBps + audioBps;
+  }
+
+  function fmtSize(bytes) {
+    if (!bytes) return '—';
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  }
+  function fmtBitrate(bps) {
+    if (!bps) return '—';
+    if (bps >= 1e6) return `${(bps / 1e6).toFixed(1)} Mbps`;
+    return `${(bps / 1e3).toFixed(0)} kbps`;
+  }
+
+  // Round up to even — most codecs (h264/h265 yuv420p, vp9, av1) require
+  // even dimensions for chroma subsampling. iMovie/DaVinci/Handbrake all
+  // do the same; otherwise FFmpeg fails or pads.
+  function roundEven(n) { return Math.max(2, Math.round(n / 2) * 2); }
+
+  // Resolve target dimensions from current control state. Height-based presets
+  // preserve aspect ratio of the source; custom mode is free-form.
+  function resolveTargetSize() {
+    const p = els.resPreset.value;
+    if (p === 'orig') return [src.width, src.height];
+    if (p === 'custom') return [parseInt(els.customW.value || 0), parseInt(els.customH.value || 0)];
+    // Height-based preset: target_h is fixed, width is computed from source AR.
+    const targetH = parseInt(p);
+    if (!src.width || !src.height) return [0, targetH];
+    const ar = src.width / src.height;
+    return [roundEven(targetH * ar), targetH];
+  }
+  // Show resolved WxH next to the dropdown so users see exactly what their
+  // preset becomes for THIS source — answers "720p of a vertical phone clip
+  // is 405×720, not 1280×720" before they click Transcode.
+  function refreshResolutionLabel() {
+    const out = document.getElementById('res-resolved');
+    if (!out) return;
+    const [w, h] = resolveTargetSize();
+    out.textContent = (w && h) ? `→ ${w}×${h}` : '';
+  }
+
+  function refreshEstimate() {
+    refreshResolutionLabel();
+    if (!src.path) {
+      els.estBitrate.textContent = '—';
+      els.estSize.textContent = '—';
+      els.estDelta.textContent = '—';
+      els.runBtn.disabled = true;
+      return;
+    }
+    els.runBtn.disabled = false;
+    const [w, h] = resolveTargetSize();
+    const fps = parseFloat(els.fpsPreset.value) || src.fps;
+    const bps = estimateBitrateBps(w, h, fps, els.codecSel.value, parseInt(els.crf.value));
+    const bytes = (bps * src.duration) / 8;
+    els.estBitrate.textContent = fmtBitrate(bps);
+    els.estSize.textContent = fmtSize(bytes);
+    if (src.size && bytes) {
+      const delta = ((bytes - src.size) / src.size) * 100;
+      const sign = delta > 0 ? '+' : '';
+      els.estDelta.textContent = `${sign}${delta.toFixed(0)}% (${fmtSize(Math.abs(bytes - src.size))} ${delta > 0 ? 'larger' : 'smaller'})`;
+      els.estDelta.classList.toggle('larger', delta > 0);
+      els.estDelta.classList.toggle('smaller', delta <= 0);
+    }
+  }
+
+  // Codec ↔ format compatibility — clamps codec dropdown when format changes.
+  const FORMAT_CODECS = {
+    mp4:  ['h264', 'h265', 'av1'],
+    mov:  ['h264', 'h265'],
+    webm: ['vp9', 'av1'],
+    mkv:  ['h264', 'h265', 'vp9', 'av1'],
+  };
+  function clampCodecToFormat() {
+    const allowed = FORMAT_CODECS[els.formatSel.value] || [];
+    let changed = false;
+    Array.from(els.codecSel.options).forEach(opt => {
+      const ok = allowed.includes(opt.value);
+      opt.disabled = !ok;
+      if (!ok && opt.selected) changed = true;
+    });
+    if (changed && allowed.length) els.codecSel.value = allowed[0];
+  }
+
+  // ── Source upload / probe ────────────────────────────────────────────────
+  // Use XMLHttpRequest instead of fetch() so we get real upload-progress events.
+  // For large videos (200 MB+) the visible "Uploading 47%..." readout is the
+  // difference between "this works" and "this is broken" from the user's POV.
+  function uploadWithProgress(url, formData, onProgress) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', url);
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) onProgress(e.loaded, e.total);
+      };
+      xhr.onload = () => {
+        try { resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status, json: JSON.parse(xhr.responseText) }); }
+        catch (err) { reject(new Error('Bad JSON: ' + xhr.responseText.slice(0, 200))); }
+      };
+      xhr.onerror = () => reject(new Error('Network error during upload'));
+      xhr.ontimeout = () => reject(new Error('Upload timed out'));
+      xhr.send(formData);
+    });
+  }
+
+  async function loadFile(file) {
+    if (!file || !file.type.startsWith('video/')) {
+      els.status.className = 'status-msg err';
+      els.status.textContent = 'Not a video file';
+      return;
+    }
+    src.filename = file.name;
+    const fd = new FormData();
+    fd.append('file', file);
+
+    els.status.className = 'status-msg';
+    els.status.textContent = `Uploading ${fmtSize(file.size)}… 0%`;
+    els.progBar.classList.add('active');
+    els.progFill.style.width = '0%';
+    // Source-panel spinner — gives an at-a-glance cue at the upload site
+    // even before the user notices the progress bar in the right column.
+    els.drop.style.display = 'none';
+    els.srcVideo.style.display = 'none';
+    document.getElementById('src-loading').style.display = 'flex';
+    document.getElementById('src-loading-label').textContent = 'Uploading…';
+
+    try {
+      const result = await uploadWithProgress(
+        '/api/video/tools/probe', fd,
+        (loaded, total) => {
+          const pct = (loaded / total) * 100;
+          els.progFill.style.width = pct + '%';
+          els.status.textContent = `Uploading ${fmtSize(loaded)} / ${fmtSize(total)} (${pct.toFixed(0)}%)…`;
+          // Switch the source-panel label from "Uploading" to "Probing" once
+          // the bytes are off the wire — gives a hint that the second phase
+          // (ffprobe extracting metadata) is what's happening now.
+          if (pct >= 99) document.getElementById('src-loading-label').textContent = 'Probing…';
+        },
+      );
+      els.progBar.classList.remove('active');
+      els.progFill.style.width = '0%';
+      if (!result.ok) {
+        const errMsg = (result.json && result.json.error) || `HTTP ${result.status}`;
+        throw new Error(errMsg);
+      }
+      const data = result.json;
+      Object.assign(src, data);
+      els.srcVideo.src = `/api/frame/serve?path=${encodeURIComponent(src.path)}`;
+      // Hide spinner, show video in source panel.
+      document.getElementById('src-loading').style.display = 'none';
+      els.srcVideo.style.display = 'block';
+      els.srcName.textContent = file.name;
+      els.srcDim.textContent = `${src.width}×${src.height}`;
+      els.srcFps.textContent = `${src.fps.toFixed(2)} fps`;
+      els.srcCodec.textContent = src.codec;
+      els.srcDur.textContent = `${src.duration.toFixed(1)}s`;
+      els.srcSize.textContent = fmtSize(src.size);
+      els.srcMeta.style.display = 'flex';
+      els.status.textContent = '';
+      refreshEstimate();
+    } catch (err) {
+      els.progBar.classList.remove('active');
+      // Restore drop zone so user can retry.
+      document.getElementById('src-loading').style.display = 'none';
+      els.drop.style.display = 'block';
+      els.status.className = 'status-msg err';
+      els.status.textContent = `Load failed: ${err.message}`;
+    }
+  }
+
+  els.drop.addEventListener('click', () => els.fileInput.click());
+  els.fileInput.addEventListener('change', e => loadFile(e.target.files[0]));
+  els.drop.addEventListener('dragover', e => { e.preventDefault(); els.drop.classList.add('drag-over'); });
+  els.drop.addEventListener('dragleave', () => els.drop.classList.remove('drag-over'));
+  els.drop.addEventListener('drop', e => {
+    e.preventDefault(); els.drop.classList.remove('drag-over');
+    if (e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]);
+  });
+
+  // ── Wire control changes to estimate refresh ─────────────────────────────
+  els.resPreset.addEventListener('change', () => {
+    els.customRow.style.display = els.resPreset.value === 'custom' ? 'flex' : 'none';
+    refreshEstimate();
+  });
+  // Aspect-lock for custom mode: typing in w or h updates the other from
+  // source AR. Lock can be turned off if you deliberately want to stretch.
+  function _arLink(driver, follower) {
+    const lock = document.getElementById('lock-aspect');
+    if (!lock || !lock.checked || !src.width || !src.height) { refreshEstimate(); return; }
+    const driverVal = parseInt(driver.value || 0);
+    if (!driverVal) { refreshEstimate(); return; }
+    const ar = src.width / src.height;
+    const newVal = (driver === els.customW)
+      ? roundEven(driverVal / ar)   // driver = width → compute height
+      : roundEven(driverVal * ar);  // driver = height → compute width
+    follower.value = newVal;
+    refreshEstimate();
+  }
+  els.customW.addEventListener('input', () => _arLink(els.customW, els.customH));
+  els.customH.addEventListener('input', () => _arLink(els.customH, els.customW));
+  els.fpsPreset.addEventListener('change', refreshEstimate);
+  els.codecSel.addEventListener('change', refreshEstimate);
+  els.formatSel.addEventListener('change', () => { clampCodecToFormat(); refreshEstimate(); });
+  els.crf.addEventListener('input', () => { els.crfVal.textContent = els.crf.value; refreshEstimate(); });
+  clampCodecToFormat();
+
+  // ── Transcode ────────────────────────────────────────────────────────────
+  els.runBtn.addEventListener('click', async () => {
+    if (!src.path) return;
+    const [w, h] = resolveTargetSize();
+    const fps = parseFloat(els.fpsPreset.value) || 0;
+    els.runBtn.disabled = true;
+    els.status.className = 'status-msg';
+    els.status.textContent = 'Transcoding…';
+    els.progBar.classList.add('active');
+    // Result-panel spinner — same pattern as the source-side one.
+    els.resultVideo.style.display = 'none';
+    document.getElementById('result-placeholder').style.display = 'none';
+    document.getElementById('result-loading').style.display = 'flex';
+    const estSec = Math.max(8, src.duration * 0.4);
+    let pct = 0;
+    const tick = setInterval(() => {
+      pct = Math.min(95, pct + (100 / (estSec * 4)));
+      els.progFill.style.width = pct + '%';
+    }, 250);
+
+    try {
+      const body = JSON.stringify({
+        path: src.path, width: w, height: h, fps,
+        crf: parseInt(els.crf.value),
+        codec: els.codecSel.value, format: els.formatSel.value,
+      });
+      const res = await fetch('/api/video/tools/transcode', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body,
+      });
+      const data = await res.json();
+      clearInterval(tick);
+      els.progFill.style.width = '100%';
+      els.progBar.classList.remove('active');
+      if (!res.ok) {
+        // Surface the FFmpeg detail tail when present — this is what tells
+        // us *why* a codec/format combo failed (e.g. h265 + webm).
+        const errMsg = (data.detail ? `${data.error}: ${data.detail.slice(-200)}` : data.error)
+                       || `HTTP ${res.status}`;
+        throw new Error(errMsg);
+      }
+      lastResult = data;
+      document.getElementById('result-loading').style.display = 'none';
+      els.resultVideo.style.display = 'block';
+      els.resultVideo.src = data.url + '&t=' + Date.now();
+      els.resultName.textContent = data.filename;
+      els.saveBtn.style.display = 'inline-block';
+      els.sendBtn.style.display = 'inline-block';
+      els.status.className = 'status-msg ok';
+      els.status.textContent = `Done in ${data.elapsed_s}s — ${fmtSize(data.size_bytes)}`;
+    } catch (err) {
+      clearInterval(tick);
+      els.progBar.classList.remove('active');
+      // Restore the placeholder + hide spinner on error.
+      document.getElementById('result-loading').style.display = 'none';
+      document.getElementById('result-placeholder').style.display = 'block';
+      els.status.className = 'status-msg err';
+      els.status.textContent = err.message;
+    } finally {
+      els.runBtn.disabled = false;
+    }
+  });
+
+  // ── Save / Send ─────────────────────────────────────────────────────────
+  els.saveBtn.addEventListener('click', async () => {
+    if (!lastResult) return;
+    try {
+      const res = await fetch(lastResult.url);
+      const blob = await res.blob();
+      const file = new File([blob], lastResult.filename, { type: blob.type || 'video/mp4' });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: lastResult.filename });
+      } else {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = lastResult.filename;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+    } catch (err) {
+      if (err && err.name !== 'AbortError') {
+        els.status.className = 'status-msg err';
+        els.status.textContent = 'Save failed: ' + err.message;
+      }
+    }
+  });
+  els.sendBtn.addEventListener('click', () => {
+    if (!lastResult) return;
+    if (window.ProjectPicker) {
+      ProjectPicker.init(msg => { els.status.className = 'status-msg ok'; els.status.textContent = msg; });
+      ProjectPicker.show(lastResult.filename);
+    }
+  });
+</script>
+</body>
+</html>

@@ -465,6 +465,189 @@ async def api_frame_grab(request: Request):
     return JSONResponse({"path": str(out_path), "filename": filename})
 
 
+@app.post("/api/video/tools/probe")
+async def api_video_tools_probe(file: UploadFile = File(...)):
+    """Save an uploaded video to a temp path and ffprobe it for metadata.
+
+    Returns: { path, duration, width, height, fps, codec, size_bytes }
+    Frontend uses this to populate the source preview + drive the live
+    filesize estimate.
+    """
+    import storage as store
+
+    if not file.filename:
+        return JSONResponse({"error": "No file"}, status_code=400)
+    suffix = Path(file.filename).suffix or ".mp4"
+    tmp_path = store.unsorted_dir() / f"upload-{uuid.uuid4().hex[:8]}{suffix}"
+    async with aiofiles.open(tmp_path, "wb") as f:
+        await f.write(await file.read())
+
+    cmd = [
+        "ffprobe", "-v", "error", "-print_format", "json",
+        "-show_streams", "-show_format", str(tmp_path),
+    ]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        tmp_path.unlink(missing_ok=True)
+        return JSONResponse(
+            {"error": "ffprobe failed", "detail": stderr.decode(errors="replace")[-300:]},
+            status_code=500,
+        )
+
+    info = json.loads(stdout.decode())
+    video_stream = next(
+        (s for s in info.get("streams", []) if s.get("codec_type") == "video"),
+        {},
+    )
+    fps = 0.0
+    rate = video_stream.get("r_frame_rate", "0/1")
+    if "/" in rate:
+        n, d = rate.split("/", 1)
+        try:
+            fps = float(n) / float(d) if float(d) else 0.0
+        except (ValueError, ZeroDivisionError):
+            fps = 0.0
+
+    raw_w = int(video_stream.get("width", 0) or 0)
+    raw_h = int(video_stream.get("height", 0) or 0)
+
+    # Detect rotation: phones record portrait clips as e.g. 1920×1080 with a
+    # rotation flag, not as 1080×1920. FFmpeg's scale filter operates on the
+    # auto-rotated frame, so the frontend needs *visual* dimensions to
+    # compute aspect ratio correctly. Two metadata flavors:
+    #   1. legacy: stream.tags.rotate = "90"/"180"/"270"
+    #   2. newer:  stream.side_data_list[].side_data_type == "Display Matrix"
+    #              with a `rotation` field (often negative; -90 ≡ 270).
+    rotation = 0
+    rot_tag = video_stream.get("tags", {}).get("rotate")
+    if rot_tag:
+        try:
+            rotation = int(rot_tag) % 360
+        except ValueError:
+            rotation = 0
+    if not rotation:
+        for sd in video_stream.get("side_data_list", []) or []:
+            if sd.get("side_data_type") == "Display Matrix" and "rotation" in sd:
+                try:
+                    rotation = int(round(float(sd["rotation"]))) % 360
+                except (TypeError, ValueError):
+                    rotation = 0
+                break
+
+    # Swap dims for ±90° rotation so width/height reported are visual.
+    # 180° flip doesn't swap (still landscape), only mirrors.
+    if rotation in (90, 270):
+        width, height = raw_h, raw_w
+    else:
+        width, height = raw_w, raw_h
+
+    return {
+        "path": str(tmp_path),
+        "duration": float(info.get("format", {}).get("duration", 0) or 0),
+        "size_bytes": int(info.get("format", {}).get("size", 0) or 0),
+        "width": width,
+        "height": height,
+        "fps": round(fps, 3),
+        "codec": video_stream.get("codec_name", "?"),
+        "rotation": rotation,
+    }
+
+
+@app.post("/api/video/tools/transcode")
+async def api_video_tools_transcode(request: Request):
+    """Transcode a previously-uploaded video with FFmpeg.
+
+    Request body (JSON):
+      path:   absolute path to source (from /probe)
+      width, height: target resolution (0,0 = keep source)
+      fps:    target fps (0 = keep source)
+      crf:    quality (0-51, lower=better; codec dependent)
+      codec:  'h264' | 'h265' | 'vp9' | 'av1'
+      format: 'mp4' | 'webm' | 'mov' | 'mkv'
+    """
+    import storage as store
+
+    data = await request.json()
+    src = Path(data.get("path", "")).resolve()
+    try:
+        _assert_under_storage(src)
+    except PermissionError:
+        return JSONResponse({"error": "Access denied"}, status_code=403)
+    if not src.exists():
+        return JSONResponse({"error": "Source not found"}, status_code=404)
+
+    width = int(data.get("width") or 0)
+    height = int(data.get("height") or 0)
+    fps = float(data.get("fps") or 0)
+    crf = int(data.get("crf") or 23)
+    codec = data.get("codec", "h264")
+    fmt = data.get("format", "mp4")
+
+    CODECS = {"h264": "libx264", "h265": "libx265", "vp9": "libvpx-vp9", "av1": "libaom-av1"}
+    FORMATS = {"mp4", "webm", "mov", "mkv"}
+    if codec not in CODECS:
+        return JSONResponse({"error": f"codec must be one of {list(CODECS)}"}, status_code=400)
+    if fmt not in FORMATS:
+        return JSONResponse({"error": f"format must be one of {sorted(FORMATS)}"}, status_code=400)
+    if not (0 <= crf <= 51):
+        return JSONResponse({"error": "crf must be 0-51"}, status_code=400)
+
+    tag_parts = [codec]
+    if width and height:
+        tag_parts.append(f"{height}p")
+    tag = "-".join(tag_parts)
+    out_filename = f"{src.stem}-{tag}-{uuid.uuid4().hex[:6]}.{fmt}"
+    out_path = store.unsorted_dir() / out_filename
+
+    args = ["ffmpeg", "-y", "-i", str(src)]
+
+    vf_parts = []
+    if width and height:
+        vf_parts.append(f"scale={width}:{height}")
+    if fps:
+        vf_parts.append(f"fps={fps}")
+    if vf_parts:
+        args += ["-vf", ",".join(vf_parts)]
+
+    args += ["-c:v", CODECS[codec]]
+    if codec in ("h264", "h265"):
+        args += ["-crf", str(crf), "-preset", "medium"]
+    elif codec == "vp9":
+        args += ["-crf", str(crf), "-b:v", "0"]
+    elif codec == "av1":
+        args += ["-crf", str(crf), "-b:v", "0", "-cpu-used", "4"]
+
+    audio_codec = "aac" if fmt in ("mp4", "mov") else "libopus" if fmt == "webm" else "aac"
+    args += ["-c:a", audio_codec, "-b:a", "192k"]
+
+    args.append(str(out_path))
+
+    t0 = time.time()
+    proc = await asyncio.create_subprocess_exec(
+        *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    elapsed = time.time() - t0
+
+    if proc.returncode != 0 or not out_path.exists():
+        return JSONResponse(
+            {"error": "ffmpeg failed", "detail": stderr.decode(errors="replace")[-500:]},
+            status_code=500,
+        )
+
+    return {
+        "path": str(out_path),
+        "filename": out_filename,
+        "url": f"/api/frame/serve?path={out_path}",
+        "size_bytes": out_path.stat().st_size,
+        "elapsed_s": round(elapsed, 1),
+    }
+
+
+
 @app.get("/api/frame/serve")
 async def api_frame_serve(path: str):
     """Serve a saved image by absolute path, restricted to the storage directory."""
