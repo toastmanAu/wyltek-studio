@@ -3241,11 +3241,15 @@ async def remix(
     base_gallery_id: str = Form(""),
     style_ref: UploadFile | None = File(default=None),
     crypto_logo_id: str = Form(""),
+    # Atlas-SAM re-texture path: when the caller supplies a mask, the
+    # backend post-composites the generated atlas back into the base
+    # using the mask (white = replace, black = preserve). Optional.
+    mask_image: UploadFile | None = File(default=None),
     preserve_character: float = Form(0.45),
     style_strength: float = Form(0.75),
     ip_start: float = Form(0.0),
     ip_end: float = Form(0.8),
-    blend_mode: str = Form("style transfer"),
+    blend_mode: str = Form("strong style transfer"),
     lora_model: str = Form(""),
     lora_strength: float = Form(0.55),
     model: str = Form("juggernautXL_v9.safetensors"),
@@ -3316,6 +3320,19 @@ async def remix(
     _shutil.copy2(base_source_path, comfy_input_dir / base_filename)
     _shutil.copy2(style_source_path, comfy_input_dir / style_filename)
 
+    # Atlas-SAM mask: only persisted + threaded into params when supplied.
+    # Backwards-compat — image-mode remix never sends a mask, so this
+    # branch is skipped and the existing pipeline runs unchanged.
+    mask_filename = ""
+    if mask_image is not None and mask_image.filename:
+        mask_id = str(uuid.uuid4())[:8]
+        mask_ext = Path(mask_image.filename).suffix or ".png"
+        mask_dest = Path("uploads") / f"remix_mask_{mask_id}{mask_ext}"
+        async with aiofiles.open(mask_dest, "wb") as f:
+            await f.write(await mask_image.read())
+        mask_filename = f"remix_mask_{uuid.uuid4().hex[:8]}{mask_ext}"
+        _shutil.copy2(mask_dest, comfy_input_dir / mask_filename)
+
     base_seed = _random.randint(0, 2**32 - 1 - batch_size) if seed == -1 else seed
 
     remix_id = str(uuid.uuid4())[:8]
@@ -3348,6 +3365,7 @@ async def remix(
             "hint": hint,
             "width": 1024,
             "height": 1024,
+            "mask_filename": mask_filename,  # empty string when not in mesh-mode
         }
         jobs[job_id] = {"status": "queued", "params": params, "progress": 0, "remix_id": remix_id}
         job_queue.submit_background(_run_job(job_id, params), lane="gpu", job_id=job_id)
