@@ -1,0 +1,27 @@
+[
+  {
+    "id": "op-palette-v1",
+    "type": "local",
+    "instance_data_dir": "/home/phill/open-palette/training/flux2-klein-lora/dataset",
+    "caption_strategy": "textfile",
+    "metadata_backend": "discovery",
+
+    "crop": true,
+    "crop_aspect": "preserve",
+    "crop_style": "center",
+    "resolution": 1024,
+    "resolution_type": "pixel",
+    "minimum_image_size": 768,
+
+    "cache_dir_vae": "/home/phill/open-palette/training/flux2-klein-lora/cache/vae",
+    "repeats": 10
+  },
+  {
+    "id": "text-embeds",
+    "type": "local",
+    "dataset_type": "text_embeds",
+    "default": true,
+    "cache_dir": "/home/phill/open-palette/training/flux2-klein-lora/cache/text",
+    "write_batch_size": 64
+  }
+]

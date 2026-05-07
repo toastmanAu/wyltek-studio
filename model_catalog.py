@@ -100,8 +100,8 @@ CATALOG = [
         "size_mb": 9000, "category": "Image Generation", "type": "comfyui-unet",
     },
     {
-        "id": "flux2-klein-4b", "name": "Flux.2 Klein 4B (4-step distilled, 24GB-class)",
-        "desc": "Next-gen Flux distilled. 4-step, CFG 1-1.5. Needs ~16GB VRAM. Uses Qwen3 text encoder.",
+        "id": "flux2-klein-4b", "name": "Flux.2 Klein 4B base (24GB-class)",
+        "desc": "Next-gen Flux base model (non-distilled). ~30 steps, guidance 2.5-4. Needs ~16GB VRAM. Uses Qwen3 text encoder.",
         "url": "https://huggingface.co/black-forest-labs/FLUX.2-klein-base-4B/resolve/main/flux-2-klein-base-4b.safetensors",
         "filename": "flux-2-klein-base-4b.safetensors",
         "size_mb": 16000, "category": "Image Generation", "type": "comfyui-unet",

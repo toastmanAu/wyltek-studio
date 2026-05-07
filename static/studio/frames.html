@@ -174,7 +174,8 @@
         <canvas id="preview-canvas"></canvas>
       </div>
       <div class="preview-actions">
-        <button class="btn-primary" id="save-btn">Save to Files</button>
+        <button class="btn-primary" id="save-photos-btn">📷 Save to Photos</button>
+        <button class="btn-secondary" id="save-btn">Save to Files</button>
         <button class="btn-secondary" id="send-tools-btn">Send to Image Tools &#8594;</button>
         <button class="btn-outline" id="grab-another-btn">Grab Another</button>
         <span class="status-msg" id="save-status"></span>
@@ -357,6 +358,62 @@
 
   saveBtn.addEventListener('click', saveFrame);
 
+  // Save to phone photo roll. Two paths:
+  //   1. navigator.share() with a File — on iOS Safari opens the share sheet
+  //      which includes "Save Image" → Photos directly. Cleanest UX on mobile.
+  //   2. Fallback: trigger a download via <a download>. Lands in Downloads
+  //      on most browsers; on iOS the user can long-press the file in
+  //      Downloads → "Save Image" to put it in Photos.
+  // Either path produces a phone-local PNG without going through the server.
+  async function savePhotos() {
+    const btn = document.getElementById('save-photos-btn');
+    btn.disabled = true;
+    saveStatus.className = 'status-msg';
+    saveStatus.textContent = 'Preparing image...';
+
+    try {
+      // Canvas → Blob (lossless PNG, no server roundtrip).
+      const blob = await new Promise(res => previewCanvas.toBlob(res, 'image/png'));
+      if (!blob) throw new Error('Could not encode frame');
+
+      const ts = video.currentTime.toFixed(3).replace('.', 's');
+      const filename = `frame-${ts}.png`;
+      const file = new File([blob], filename, { type: 'image/png' });
+
+      // Prefer the Web Share API on mobile — opens the system share sheet.
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: 'Frame', text: filename });
+        saveStatus.className = 'status-msg ok';
+        saveStatus.textContent = 'Shared (pick "Save Image" in the sheet)';
+      } else {
+        // Fallback: classic <a download> trigger.
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        // Revoke after a tick so the download has time to start.
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        saveStatus.className = 'status-msg ok';
+        saveStatus.textContent = `Downloaded ${filename}. On iOS: long-press in Downloads → Save Image`;
+      }
+    } catch (err) {
+      // navigator.share() throws AbortError when the user cancels — treat as soft no-op.
+      if (err && err.name === 'AbortError') {
+        saveStatus.className = 'status-msg';
+        saveStatus.textContent = '';
+      } else {
+        saveStatus.className = 'status-msg err';
+        saveStatus.textContent = `Error: ${err.message}`;
+      }
+    } finally {
+      btn.disabled = false;
+    }
+  }
+  document.getElementById('save-photos-btn').addEventListener('click', savePhotos);
+
   sendToolsBtn.addEventListener('click', async () => {
     // Save first if not already saved
     if (!lastSavedPath) {
@@ -364,7 +421,7 @@
     }
     if (lastSavedPath) {
       sessionStorage.setItem('imagetools-source', lastSavedPath);
-      window.location.href = '/studio/image-tools';
+      window.location.href = '/studio/image-edit';
     }
   });
 </script>

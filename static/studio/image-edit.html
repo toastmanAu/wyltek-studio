@@ -107,7 +107,7 @@
 
   <div class="tab-bar">
     <button class="tab-btn active" data-tab="bg-remove">Remove Background</button>
-    <button class="tab-btn" data-tab="obj-remove">Remove Object <span class="badge-soon">soon</span></button>
+    <button class="tab-btn" data-tab="obj-remove">Remove Object</button>
     <button class="tab-btn" data-tab="obj-add">Add / Replace <span class="badge-soon">soon</span></button>
   </div>
 
@@ -127,11 +127,26 @@
           <div class="control-row">
             <span class="control-label">Model</span>
             <select id="rembg-model" style="padding:6px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;flex:1">
-              <option value="u2net">u2net — general purpose</option>
-              <option value="u2net_human_seg">u2net_human_seg — people / portraits</option>
-              <option value="isnet-general-use">isnet — stronger general</option>
-              <option value="birefnet-general">BiRefNet — best quality (slower)</option>
-              <option value="silueta">silueta — lightweight / fast</option>
+              <optgroup label="High quality (recommended)">
+                <option value="birefnet-general" selected>BiRefNet general — strong default, handles low contrast</option>
+                <option value="birefnet-massive">BiRefNet massive — slowest, highest quality</option>
+                <option value="bria-rmbg">BRIA RMBG-2.0 — SOTA, non-commercial license</option>
+                <option value="birefnet-hrsod">BiRefNet HRSOD — high-res salient objects</option>
+                <option value="birefnet-dis">BiRefNet DIS — dichotomous image segmentation</option>
+              </optgroup>
+              <optgroup label="Specialised">
+                <option value="birefnet-portrait">BiRefNet portrait — people / faces</option>
+                <option value="u2net_human_seg">u2net human seg — fast portraits</option>
+                <option value="birefnet-cod">BiRefNet COD — camouflaged / similar-tone subjects</option>
+                <option value="isnet-anime">isnet anime — illustrations / drawings</option>
+              </optgroup>
+              <optgroup label="Fast (lower quality)">
+                <option value="birefnet-general-lite">BiRefNet lite — faster general</option>
+                <option value="isnet-general-use">isnet general — balanced</option>
+                <option value="u2net">u2net — original default</option>
+                <option value="silueta">silueta — lightweight</option>
+                <option value="u2netp">u2netp — smallest</option>
+              </optgroup>
             </select>
           </div>
           <div class="control-row">
@@ -156,6 +171,9 @@
         <div class="result-actions" id="result-actions-bg" style="display:none">
           <button class="btn-secondary" id="dl-bg-btn">Download PNG</button>
           <button class="btn-outline" id="send-project-bg">Send to Projects</button>
+          <!-- Re-texture apply button (Path B). Hidden unless the page was
+               opened with ?retexture_glb=…; toggled on by the init script. -->
+          <button class="btn-primary apply-mesh-btn" data-result-img="result-img-bg" style="display:none">Apply to Mesh</button>
         </div>
       </div>
     </div>
@@ -164,7 +182,7 @@
   <!-- ═══ OBJECT REMOVE ═══ -->
   <div class="tab-panel" id="tab-obj-remove">
     <div class="model-note">
-      Object removal uses <strong>LaMa</strong> inpainting — paint, click, or lasso the object and the model fills it in naturally. Requires <code>iopaint</code> + LaMa weights (~200MB). <strong>Coming soon.</strong>
+      Object removal uses <strong>LaMa</strong> inpainting — paint, click (SAM2), or lasso the object and the model fills the gap. CPU-fast, no GPU required.
     </div>
     <div class="tool-columns">
       <div class="img-panel">
@@ -193,15 +211,29 @@
             <input type="range" class="brush-size" id="brush-rm" min="5" max="80" value="20">
             <button class="btn-outline" id="clear-mask-rm">Clear</button>
           </div>
-          <div class="control-row">
-            <button class="btn-primary" id="run-obj-remove" disabled>Remove Object (LaMa)</button>
+          <div class="control-row" title="Pixels of margin added to the mask before LaMa runs. Higher = cleaner edges on tight masks (lightning select, fine outlines), lower = more precise removal of small objects.">
+            <span class="control-label">Padding</span>
+            <input type="range" id="dilate-rm" min="0" max="32" value="8" style="flex:1">
+            <span id="dilate-rm-val" style="font-size:12px;color:var(--text-muted);min-width:32px;text-align:right">8 px</span>
           </div>
+          <div class="control-row">
+            <button class="btn-primary" id="run-obj-remove">Remove Object (LaMa)</button>
+          </div>
+          <div class="progress-bar" id="rm-progress"><div class="progress-fill" id="rm-fill" style="width:0%"></div></div>
           <div class="status-msg" id="rm-status"></div>
         </div>
       </div>
       <div class="img-panel">
-        <div class="img-panel-header"><span>Result</span></div>
-        <div class="img-panel-body"><div class="img-placeholder">Result will appear here</div></div>
+        <div class="img-panel-header"><span>Result</span><span id="result-size-rm"></span></div>
+        <div class="img-panel-body" id="result-body-rm">
+          <div class="img-placeholder" id="result-ph-rm">Result will appear here</div>
+          <img id="result-img-rm" style="display:none" class="result-img">
+        </div>
+        <div class="result-actions" id="result-actions-rm" style="display:none">
+          <button class="btn-secondary" id="dl-rm-btn">Download PNG</button>
+          <button class="btn-outline" id="send-project-rm">Send to Projects</button>
+          <button class="btn-primary apply-mesh-btn" data-result-img="result-img-rm" style="display:none">Apply to Mesh</button>
+        </div>
       </div>
     </div>
   </div>
@@ -280,6 +312,67 @@ const frameSource = sessionStorage.getItem('imagetools-source');
 if (frameSource) {
   fromFrameBtn.style.display = 'block';
   fromFrameBtn.textContent = 'Use: ' + frameSource.split('/').pop();
+}
+
+// ─── 3D re-texture mode ──────────────────────────────────────────────
+// When opened from the main page's "Edit Texture" button, the URL carries
+// retexture_glb (source mesh) and retexture_texture (extracted atlas PNG).
+// We auto-load the texture so the editor opens with it ready, and reveal
+// the "Apply to Mesh" button on every result tab.
+const retextureParams = new URLSearchParams(window.location.search);
+const retextureGlb = retextureParams.get('retexture_glb');
+const retextureTexture = retextureParams.get('retexture_texture');
+
+if (retextureGlb && retextureTexture) {
+  // Show all "Apply to Mesh" buttons (parent result-actions div remains
+  // hidden until each tab populates a result, so the button only becomes
+  // visible once there's something to apply).
+  document.querySelectorAll('.apply-mesh-btn').forEach(btn => {
+    btn.style.display = '';
+    btn.addEventListener('click', async () => {
+      const imgId = btn.dataset.resultImg;
+      const img = document.getElementById(imgId);
+      if (!img || !img.src) return;
+      // Send the full URL (minus origin) — keep the query string so
+      // /api/frame/serve?path=<abs> URLs survive intact. The backend
+      // parses both /storage/ and /api/frame/serve forms and ignores
+      // cache-bust `t=` params during resolution.
+      const editedUrl = img.src.replace(window.location.origin, '');
+      btn.disabled = true;
+      btn.textContent = 'Applying...';
+      try {
+        const resp = await fetch('/api/3d/apply-texture', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            source_glb: retextureGlb,
+            edited_texture: editedUrl,
+          }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+        // Land on the dedicated mesh-edit page so the user sees the
+        // result rendered in a model-viewer immediately, instead of
+        // hunting for it in the generation page's gallery strip.
+        const params = new URLSearchParams({ glb: data.new_glb_url });
+        window.location.href = `/studio/mesh-edit?${params.toString()}`;
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = 'Apply to Mesh';
+        alert('Apply failed: ' + err.message);
+      }
+    });
+  });
+
+  // Pre-load the extracted texture into the editor so the user doesn't
+  // have to re-upload it — saves a click and avoids the wrong-file trap.
+  const preloadImg = new Image();
+  preloadImg.onload = () => {
+    if (typeof applyImageToAll === 'function') {
+      applyImageToAll(retextureTexture, retextureTexture.split('/').pop());
+    }
+  };
+  preloadImg.src = retextureTexture;
 }
 
 fromFrameBtn.addEventListener('click', () => {
@@ -609,8 +702,18 @@ document.getElementById('run-bg-remove').addEventListener('click', async () => {
 
     if (data.result_url) {
       const ri = document.getElementById('result-img-bg');
-      ri.src = data.result_url + '?t=' + Date.now();
+      // /api/frame/serve?path=... already contains a `?`, so the cache-bust
+      // separator must be `&` not `?` — appending `?t=` here corrupted the
+      // path query param and made the preview 404 silently while the Save
+      // button (no cache-bust) kept working.
+      const sep = data.result_url.includes('?') ? '&' : '?';
+      ri.src = data.result_url + sep + 't=' + Date.now();
       ri.style.display = 'block';
+      // Hide the "Result will appear here" placeholder — without this, the
+      // flex parent renders both the text and the image side-by-side and
+      // the image gets pushed half off-screen.
+      const placeholder = document.querySelector('#result-body-bg .img-placeholder');
+      if (placeholder) placeholder.style.display = 'none';
       document.getElementById('result-actions-bg').style.display = 'flex';
       document.getElementById('result-size-bg').textContent = data.filename || '';
       status.className = 'status-msg ok';
@@ -621,6 +724,125 @@ document.getElementById('run-bg-remove').addEventListener('click', async () => {
     } else {
       throw new Error(data.error || 'No result returned');
     }
+  } catch (err) {
+    clearInterval(ticker);
+    status.className = 'status-msg err';
+    status.textContent = 'Error: ' + err.message;
+  } finally {
+    btn.disabled = false;
+    setTimeout(() => { bar.classList.remove('active'); fill.style.width = '0%'; }, 800);
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// Object Remove (LaMa)
+// ═══════════════════════════════════════════════════════
+function buildBinaryMaskB64(maskCanvas, naturalW, naturalH) {
+  // The on-screen mask canvas is sized to the image's display dims (CSS px).
+  // LaMa needs a B&W PNG at the source's natural resolution. We re-render
+  // the painted alpha into a fresh canvas of (naturalW x naturalH).
+  const out = document.createElement('canvas');
+  out.width = naturalW; out.height = naturalH;
+  const octx = out.getContext('2d');
+  octx.fillStyle = 'black';
+  octx.fillRect(0, 0, naturalW, naturalH);
+
+  const src = maskCanvas.getContext('2d').getImageData(0, 0, maskCanvas.width, maskCanvas.height);
+  // Build a same-size binary mask first, then upscale to natural dims.
+  const bin = document.createElement('canvas');
+  bin.width = maskCanvas.width; bin.height = maskCanvas.height;
+  const bctx = bin.getContext('2d');
+  const dst = bctx.createImageData(maskCanvas.width, maskCanvas.height);
+  for (let i = 0; i < src.data.length; i += 4) {
+    const painted = src.data[i + 3] > 30; // any non-trivial alpha = mask
+    const v = painted ? 255 : 0;
+    dst.data[i] = v; dst.data[i + 1] = v; dst.data[i + 2] = v; dst.data[i + 3] = 255;
+  }
+  bctx.putImageData(dst, 0, 0);
+  octx.imageSmoothingEnabled = false;
+  octx.drawImage(bin, 0, 0, naturalW, naturalH);
+  return out.toDataURL('image/png').split(',')[1];
+}
+
+// Live update for the dilation slider's px label.
+(() => {
+  const slider = document.getElementById('dilate-rm');
+  const label = document.getElementById('dilate-rm-val');
+  if (slider && label) {
+    slider.addEventListener('input', () => { label.textContent = slider.value + ' px'; });
+  }
+})();
+
+document.getElementById('run-obj-remove').addEventListener('click', async () => {
+  const btn    = document.getElementById('run-obj-remove');
+  const status = document.getElementById('rm-status');
+  const bar    = document.getElementById('rm-progress');
+  const fill   = document.getElementById('rm-fill');
+  const img    = document.getElementById('src-img-rm');
+  const cvs    = document.getElementById('mask-rm');
+
+  if (!img.src || !img.naturalWidth) {
+    status.textContent = 'Load a source image first.';
+    status.className = 'status-msg err';
+    return;
+  }
+  // Quick check: any painted pixels?
+  const hasMask = (() => {
+    const d = cvs.getContext('2d').getImageData(0, 0, cvs.width, cvs.height).data;
+    for (let i = 3; i < d.length; i += 4) if (d[i] > 30) return true;
+    return false;
+  })();
+  if (!hasMask) {
+    status.textContent = 'Paint, lasso, or SAM2-click the object to remove first.';
+    status.className = 'status-msg err';
+    return;
+  }
+
+  btn.disabled = true;
+  status.textContent = 'Running LaMa...';
+  status.className = 'status-msg';
+  bar.classList.add('active');
+  let pct = 0;
+  const ticker = setInterval(() => { pct = Math.min(pct + 3, 90); fill.style.width = pct + '%'; }, 250);
+
+  try {
+    const mask_b64 = buildBinaryMaskB64(cvs, img.naturalWidth, img.naturalHeight);
+    const mask_dilate = parseInt(document.getElementById('dilate-rm').value, 10);
+    let body;
+    if (loadedPath) {
+      body = JSON.stringify({ path: loadedPath, mask_b64, mask_dilate });
+    } else {
+      // File-picker / drag-drop uploads: serialize the source image to b64.
+      const tmp = document.createElement('canvas');
+      tmp.width = img.naturalWidth; tmp.height = img.naturalHeight;
+      tmp.getContext('2d').drawImage(img, 0, 0);
+      const image_b64 = tmp.toDataURL('image/png').split(',')[1];
+      body = JSON.stringify({ image_b64, mask_b64, mask_dilate });
+    }
+    const res = await fetch('/api/image/object-remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    });
+    const data = await res.json();
+    clearInterval(ticker);
+    fill.style.width = '100%';
+
+    if (!data.result_url) throw new Error(data.error || 'No result returned');
+
+    const ri = document.getElementById('result-img-rm');
+    const sep = data.result_url.includes('?') ? '&' : '?';
+    ri.src = data.result_url + sep + 't=' + Date.now();
+    ri.style.display = 'block';
+    const ph = document.getElementById('result-ph-rm');
+    if (ph) ph.style.display = 'none';
+    document.getElementById('result-actions-rm').style.display = 'flex';
+    document.getElementById('result-size-rm').textContent = data.filename || '';
+    status.className = 'status-msg ok';
+    status.textContent = `Done — ${data.elapsed_ms}ms`;
+    document.getElementById('dl-rm-btn').onclick = () => {
+      const a = document.createElement('a'); a.href = data.result_url; a.download = data.filename; a.click();
+    };
   } catch (err) {
     clearInterval(ticker);
     status.className = 'status-msg err';

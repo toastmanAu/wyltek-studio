@@ -436,7 +436,10 @@
     <div class="result-area" id="result-area">
       <div class="result-header">
         <strong id="result-title">Result</strong>
-        <button class="btn-send" id="btn-send">Send to Project</button>
+        <div style="display:flex;gap:6px">
+          <button class="btn-send" id="btn-save-beats" style="background:var(--accent);color:#fff">💾 Save</button>
+          <button class="btn-send" id="btn-send">Send to Project</button>
+        </div>
       </div>
       <audio id="result-audio" controls></audio>
       <div class="result-meta" id="result-meta"></div>
@@ -903,12 +906,44 @@
       }
     }
 
+    // Save current media to device (mobile share sheet or desktop download).
+    // Same pattern as music.html / frames.html — fetch served URL → Blob →
+    // navigator.share() preferred, <a download> fallback.
+    async function saveMediaToDevice(mediaEl, defaultPrefix, defaultMime) {
+      const url = mediaEl && mediaEl.src && mediaEl.src.split('?')[0];
+      if (!url) { toast('Generate first'); return; }
+      try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const blob = await res.blob();
+        const inferred = url.split('/').pop()
+          || (defaultPrefix + '-' + Date.now() + '.wav');
+        const file = new File([blob], inferred, { type: blob.type || defaultMime });
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file], title: inferred });
+          toast('Shared');
+        } else {
+          const objUrl = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = objUrl; a.download = inferred;
+          document.body.appendChild(a); a.click(); a.remove();
+          setTimeout(() => URL.revokeObjectURL(objUrl), 1000);
+          toast('Downloaded ' + inferred);
+        }
+      } catch (err) {
+        if (err && err.name === 'AbortError') return;
+        toast('Save failed: ' + err.message);
+      }
+    }
+
     // ── Event wiring ───────────────────────────────────────────────────────────
     document.getElementById('btn-preview').addEventListener('click', () => doBuild('preview'));
     document.getElementById('btn-build').addEventListener('click', () => doBuild('build'));
     document.getElementById('btn-enhance-toggle').addEventListener('click', toggleEnhance);
     document.getElementById('btn-enhance-go').addEventListener('click', doEnhance);
     document.getElementById('btn-send').addEventListener('click', sendToProject);
+    document.getElementById('btn-save-beats').addEventListener('click', () =>
+      saveMediaToDevice(document.getElementById('result-audio'), 'beat', 'audio/wav'));
     document.getElementById('btn-modal-close').addEventListener('click', closeSwapModal);
     document.getElementById('swap-modal').addEventListener('click', (e) => {
       if (e.target === e.currentTarget) closeSwapModal();

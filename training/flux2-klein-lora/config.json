@@ -1,0 +1,50 @@
+{
+  "model_type": "lora",
+  "model_family": "flux2",
+  "model_flavour": "klein-9b",
+  "pretrained_model_name_or_path": "black-forest-labs/FLUX.2-klein-base-9B",
+
+  "output_dir": "/home/phill/open-palette/training/flux2-klein-lora/outputs",
+  "cache_dir": "/home/phill/open-palette/training/flux2-klein-lora/cache/hf",
+
+  "train_batch_size": 1,
+  "gradient_accumulation_steps": 4,
+  "gradient_checkpointing": true,
+  "mixed_precision": "bf16",
+
+  "learning_rate": 1e-4,
+  "lr_scheduler": "constant",
+  "lr_warmup_steps": 50,
+  "max_train_steps": 2000,
+
+  "lora_rank": 32,
+  "lora_alpha": 32,
+  "flux_lora_target": "all",
+
+  "optimizer": "adamw_bf16",
+  "max_grad_norm": 1.0,
+
+  "resolution": 1024,
+  "resolution_type": "pixel",
+  "aspect_bucket_rounding": 2,
+
+  "checkpointing_steps": 250,
+  "checkpoints_total_limit": 3,
+  "validation_steps": 250,
+  "validation_resolution": "1024x1024",
+  "validation_num_inference_steps": 20,
+  "validation_guidance": 3.5,
+  "num_validation_images": 2,
+  "validation_prompt": "op_palette_v1 style, a mountain landscape at sunset",
+  "validation_seed": 42,
+
+  "report_to": "none",
+  "tracker_project_name": "open-palette-flux2-lora",
+  "tracker_run_name": "klein-9b-v1",
+
+  "data_backend_config": "/home/phill/open-palette/training/flux2-klein-lora/multidatabackend.json",
+
+  "seed": 42,
+  "allow_tf32": true,
+  "compress_disk_cache": true
+}

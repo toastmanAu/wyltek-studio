@@ -7,19 +7,83 @@
   <link rel="stylesheet" href="/static/css/style.css">
   <link rel="stylesheet" href="/static/css/nav.css">
   <script src="/static/js/nav.js"></script>
+  <!-- Required for the <model-viewer> custom element used in the
+       mesh-thumb when the user picks a 3D source. Without it the
+       element renders as an unrecognised tag (empty box). -->
+  <script type="module" src="/static/js/model-viewer.min.js"></script>
   <style>
     .studio-page { max-width: 1400px; margin: 0 auto; padding: 32px 24px; }
     .studio-header h2 { margin: 0 0 4px; }
     .studio-header .subtitle { font-size: 13px; color: var(--text-dim); margin-bottom: 20px; }
+    /* Source-mode toggle: Image (existing flow) vs Mesh (atlas re-texture) */
+    .mode-row { display: flex; gap: 8px; margin-bottom: 16px; }
+    .mode-btn {
+      padding: 8px 16px; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text-dim); cursor: pointer; font-size: 13px;
+    }
+    .mode-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+    /* Mesh-mode source block — replaces base-tile when active */
+    .mesh-source-block { display: none; margin-bottom: 20px; }
+    .mesh-source-block.active { display: block; }
+    .mesh-pick-row { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; margin-bottom: 12px; }
+    .mesh-thumb {
+      width: clamp(140px, 45vw, 180px);
+      height: clamp(140px, 45vw, 180px);
+      background: var(--surface); border: 2px dashed var(--border); border-radius: 8px;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      overflow: hidden; cursor: pointer; position: relative;
+    }
+    .mesh-thumb.has-mesh { border-style: solid; }
+    .mesh-thumb model-viewer { width: 100%; height: 100%; }
+    .mesh-thumb .label { font-size: 12px; color: var(--text-dim); padding: 0 8px; text-align: center; }
+    .atlas-canvas-wrap {
+      flex: 1; min-width: 240px; max-width: 480px;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+      padding: 8px; display: none;
+    }
+    .atlas-canvas-wrap.active { display: block; }
+    .atlas-canvas-wrap .label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; margin-bottom: 6px; }
+    .atlas-canvas-wrap .atlas-stage {
+      position: relative; display: inline-block; line-height: 0;
+      max-width: 100%; background: rgba(0,0,0,0.2); border-radius: 4px;
+    }
+    .atlas-canvas-wrap img.atlas-preview {
+      display: block; max-width: 100%; max-height: 220px;
+      object-fit: contain; image-rendering: pixelated;
+    }
+    .atlas-canvas-wrap canvas.atlas-mask-canvas {
+      position: absolute; top: 0; left: 0; cursor: crosshair;
+    }
+    .atlas-canvas-wrap canvas.atlas-mask-canvas.busy { cursor: wait; }
+    .atlas-canvas-wrap .atlas-controls {
+      display: flex; gap: 8px; align-items: center; margin-top: 6px; flex-wrap: wrap;
+    }
+    .atlas-canvas-wrap .meta { font-size: 11px; color: var(--text-dim); }
+    .btn-mini {
+      padding: 4px 10px; font-size: 11px; background: var(--surface-2);
+      border: 1px solid var(--border); border-radius: 4px; color: var(--text);
+      cursor: pointer;
+    }
+    .btn-mini:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .btn-mini:disabled { opacity: 0.5; cursor: not-allowed; }
+
     .ref-row { display: flex; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
+    .ref-row.image-mode .image-only { display: flex; }
+    .ref-row.mesh-mode .image-only { display: none; }
     .ref-tile {
-      width: 180px; height: 180px; border: 2px dashed var(--border); border-radius: 8px;
+      /* Responsive: full size on desktop, scales down on phones so two
+         tiles + crypto picker fit a 375px-wide viewport without forcing
+         all three onto separate rows. */
+      width: clamp(140px, 45vw, 180px);
+      height: clamp(140px, 45vw, 180px);
+      border: 2px dashed var(--border); border-radius: 8px;
       display: flex; flex-direction: column; align-items: center; justify-content: center;
       cursor: pointer; position: relative; overflow: hidden; background: var(--surface);
     }
     .ref-tile.has-image { border-style: solid; }
     .ref-tile img { width: 100%; height: 100%; object-fit: contain; }
-    .ref-tile .label { font-size: 12px; color: var(--text-dim); text-align: center; }
+    .ref-tile .label { font-size: 12px; color: var(--text-dim); text-align: center; padding: 0 8px; }
     .ref-tile .clear {
       position: absolute; top: 6px; right: 6px; width: 22px; height: 22px;
       background: rgba(0,0,0,0.7); color: #fff; border: none; border-radius: 50%;
@@ -27,7 +91,50 @@
     }
     .ref-tile.has-image .clear { display: block; }
     .ref-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; margin-bottom: 6px; }
-    .crypto-picker { width: 180px; display: flex; flex-direction: column; gap: 6px; position: relative; }
+    .crypto-picker {
+      width: clamp(160px, 45vw, 200px);
+      display: flex; flex-direction: column; gap: 6px; position: relative;
+    }
+
+    /* ─── Action sheet for image source picking ─────────────────────────
+       Replaces the desktop-only "tap-to-pick-from-gallery" + drag-drop
+       pattern with an explicit choice screen that works identically on
+       desktop and touch. Each button maps to a hidden file input or the
+       gallery modal. */
+    .sheet-bg { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 110; }
+    .sheet-bg.active { display: flex; align-items: flex-end; justify-content: center; }
+    @media (min-width: 600px) {
+      .sheet-bg.active { align-items: center; }
+    }
+    .sheet {
+      background: var(--surface);
+      border-radius: 14px 14px 0 0;
+      padding: 16px;
+      width: 100%; max-width: 480px;
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    @media (min-width: 600px) {
+      .sheet { border-radius: 14px; margin-bottom: 24px; }
+    }
+    .sheet-title { font-size: 14px; color: var(--text-dim); margin: 4px 0 8px; text-align: center; }
+    .sheet-btn {
+      padding: 14px 16px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 14px;
+      text-align: left;
+      cursor: pointer;
+      display: flex; align-items: center; gap: 12px;
+    }
+    .sheet-btn:hover, .sheet-btn:active { background: var(--accent-dim, rgba(255,255,255,0.05)); }
+    .sheet-btn .sheet-ic { font-size: 18px; width: 22px; text-align: center; }
+    .sheet-cancel {
+      margin-top: 4px; padding: 12px;
+      background: transparent; border: none;
+      color: var(--text-dim); font-size: 13px; cursor: pointer;
+    }
     .crypto-picker input {
       padding: 6px 8px; background: var(--surface); border: 1px solid var(--border);
       border-radius: 6px; color: var(--text); font-size: 12px;
@@ -75,11 +182,52 @@
   <div class="studio-page">
     <div class="studio-header">
       <h2>Style Remix</h2>
-      <div class="subtitle">Pick a character from your gallery, apply a style reference.</div>
+      <div class="subtitle">Pick a 2D image or 3D mesh, apply a style reference.</div>
     </div>
 
-    <div class="ref-row">
-      <div>
+    <div class="mode-row" role="radiogroup" aria-label="Source type">
+      <button type="button" class="mode-btn active" data-source-mode="image" onclick="setSourceMode('image')">2D Image</button>
+      <button type="button" class="mode-btn" data-source-mode="mesh" onclick="setSourceMode('mesh')">3D Mesh</button>
+    </div>
+
+    <!-- Mesh source block — visible only when source-mode=mesh. The atlas
+         extracted from the picked GLB becomes the base image for remix;
+         in v1 the whole atlas is restyled (no mask). -->
+    <div class="mesh-source-block" id="mesh-source-block">
+      <div class="ref-label">Source Mesh</div>
+      <div class="mesh-pick-row">
+        <div class="mesh-thumb" id="mesh-thumb" onclick="openMeshPicker()">
+          <span class="label">Click to pick a 3D mesh</span>
+        </div>
+        <div class="atlas-canvas-wrap" id="atlas-canvas-wrap">
+          <div class="label">Atlas — tap a region to mark it for restyle (or skip for whole-atlas)</div>
+          <div class="atlas-stage" id="atlas-stage">
+            <img id="atlas-preview" class="atlas-preview" alt="">
+            <canvas id="atlas-mask-canvas" class="atlas-mask-canvas"></canvas>
+          </div>
+          <div class="atlas-controls">
+            <button type="button" class="btn-mini" id="clear-mask-btn" disabled>Clear mask</button>
+            <label style="font-size:11px;color:var(--text-dim);">Size
+              <select id="sam-size" style="font-size:11px;padding:3px 6px;background:var(--surface-2);border:1px solid var(--border);border-radius:4px;color:var(--text);" title="Pick which scale of SAM's multi-mask output to use. Small=just the patch, Large=the whole part.">
+                <option value="auto" selected>Auto</option>
+                <option value="small">Small</option>
+                <option value="medium">Medium</option>
+                <option value="large">Large</option>
+              </select>
+            </label>
+            <label style="font-size:11px;color:var(--text-dim);display:flex;align-items:center;gap:4px;" title="Grow (+) or shrink (-) the mask after segmentation. Pixels.">
+              Padding
+              <input type="range" id="sam-padding" min="-15" max="30" step="1" value="0" style="width:80px;">
+              <span class="meta" id="sam-padding-val" style="min-width:24px;text-align:right;">0</span>
+            </label>
+            <span class="meta" id="atlas-meta"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="ref-row image-mode">
+      <div class="image-only">
         <div class="ref-label">Base Character</div>
         <div class="ref-tile" id="base-tile" onclick="onBaseTileClick()">
           <span class="label">Click to pick from gallery<br>or drop an image</span>
@@ -104,6 +252,10 @@
       </div>
 
       <input type="file" id="hidden-upload" accept="image/*" style="display:none">
+      <!-- Camera-only input (mobile triggers the device camera; desktop
+           falls back to a file picker, harmless). Separate from the
+           normal upload input so each option is unambiguous. -->
+      <input type="file" id="hidden-camera" accept="image/*" capture="environment" style="display:none">
     </div>
 
     <div class="hint-row">
@@ -134,17 +286,18 @@
       <div>
         <label>Blend Mode</label>
         <select id="blend-mode">
-          <option value="style transfer" selected>Style Transfer</option>
-          <option value="standard">Standard</option>
-          <option value="prompt is more important">Prompt Priority</option>
+          <option value="strong style transfer" selected>Strong Style Transfer</option>
+          <option value="style transfer">Subtle Style</option>
+          <option value="style and composition">Style + Composition</option>
+          <option value="linear">Balanced (all layers)</option>
         </select>
       </div>
       <div>
-        <label>Model</label>
+        <label>Model <span style="color:var(--text-dim);text-transform:none">(SDXL only)</span></label>
         <select id="model"></select>
       </div>
       <div>
-        <label>LoRA</label>
+        <label>LoRA <span style="color:var(--text-dim);text-transform:none">(SDXL only)</span></label>
         <select id="lora"></select>
       </div>
       <div>
@@ -186,6 +339,35 @@
     <div class="modal" onclick="event.stopPropagation()">
       <h3>Pick Base Character</h3>
       <div class="gallery-grid" id="gallery-grid"></div>
+    </div>
+  </div>
+
+  <!-- Mesh picker — shown when user enters Mesh source mode and clicks
+       the mesh-thumb. Filters /api/gallery to .glb/.gltf items and shows
+       atlas thumbnails (optimistically loading <basename>.texture.png,
+       same trick as mesh-edit's gallery picker). -->
+  <div class="modal-bg" id="mesh-picker-modal" onclick="closeMeshPicker(event)">
+    <div class="modal" onclick="event.stopPropagation()">
+      <h3>Pick 3D Mesh</h3>
+      <div class="gallery-grid" id="mesh-picker-grid"></div>
+    </div>
+  </div>
+
+  <!-- Action sheet — shown when the user taps a ref-tile. Buttons populate
+       per-tile in JS (gallery is base-only; upload + camera are universal). -->
+  <div class="sheet-bg" id="source-sheet" onclick="closeSourceSheet(event)">
+    <div class="sheet" onclick="event.stopPropagation()">
+      <div class="sheet-title" id="source-sheet-title">Choose source</div>
+      <button class="sheet-btn" id="sheet-gallery-btn" onclick="onSheetPick('gallery')">
+        <span class="sheet-ic">&#128194;</span><span>Pick from Gallery</span>
+      </button>
+      <button class="sheet-btn" onclick="onSheetPick('upload')">
+        <span class="sheet-ic">&#128206;</span><span>Upload from device</span>
+      </button>
+      <button class="sheet-btn" onclick="onSheetPick('camera')">
+        <span class="sheet-ic">&#128247;</span><span>Take Photo</span>
+      </button>
+      <button class="sheet-cancel" onclick="closeSourceSheet()">Cancel</button>
     </div>
   </div>
 

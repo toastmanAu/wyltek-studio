@@ -72,6 +72,42 @@ async def lifespan(app):
 app = FastAPI(title="Wyltek Studio", lifespan=lifespan)
 
 
+# 3D job timeouts — empirically tuned per engine/mode. The OUTER timeout
+# (asyncio.wait_for in JobQueue) MUST be larger than the INNER timeout
+# (ComfyUI poll in backends/comfyui.py) so that on a healthy completion
+# the inner finishes first and the outer never fires. 180s slack covers
+# post-completion copy, sidecar write, and gallery cache invalidation.
+#
+# Keys: ("engine", "mode-flag")
+# Values: inner ComfyUI-poll timeout in seconds (outer = inner + 180)
+#
+# Note: TRELLIS terminology in our code is "shape"/"textured" (mirroring
+# Hy3D's "shape"/"pbr" UX). The plan that authored this table used "white"
+# for TRELLIS shape-only — corrected here to match actual mode_3d values.
+_3D_INNER_TIMEOUTS = {
+    ("trellis", "textured"): 3000,  # ~32 min observed on 7900 XTX
+    ("trellis", "shape"):     600,  # ~1–2 min observed
+    ("hy3d",    "pbr"):      2100,  # ~3–5 min typical, 35 min hard cap
+    ("hy3d",    "shape"):     300,  # ~30s typical
+    ("worldgen", "t2s"):      540,  # ~3 min observed at 1024 panorama; bump for higher res
+    ("worldgen", "i2s"):      540,
+}
+_3D_INNER_TIMEOUT_DEFAULT = 1800
+_3D_OUTER_HANDOFF_SLACK = 180
+
+
+def resolve_3d_timeouts(engine: str, mode_flag: str) -> tuple[int, int]:
+    """Return (outer_job_timeout, inner_comfy_timeout) in seconds.
+
+    `engine` is "trellis" or "hy3d". `mode_flag` is the resolved per-engine
+    mode-string used by the inner backend ("textured"/"shape" for TRELLIS,
+    "pbr"/"shape" for Hy3D). Outer is always inner + slack so a healthy run
+    never trips the outer.
+    """
+    inner = _3D_INNER_TIMEOUTS.get((engine, mode_flag), _3D_INNER_TIMEOUT_DEFAULT)
+    return inner + _3D_OUTER_HANDOFF_SLACK, inner
+
+
 # --- Static files & SPA ---
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -135,9 +171,22 @@ async def studio_infographic():
     return FileResponse("static/studio/infographic.html")
 
 
+@app.get("/studio/image-edit")
+async def image_edit_page():
+    return FileResponse("static/studio/image-edit.html")
+
+
 @app.get("/studio/image-tools")
-async def image_tools_page():
-    return FileResponse("static/studio/image-tools.html")
+async def image_tools_legacy_redirect():
+    """Back-compat alias — old bookmarks / sessionStorage 'imagetools-source'
+    code paths still hit /studio/image-tools. Redirect to the new home."""
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/studio/image-edit", status_code=308)
+
+
+@app.get("/studio/video-tools")
+async def video_tools_page():
+    return FileResponse("static/studio/video-tools.html")
 
 
 @app.get("/studio/audio")
@@ -153,6 +202,110 @@ async def beats_page():
 @app.get("/studio/remix")
 async def remix_page():
     return FileResponse("static/studio/remix.html")
+
+
+@app.get("/studio/worldgen")
+async def worldgen_page():
+    return FileResponse("static/studio/worldgen.html")
+
+
+@app.get("/studio/mesh-edit")
+async def mesh_edit_page():
+    return FileResponse("static/studio/mesh-edit.html")
+
+
+@app.get("/api/worldgen/status")
+async def api_worldgen_status():
+    """Report whether the WorldGen subprocess backend is ready to accept jobs."""
+    from pathlib import Path
+
+    repo = Path("/home/phill/repos/WorldGen")
+    smoke_log = Path("/tmp/worldgen-smoke2.log")
+
+    if not repo.exists():
+        return {"ready": False, "reason": "WorldGen repo not cloned at ~/repos/WorldGen"}
+
+    # Check our patched modules exist
+    patched_files = [
+        repo / "src/worldgen/pano_gen.py",
+        repo / "src/worldgen/utils/lora_utils.py",
+        repo / "src/worldgen/utils/splat_utils.py",
+    ]
+    missing = [str(p) for p in patched_files if not p.exists()]
+    if missing:
+        return {"ready": False, "reason": f"WorldGen source incomplete: missing {missing}"}
+
+    # Smoke-test status — set to true once a successful end-to-end run lands a mesh
+    smoke_ok_marker = Path("/data/wyltek/worldgen/smoke_ok")
+    if not smoke_ok_marker.exists():
+        return {
+            "ready": False,
+            "reason": "End-to-end smoke test not yet verified on this machine. "
+                      "Run scripts/worldgen_smoke.sh to populate /data/wyltek/worldgen/smoke_ok.",
+        }
+
+    return {
+        "ready": True,
+        "notes": (
+            "Subprocess executor live. Typical run 3-5 min; first request after "
+            "boot triggers FLUX.1-dev pipeline build (~5s + denoise time)."
+        ),
+    }
+
+
+@app.post("/api/worldgen")
+async def api_worldgen(
+    prompt: str = Form(""),
+    mode: str = Form("t2s"),
+    resolution: int = Form(1600),
+    seed: int = Form(42),
+    output_format: str = Form("mesh"),
+    reference_image: UploadFile | None = File(None),
+):
+    """Queue a Worldgen scene generation job.
+
+    Routes through the same job_queue + _run_job pipeline as 3D Hy3D/TRELLIS
+    jobs (engine="worldgen"). Output GLB lands in storage/unsorted/<date>/meshes/
+    and the gallery picks it up automatically.
+    """
+    from pathlib import Path as _P
+    from uuid import uuid4
+
+    if mode == "t2s" and not prompt.strip():
+        raise HTTPException(400, "text-to-scene mode requires a prompt")
+    if mode == "i2s" and not reference_image:
+        raise HTTPException(400, "image-to-scene mode requires a reference image")
+
+    job_id = str(uuid4())
+    params: dict = {
+        "backend": "worldgen",
+        "engine": "worldgen",
+        "mode": "3d",                 # routes through is_3d branch in _run_job
+        "worldgen_mode": mode,        # t2s vs i2s for the worker
+        "mode_3d": mode,              # used by resolve_3d_timeouts
+        "prompt": prompt,
+        "resolution": resolution,
+        "seed": seed,
+        "output_format": output_format,
+        "reference_images": [],
+    }
+
+    # Persist any uploaded reference image into a per-job staging dir, then
+    # pass its path through to the worker via params["reference_images"].
+    if reference_image:
+        ref_dir = _P("/tmp/worldgen-refs") / job_id
+        ref_dir.mkdir(parents=True, exist_ok=True)
+        suffix = _P(reference_image.filename or "ref.png").suffix or ".png"
+        ref_path = ref_dir / f"ref0{suffix}"
+        async with aiofiles.open(ref_path, "wb") as f:
+            await f.write(await reference_image.read())
+        params["reference_images"] = [str(ref_path)]
+
+    jobs[job_id] = {"status": "queued", "progress": 0, "params": params}
+    outer, _inner = resolve_3d_timeouts("worldgen", mode)
+    job_queue.submit_background(_run_job(job_id, params), lane="gpu",
+                                job_id=job_id, timeout=outer)
+    return {"job_id": job_id}
 
 
 @app.post("/api/audio/extract")
@@ -281,9 +434,24 @@ async def api_audio_serve(path: str) -> FileResponse:
     return FileResponse(str(p))
 
 
+# Whitelist of rembg session names accepted by /api/image/bg-remove. Keep in
+# sync with the dropdown in static/studio/image-tools.html. New models in
+# rembg's sessions_class registry (e.g. via rembg upgrade) need to be added
+# here AND in the UI before they're selectable. Verify with:
+#   /data/venvs/rembg/bin/python -c "from rembg.sessions import sessions_class; \
+#       print(sorted(s.name() for s in sessions_class))"
 _REMBG_MODELS = {
+    # BiRefNet family — modern SOTA, recommended defaults
+    "birefnet-general", "birefnet-general-lite", "birefnet-massive",
+    "birefnet-portrait", "birefnet-dis", "birefnet-hrsod", "birefnet-cod",
+    # BRIA RMBG-2.0 — non-commercial license but very strong
+    "bria-rmbg",
+    # ISNet family
+    "isnet-general-use", "isnet-anime",
+    # u2net family — older but fast
     "u2net", "u2netp", "u2net_human_seg",
-    "isnet-general-use", "birefnet-general", "silueta",
+    # Other fast options
+    "silueta",
 }
 
 _REMBG_BIN = Path("/data/venvs/rembg/bin/rembg")
@@ -314,6 +482,189 @@ async def api_frame_grab(request: Request):
     out_path.write_bytes(img_bytes)
 
     return JSONResponse({"path": str(out_path), "filename": filename})
+
+
+@app.post("/api/video/tools/probe")
+async def api_video_tools_probe(file: UploadFile = File(...)):
+    """Save an uploaded video to a temp path and ffprobe it for metadata.
+
+    Returns: { path, duration, width, height, fps, codec, size_bytes }
+    Frontend uses this to populate the source preview + drive the live
+    filesize estimate.
+    """
+    import storage as store
+
+    if not file.filename:
+        return JSONResponse({"error": "No file"}, status_code=400)
+    suffix = Path(file.filename).suffix or ".mp4"
+    tmp_path = store.unsorted_dir() / f"upload-{uuid.uuid4().hex[:8]}{suffix}"
+    async with aiofiles.open(tmp_path, "wb") as f:
+        await f.write(await file.read())
+
+    cmd = [
+        "ffprobe", "-v", "error", "-print_format", "json",
+        "-show_streams", "-show_format", str(tmp_path),
+    ]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        tmp_path.unlink(missing_ok=True)
+        return JSONResponse(
+            {"error": "ffprobe failed", "detail": stderr.decode(errors="replace")[-300:]},
+            status_code=500,
+        )
+
+    info = json.loads(stdout.decode())
+    video_stream = next(
+        (s for s in info.get("streams", []) if s.get("codec_type") == "video"),
+        {},
+    )
+    fps = 0.0
+    rate = video_stream.get("r_frame_rate", "0/1")
+    if "/" in rate:
+        n, d = rate.split("/", 1)
+        try:
+            fps = float(n) / float(d) if float(d) else 0.0
+        except (ValueError, ZeroDivisionError):
+            fps = 0.0
+
+    raw_w = int(video_stream.get("width", 0) or 0)
+    raw_h = int(video_stream.get("height", 0) or 0)
+
+    # Detect rotation: phones record portrait clips as e.g. 1920×1080 with a
+    # rotation flag, not as 1080×1920. FFmpeg's scale filter operates on the
+    # auto-rotated frame, so the frontend needs *visual* dimensions to
+    # compute aspect ratio correctly. Two metadata flavors:
+    #   1. legacy: stream.tags.rotate = "90"/"180"/"270"
+    #   2. newer:  stream.side_data_list[].side_data_type == "Display Matrix"
+    #              with a `rotation` field (often negative; -90 ≡ 270).
+    rotation = 0
+    rot_tag = video_stream.get("tags", {}).get("rotate")
+    if rot_tag:
+        try:
+            rotation = int(rot_tag) % 360
+        except ValueError:
+            rotation = 0
+    if not rotation:
+        for sd in video_stream.get("side_data_list", []) or []:
+            if sd.get("side_data_type") == "Display Matrix" and "rotation" in sd:
+                try:
+                    rotation = int(round(float(sd["rotation"]))) % 360
+                except (TypeError, ValueError):
+                    rotation = 0
+                break
+
+    # Swap dims for ±90° rotation so width/height reported are visual.
+    # 180° flip doesn't swap (still landscape), only mirrors.
+    if rotation in (90, 270):
+        width, height = raw_h, raw_w
+    else:
+        width, height = raw_w, raw_h
+
+    return {
+        "path": str(tmp_path),
+        "duration": float(info.get("format", {}).get("duration", 0) or 0),
+        "size_bytes": int(info.get("format", {}).get("size", 0) or 0),
+        "width": width,
+        "height": height,
+        "fps": round(fps, 3),
+        "codec": video_stream.get("codec_name", "?"),
+        "rotation": rotation,
+    }
+
+
+@app.post("/api/video/tools/transcode")
+async def api_video_tools_transcode(request: Request):
+    """Transcode a previously-uploaded video with FFmpeg.
+
+    Request body (JSON):
+      path:   absolute path to source (from /probe)
+      width, height: target resolution (0,0 = keep source)
+      fps:    target fps (0 = keep source)
+      crf:    quality (0-51, lower=better; codec dependent)
+      codec:  'h264' | 'h265' | 'vp9' | 'av1'
+      format: 'mp4' | 'webm' | 'mov' | 'mkv'
+    """
+    import storage as store
+
+    data = await request.json()
+    src = Path(data.get("path", "")).resolve()
+    try:
+        _assert_under_storage(src)
+    except PermissionError:
+        return JSONResponse({"error": "Access denied"}, status_code=403)
+    if not src.exists():
+        return JSONResponse({"error": "Source not found"}, status_code=404)
+
+    width = int(data.get("width") or 0)
+    height = int(data.get("height") or 0)
+    fps = float(data.get("fps") or 0)
+    crf = int(data.get("crf") or 23)
+    codec = data.get("codec", "h264")
+    fmt = data.get("format", "mp4")
+
+    CODECS = {"h264": "libx264", "h265": "libx265", "vp9": "libvpx-vp9", "av1": "libaom-av1"}
+    FORMATS = {"mp4", "webm", "mov", "mkv"}
+    if codec not in CODECS:
+        return JSONResponse({"error": f"codec must be one of {list(CODECS)}"}, status_code=400)
+    if fmt not in FORMATS:
+        return JSONResponse({"error": f"format must be one of {sorted(FORMATS)}"}, status_code=400)
+    if not (0 <= crf <= 51):
+        return JSONResponse({"error": "crf must be 0-51"}, status_code=400)
+
+    tag_parts = [codec]
+    if width and height:
+        tag_parts.append(f"{height}p")
+    tag = "-".join(tag_parts)
+    out_filename = f"{src.stem}-{tag}-{uuid.uuid4().hex[:6]}.{fmt}"
+    out_path = store.unsorted_dir() / out_filename
+
+    args = ["ffmpeg", "-y", "-i", str(src)]
+
+    vf_parts = []
+    if width and height:
+        vf_parts.append(f"scale={width}:{height}")
+    if fps:
+        vf_parts.append(f"fps={fps}")
+    if vf_parts:
+        args += ["-vf", ",".join(vf_parts)]
+
+    args += ["-c:v", CODECS[codec]]
+    if codec in ("h264", "h265"):
+        args += ["-crf", str(crf), "-preset", "medium"]
+    elif codec == "vp9":
+        args += ["-crf", str(crf), "-b:v", "0"]
+    elif codec == "av1":
+        args += ["-crf", str(crf), "-b:v", "0", "-cpu-used", "4"]
+
+    audio_codec = "aac" if fmt in ("mp4", "mov") else "libopus" if fmt == "webm" else "aac"
+    args += ["-c:a", audio_codec, "-b:a", "192k"]
+
+    args.append(str(out_path))
+
+    t0 = time.time()
+    proc = await asyncio.create_subprocess_exec(
+        *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    elapsed = time.time() - t0
+
+    if proc.returncode != 0 or not out_path.exists():
+        return JSONResponse(
+            {"error": "ffmpeg failed", "detail": stderr.decode(errors="replace")[-500:]},
+            status_code=500,
+        )
+
+    return {
+        "path": str(out_path),
+        "filename": out_filename,
+        "url": f"/api/frame/serve?path={out_path}",
+        "size_bytes": out_path.stat().st_size,
+        "elapsed_s": round(elapsed, 1),
+    }
+
 
 
 @app.get("/api/frame/serve")
@@ -402,8 +753,122 @@ async def api_image_bg_remove(request: Request):
             tmp_path.unlink(missing_ok=True)
 
 
+_IOPAINT_BIN = Path("/data/venvs/iopaint/bin/iopaint")
+
+
+@app.post("/api/image/object-remove")
+async def api_image_object_remove(request: Request):
+    """Remove an object from an image via iopaint/LaMa.
+
+    Body: {path, mask_b64}. The white pixels in mask_b64 are removed and
+    inpainted by LaMa. Mask is auto-resized to source by iopaint.
+    """
+    import storage as store
+    import shutil as _shutil
+
+    if not _IOPAINT_BIN.exists():
+        return JSONResponse(
+            {"error": "iopaint not installed at /data/venvs/iopaint/"},
+            status_code=503,
+        )
+
+    data = await request.json()
+    mask_b64: str = data.get("mask_b64", "")
+    if not mask_b64:
+        return JSONResponse({"error": "mask_b64 required"}, status_code=400)
+    # SAM2 produces pixel-tight masks; LaMa needs a few px margin to avoid
+    # bleeding the object's edge back into the fill. Default 8 px is gentle
+    # enough that loose brush/lasso masks aren't visibly affected. Caller
+    # can pass 0 to disable.
+    mask_dilate: int = int(data.get("mask_dilate", 8))
+
+    # Resolve input: storage path or inline base64 (mirrors /api/image/bg-remove).
+    upload_tmp: Path | None = None
+    if "path" in data:
+        in_path = Path(data["path"]).resolve()
+        try:
+            _assert_under_storage(in_path)
+        except PermissionError:
+            return JSONResponse({"error": "Access denied"}, status_code=403)
+        if not in_path.exists():
+            return JSONResponse({"error": "Source file not found"}, status_code=404)
+    elif "image_b64" in data:
+        img_bytes = base64.b64decode(data["image_b64"])
+        upload_tmp = Path(tempfile.mkstemp(suffix=".png", prefix="objrm-src-")[1])
+        upload_tmp.write_bytes(img_bytes)
+        in_path = upload_tmp
+    else:
+        return JSONResponse({"error": "path or image_b64 required"}, status_code=400)
+
+    out_filename = f"{in_path.stem}-objrm-{uuid.uuid4().hex[:6]}.png"
+    out_path = store.unsorted_dir() / out_filename
+
+    # iopaint takes file paths; stage image + mask in matched dirs.
+    tmp_dir = Path(tempfile.mkdtemp(prefix="iopaint-"))
+    img_dir = tmp_dir / "img"; img_dir.mkdir()
+    mask_dir = tmp_dir / "mask"; mask_dir.mkdir()
+    out_dir = tmp_dir / "out"; out_dir.mkdir()
+    src_link = img_dir / in_path.name
+    src_link.symlink_to(in_path)
+    # Mask basename must match the image basename (iopaint dir-mode rule).
+    mask_path = mask_dir / in_path.name
+    mask_path.write_bytes(base64.b64decode(mask_b64))
+    if mask_dilate > 0:
+        from PIL import Image as _PIL, ImageFilter as _ImageFilter
+        # MaxFilter kernel size must be odd. Convert px radius → kernel size.
+        ksize = max(3, mask_dilate * 2 + 1)
+        if ksize % 2 == 0:
+            ksize += 1
+        m = _PIL.open(mask_path).convert("L")
+        m = m.filter(_ImageFilter.MaxFilter(size=ksize))
+        m.save(mask_path)
+
+    cmd = [
+        str(_IOPAINT_BIN), "run",
+        "--model", "lama",
+        "--device", "cpu",
+        "--image", str(img_dir),
+        "--mask", str(mask_dir),
+        "--output", str(out_dir),
+    ]
+
+    t0 = time.time()
+    try:
+        # Argv list, no shell — same safe pattern as /api/image/bg-remove.
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        elapsed_ms = int((time.time() - t0) * 1000)
+
+        produced = next(out_dir.glob("*.png"), None)
+        if produced is None:
+            lines = stderr.decode(errors="replace").strip().splitlines()
+            last = lines[-1] if lines else "iopaint produced no output"
+            return JSONResponse({"error": last}, status_code=500)
+
+        produced.rename(out_path)
+        return JSONResponse({
+            "result_url": f"/api/frame/serve?path={out_path}",
+            "filename": out_filename,
+            "output_path": str(out_path),
+            "elapsed_ms": elapsed_ms,
+        })
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+    finally:
+        _shutil.rmtree(tmp_dir, ignore_errors=True)
+        if upload_tmp and upload_tmp.exists():
+            upload_tmp.unlink(missing_ok=True)
+
+
 _SAM_MODEL_PATH = Path.home() / "ComfyUI/models/sams/sam_vit_l_0b3195.pth"
+_SAM2_CHECKPOINT = Path.home() / "ComfyUI/models/sams/sam2.1_hiera_large.pt"
+_SAM2_CONFIG = "configs/sam2.1/sam2.1_hiera_l.yaml"
 _sam_predictor = None  # loaded lazily, kept in memory
+_sam2_predictor = None  # SAM2 predictor, lazy
 
 
 def _load_sam():
@@ -419,20 +884,57 @@ def _load_sam():
     return _sam_predictor
 
 
+def _load_sam2():
+    """Load SAM2.1 hiera-large lazily; reuse across requests."""
+    global _sam2_predictor
+    if _sam2_predictor is not None:
+        return _sam2_predictor
+    import torch
+    from sam2.build_sam import build_sam2
+    from sam2.sam2_image_predictor import SAM2ImagePredictor
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    sam2_model = build_sam2(_SAM2_CONFIG, str(_SAM2_CHECKPOINT), device=device)
+    _sam2_predictor = SAM2ImagePredictor(sam2_model)
+    return _sam2_predictor
+
+
 @app.post("/api/image/sam-segment")
 async def api_image_sam_segment(request: Request):
-    """Click-to-segment using SAM ViT-L. Returns a B&W mask PNG as base64."""
+    """Click-to-segment. Prefers SAM2.1 (hiera-large), falls back to SAM v1
+    if the SAM2 checkpoint is missing. Returns a B&W mask PNG as base64."""
     import io
     import numpy as np
 
-    if not _SAM_MODEL_PATH.exists():
-        return JSONResponse({"error": "SAM model not found at ~/ComfyUI/models/sams/"}, status_code=503)
+    use_sam2 = _SAM2_CHECKPOINT.exists()
+    if not use_sam2 and not _SAM_MODEL_PATH.exists():
+        return JSONResponse(
+            {"error": "No SAM checkpoint found at ~/ComfyUI/models/sams/"},
+            status_code=503,
+        )
 
     data = await request.json()
     click_x: int = int(data.get("x", 0))
     click_y: int = int(data.get("y", 0))
 
-    # Resolve image
+    # Sensitivity knobs:
+    #  - mask_size: 'auto' (default; pick by SAM confidence), or
+    #               'small'/'medium'/'large' (pick by mask area). SAM returns
+    #               3 ambiguity-aware masks per click — for a dog-fur click
+    #               that's roughly (the brown patch / the leg / the whole dog).
+    #  - dilate: int pixels. Positive = grow mask outward, negative = erode.
+    #            Useful for tightening tight selections or feathering edges.
+    mask_size = str(data.get("mask_size", "auto")).lower()
+    dilate = int(data.get("dilate", 0))
+    if mask_size not in ("auto", "small", "medium", "large"):
+        mask_size = "auto"
+    dilate = max(-30, min(30, dilate))
+
+    # Resolve image. Three accepted forms:
+    #  - path: absolute filesystem path (legacy, used by image-tools)
+    #  - url: /storage/<...> URL — resolved via the shared storage helper
+    #         so callers like remix.js don't need to round-trip pixels
+    #         through base64 just to point SAM at a server-resident asset
+    #  - image_b64: pixels embedded in the request body (any source)
     tmp_path: Path | None = None
     if "path" in data:
         in_path = Path(data["path"]).resolve()
@@ -442,6 +944,11 @@ async def api_image_sam_segment(request: Request):
             return JSONResponse({"error": "Access denied"}, status_code=403)
         if not in_path.exists():
             return JSONResponse({"error": "File not found"}, status_code=404)
+    elif "url" in data:
+        resolved = _resolve_storage_url(data["url"])
+        if resolved is None:
+            return JSONResponse({"error": "Image URL did not resolve"}, status_code=404)
+        in_path = resolved
     elif "image_b64" in data:
         img_bytes = base64.b64decode(data["image_b64"])
         tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
@@ -453,37 +960,247 @@ async def api_image_sam_segment(request: Request):
         return JSONResponse({"error": "No image source"}, status_code=400)
 
     try:
-        # Run SAM in a thread so we don't block the event loop
-        def _run_sam() -> str:
+        def _run_sam() -> tuple[str, str]:
             from PIL import Image as PILImage
             img_pil = PILImage.open(in_path).convert("RGB")
             img_np = np.array(img_pil)
 
-            predictor = _load_sam()
-            predictor.set_image(img_np)
+            if use_sam2:
+                predictor = _load_sam2()
+                predictor.set_image(img_np)
+                masks, scores, _ = predictor.predict(
+                    point_coords=np.array([[click_x, click_y]]),
+                    point_labels=np.array([1]),
+                    multimask_output=True,
+                )
+                backend = "sam2.1"
+            else:
+                predictor = _load_sam()
+                predictor.set_image(img_np)
+                masks, scores, _ = predictor.predict(
+                    point_coords=np.array([[click_x, click_y]]),
+                    point_labels=np.array([1]),
+                    multimask_output=True,
+                )
+                backend = "sam_v1"
 
-            masks, scores, _ = predictor.predict(
-                point_coords=np.array([[click_x, click_y]]),
-                point_labels=np.array([1]),
-                multimask_output=True,
-            )
-            # Pick the mask with the highest score
-            best_mask = masks[int(np.argmax(scores))]  # H×W bool
-
-            # Encode as grayscale PNG
+            # Pick the mask. 'auto' = SAM's highest-confidence; sized
+            # selectors ('small'/'medium'/'large') sort the 3 multimasks
+            # by area and pick rank 0/1/2. Lets the user dial in "the
+            # brown patch" vs "the whole leg" vs "the whole animal".
+            if mask_size == "auto":
+                chosen = int(np.argmax(scores))
+            else:
+                areas = np.array([int(m.sum()) for m in masks])
+                order = np.argsort(areas)  # ascending: small → large
+                rank = {"small": 0, "medium": 1, "large": 2}[mask_size]
+                chosen = int(order[min(rank, len(order) - 1)])
+            best_mask = masks[chosen]
             mask_img = PILImage.fromarray((best_mask * 255).astype(np.uint8), mode="L")
+
+            # Dilate/erode via PIL's morphological filters. MaxFilter grows
+            # the white region; MinFilter shrinks it. Filter size is the
+            # diameter, so radius=N → size=2N+1 (must be odd).
+            if dilate != 0:
+                from PIL import ImageFilter
+                size = 2 * abs(dilate) + 1
+                op = ImageFilter.MaxFilter(size) if dilate > 0 else ImageFilter.MinFilter(size)
+                mask_img = mask_img.filter(op)
+
             buf = io.BytesIO()
             mask_img.save(buf, format="PNG")
-            return base64.b64encode(buf.getvalue()).decode()
+            return base64.b64encode(buf.getvalue()).decode(), backend
 
-        mask_b64 = await asyncio.get_event_loop().run_in_executor(None, _run_sam)
-        return JSONResponse({"mask_b64": mask_b64})
+        mask_b64, backend = await asyncio.get_event_loop().run_in_executor(None, _run_sam)
+        return JSONResponse({"mask_b64": mask_b64, "backend": backend})
 
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
     finally:
         if tmp_path and tmp_path.exists():
             tmp_path.unlink(missing_ok=True)
+
+
+# ----------------------------------------------------------------------------
+# 3D mesh re-texture (Path B: texture swap)
+# ----------------------------------------------------------------------------
+# These two endpoints decouple geometry from texture: the user can extract
+# the baseColor atlas of an existing GLB, run it through any 2D AI tool
+# (Style Remix, image-tools, Qwen, …), then write the edited PNG back into
+# a new GLB with identical geometry/UVs. See spec at
+# docs/superpowers/specs/2026-05-03-3d-retexture-design.md.
+
+def _resolve_storage_url(url_or_path: str) -> Path | None:
+    """Translate a storage URL or absolute path to a filesystem Path.
+
+    Accepts the URL conventions used across the studio:
+      - shorthand `/storage/<filename>` (gallery API — basename resolved
+        via `store.resolve_asset` searching projects+unsorted)
+      - deep `/storage/<dir>/<dir>/<filename>` (direct relative path)
+      - `/api/frame/serve?path=<abs>` (image-mutation endpoints; the real
+        path lives inside the query string, not the URL path)
+      - absolute `http(s)://host/...` (cache-busted asset URLs)
+
+    Returns None on lookup failure or path-traversal attempts.
+    """
+    import storage as store
+    from urllib.parse import urlsplit, parse_qs
+
+    if not url_or_path:
+        return None
+
+    # Strip any absolute origin so we work with the path component.
+    cleaned = url_or_path
+    for prefix in ("http://", "https://"):
+        if cleaned.startswith(prefix):
+            slash = cleaned.find("/", len(prefix))
+            cleaned = cleaned[slash:] if slash != -1 else ""
+            break
+
+    parts = urlsplit(cleaned)
+    path_only = parts.path
+    qs = parse_qs(parts.query)
+
+    if path_only == "/api/frame/serve":
+        # The actual filesystem path rides in the query string. _assert_under_storage
+        # below stops anything outside STORAGE_ROOT regardless.
+        raw = qs.get("path", [""])[0]
+        if not raw:
+            return None
+        candidate = Path(raw)
+    elif path_only.startswith("/storage/"):
+        rel = path_only[len("/storage/"):]
+        # Prefer the explicit deep path if it exists (avoids basename
+        # collisions across project subdirs); fall back to resolve_asset
+        # for shorthand `/storage/<filename>` URLs from /api/gallery.
+        direct = store.STORAGE_ROOT / rel
+        candidate = direct if direct.exists() else store.resolve_asset(path_only)
+    else:
+        candidate = Path(path_only)
+
+    if candidate is None:
+        return None
+    try:
+        candidate = candidate.resolve()
+        _assert_under_storage(candidate)
+    except (PermissionError, OSError):
+        return None
+    return candidate if candidate.exists() else None
+
+
+@app.post("/api/3d/extract-texture")
+async def api_3d_extract_texture(request: Request):
+    """Extract the baseColor PNG from a GLB.
+
+    Caches the result next to the source as `<stem>.texture.png` so
+    repeat extracts (e.g. user opens the texture editor twice) skip
+    the decode. Cache invalidates when the source GLB's mtime advances.
+    """
+    import storage as store
+    from texture_io import extract_basecolor
+
+    data = await request.json()
+    source = data.get("source_glb")
+    material_index = int(data.get("material_index", 0))
+
+    glb_path = _resolve_storage_url(source)
+    if glb_path is None:
+        return JSONResponse({"error": "Source GLB not found"}, status_code=404)
+
+    cache_path = glb_path.with_suffix(".texture.png")
+    cache_fresh = (
+        cache_path.exists()
+        and cache_path.stat().st_mtime >= glb_path.stat().st_mtime
+    )
+    if not cache_fresh:
+        try:
+            png_bytes, width, height = extract_basecolor(
+                glb_path, material_index=material_index
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        cache_path.write_bytes(png_bytes)
+    else:
+        from PIL import Image as _PIL
+        with _PIL.open(cache_path) as im:
+            width, height = im.size
+
+    # Return the shorthand `/storage/<basename>` URL — the gallery and
+    # serve_storage_file route both resolve by basename via resolve_asset,
+    # so the deep path stays an internal detail.
+    return JSONResponse({
+        "texture_url": f"/storage/{cache_path.name}",
+        "width": width,
+        "height": height,
+        "material_index": material_index,
+    })
+
+
+@app.post("/api/3d/apply-texture")
+async def api_3d_apply_texture(request: Request):
+    """Swap a GLB's baseColor with an edited PNG, write a new GLB.
+
+    Output goes next to the source as `<stem>-retex-<6chars>.glb` so
+    related files stay grouped. Geometry, UVs, and other PBR channels
+    (metallicRoughness, normal, occlusion, emissive) are byte-stable.
+    """
+    import storage as store
+    from texture_io import apply_basecolor
+
+    data = await request.json()
+    source = data.get("source_glb")
+    edited = data.get("edited_texture")
+    material_index = int(data.get("material_index", 0))
+
+    glb_path = _resolve_storage_url(source)
+    if glb_path is None:
+        return JSONResponse({"error": "Source GLB not found"}, status_code=404)
+    edited_path = _resolve_storage_url(edited)
+    if edited_path is None:
+        return JSONResponse({"error": "Edited texture not found"}, status_code=404)
+
+    out_filename = f"{glb_path.stem}-retex-{uuid.uuid4().hex[:6]}.glb"
+    out_path = glb_path.parent / out_filename
+
+    try:
+        apply_basecolor(
+            glb_path,
+            edited_path.read_bytes(),
+            out_path,
+            material_index=material_index,
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    return JSONResponse({"new_glb_url": f"/storage/{out_path.name}"})
+
+
+@app.post("/api/3d/stage-texture")
+async def api_3d_stage_texture(request: Request):
+    """Stage a base64-encoded PNG to /storage/ so it can be referenced
+    by `/api/3d/apply-texture`. Used by the mesh-edit page when the
+    user uploads an edited atlas directly (vs. routing through
+    image-edit / remix which already write to /storage/).
+    """
+    import storage as store
+
+    data = await request.json()
+    filename = (data.get("filename") or "edited").rsplit(".", 1)[0]
+    safe_stem = "".join(c for c in filename if c.isalnum() or c in "-_")[:40] or "edited"
+    b64 = data.get("image_b64")
+    if not b64:
+        return JSONResponse({"error": "image_b64 required"}, status_code=400)
+    try:
+        png_bytes = base64.b64decode(b64)
+    except Exception as exc:
+        return JSONResponse({"error": f"invalid base64: {exc}"}, status_code=400)
+
+    out_dir = store.unsorted_dir() / "images"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_filename = f"{safe_stem}-{uuid.uuid4().hex[:6]}.png"
+    out_path = out_dir / out_filename
+    out_path.write_bytes(png_bytes)
+    return JSONResponse({"url": f"/storage/{out_filename}"})
 
 
 @app.get("/api/meme/templates")
@@ -769,6 +1486,54 @@ async def get_backends():
                     if not any((m["id"] if isinstance(m, dict) else m) == unet for m in info["models"]):
                         info["models"].append({"id": unet, "label": unet.replace(".gguf", " (GGUF)").replace(".safetensors", ""), "available": True, "discovered": True, "format": "gguf" if unet.endswith(".gguf") else "safetensors"})
 
+                # Surface 3D DiT models in their own list so the frontend's
+                # 3D dropdown can be populated independently of 2D checkpoints.
+                # We don't add these to `info["models"]` (the 2D list) — that's
+                # exactly the bug we're fixing. Both Hy3D and TRELLIS land here;
+                # the `engine` field tells the frontend which workflow to use.
+                info["models_3d"] = []
+                for entry in live.get("3d_models", []):
+                    if entry in _hidden:
+                        continue
+                    if entry.startswith("trellis:"):
+                        # Synthetic TRELLIS entry — auto-downloads on first use,
+                        # so it's "available" without a file on disk. Quant
+                        # format is picked separately via `trellis_format` form
+                        # field; we surface it in the model label as a hint.
+                        tname = entry.removeprefix("trellis:")
+                        info["models_3d"].append({
+                            "id": entry,
+                            "label": f"{tname} (TRELLIS — quant configurable)",
+                            "engine": "trellis",
+                            "available": True,
+                            "discovered": True,
+                            "format": "managed",
+                        })
+                    else:
+                        info["models_3d"].append({
+                            "id": entry,
+                            # Strip subfolder + extension for a readable label:
+                            # "hy3dgen/hunyuan3d-dit-v2-0-fp16.safetensors"
+                            # → "hunyuan3d-dit-v2-0-fp16"
+                            "label": Path(entry).stem,
+                            "engine": "hy3d",
+                            "available": True,
+                            "discovered": True,
+                            "format": "safetensors" if entry.endswith(".safetensors") else "gguf",
+                        })
+
+            # Tag arch on every dict entry so the UI can ghost incompatible
+            # combos in Compare mode. Additive; the generate path keeps its
+            # own inline sniffs.
+            from backends.arch import arch_of
+            for m in info.get("models", []):
+                if isinstance(m, dict) and "arch" not in m:
+                    m["arch"] = arch_of(m.get("id", ""))
+            for cat in ("ip_adapters", "upscalers", "loras"):
+                for m in info.get("model_categories", {}).get(cat, []):
+                    if isinstance(m, dict) and "arch" not in m:
+                        m["arch"] = arch_of(m.get("id", ""))
+
         result[name] = info
     return result
 
@@ -806,6 +1571,42 @@ async def _probe_comfyui(url: str) -> dict | None:
             gguf_unet = data.get("UnetLoaderGGUF", {}).get("input", {}).get("required", {}).get("unet_name", [])
             if gguf_unet and isinstance(gguf_unet[0], list):
                 result["unets"] = list(set(result.get("unets", []) + gguf_unet[0]))
+            # 3D models — Hy3DModelLoader scans diffusion_models/ for the DiT.
+            # We surface these in their OWN category so the frontend can route
+            # picks to the 3D workflow instead of CheckpointLoaderSimple
+            # (mismatched routing was the root cause of "Value not in list").
+            #
+            # Hy3DModelLoader's dropdown is the same folder as UNETLoader,
+            # so it lists every diffusion_models file (Flux, Lightning, etc.) —
+            # we filter to known 3D-mesh model patterns so the 3D dropdown
+            # only contains things that will actually work in the Hy3D pipeline.
+            hy3d = data.get("Hy3DModelLoader", {}).get("input", {}).get("required", {}).get("model", [])
+            if hy3d and isinstance(hy3d[0], list):
+                _3D_PATTERNS = ("hunyuan3d", "hy3d", "trellis")
+                result["3d_models"] = [
+                    m for m in hy3d[0]
+                    if any(p in m.lower() for p in _3D_PATTERNS)
+                ]
+                # And subtract them from `unets` so they don't double-list as
+                # 2D pickables — Hy3D files in diffusion_models/ aren't valid
+                # 2D unets even though UNETLoader sees the same folder.
+                if "unets" in result:
+                    result["unets"] = [u for u in result["unets"] if u not in result["3d_models"]]
+            else:
+                result["3d_models"] = []
+
+            # TRELLIS uses its own model_manager (auto-downloads from HuggingFace),
+            # not the diffusion_models/ folder, so it doesn't surface via the
+            # Hy3DModelLoader scan. Detect it by presence of its loader node and
+            # synthesize a virtual entry so the UI can offer it as a 3D engine.
+            trellis = data.get("Trellis2LoadModel_GGUF", {})
+            if trellis:
+                tr_modelnames = trellis.get("input", {}).get("required", {}).get("modelname", [])
+                if tr_modelnames and isinstance(tr_modelnames[0], list):
+                    for tname in tr_modelnames[0]:
+                        # Use a "trellis:" prefix so the frontend can route picks
+                        # to the trellis engine without separate dropdowns.
+                        result["3d_models"].append(f"trellis:{tname}")
             # IP-Adapters
             ipa = data.get("IPAdapterModelLoader", {}).get("input", {}).get("required", {}).get("ipadapter_file", [])
             if ipa and isinstance(ipa[0], list):
@@ -832,19 +1633,34 @@ async def _probe_comfyui(url: str) -> dict | None:
 async def get_gallery(type: str = "image"):
     """Return list of generated assets with metadata (cached).
 
-    Query param `type` filters by asset type: image (default), audio, or all.
+    Query param `type` filters by asset type: image (default — also includes
+    3D meshes since they're visual outputs from the same Generate panel),
+    audio, video, mesh, or all.
     """
     cache_key = f"gallery_{type}"
     now = time.monotonic()
     if _gallery_cache.get(cache_key) is not None and now - _gallery_cache["ts"] < GALLERY_TTL:
         return _gallery_cache[cache_key]
 
+    # Type-name → set of asset types to include. The 'image' default includes
+    # meshes so 3D outputs surface in the same gallery strip — they're produced
+    # by the same Generate flow and the user mentally groups them together.
+    type_groups = {
+        "image": {"image", "mesh"},
+        "visual": {"image", "mesh"},
+        "mesh": {"mesh"},
+        "audio": {"audio"},
+        "video": {"video"},
+        "all": None,  # no filter
+    }
+    allowed = type_groups.get(type, {type})
+
     import storage as store
     # Gallery pulls from unsorted (recent quick generations)
     # plus the old outputs/ dir for backwards compat during migration
     items = []
     for item in store.list_unsorted(limit=100):
-        if type != "all" and item["type"] != type:
+        if allowed is not None and item["type"] not in allowed:
             continue
         items.append({
             "filename": item["filename"],
@@ -882,7 +1698,7 @@ async def get_gallery(type: str = "image"):
 
 @app.post("/api/generate")
 async def generate(
-    prompt: str = Form(...),
+    prompt: str = Form(""),  # not required for 3D mode (image-conditioned)
     negative_prompt: str = Form(""),
     backend: str = Form("comfyui"),
     model: str = Form(""),
@@ -898,10 +1714,26 @@ async def generate(
     lora_strength: float = Form(0.8),
     lora_strength_model: float = Form(0.0),
     lora_strength_clip: float = Form(0.0),
+    # 3D-mode fields. Default mode='2d' preserves the existing image
+    # generation flow byte-for-byte; only mode='3d' enters a 3D engine path.
+    mode: str = Form("2d"),
+    mode_3d: str = Form("shape"),  # Hy3D: "shape"|"pbr"; TRELLIS: "shape"|"textured"
+    engine: str = Form("hy3d"),     # "hy3d" | "trellis" — picks which 3D backend to use
+    paint_model: str = Form("hunyuan3d-paint-v2-0"),  # Hy3D paint variant
+    hy3d_cam_azimuths: str = Form(""),                # Hy3D advanced: camera azimuths CSV (empty = defaults)
+    hy3d_cam_elevations: str = Form(""),              # Hy3D advanced: camera elevations CSV (empty = defaults)
+    trellis_format: str = Form("GGUF Q4_K_M"),  # only used when engine='trellis'
+    trellis_pipeline_type: str = Form("512"),    # "512" | "1024" | "1024_cascade"
+    trellis_preset: str = Form("balanced"),      # quality preset bucket
+    trellis_tweak_faithful: str = Form("0"),     # "1"|"0" — bump shape CFG
+    trellis_tweak_fine_detail: str = Form("0"),  # "1"|"0" — bump voxel budget
+    trellis_tweak_sharp_edges: str = Form("0"),  # "1"|"0" — switch to RK4 sampler
+    auto_bg_removal: str = Form("1"),  # "1"|"0" — disable when uploading already-cut PNGs
     reference_images: list[UploadFile] = File(default=[]),
 ):
-    """Start an image generation job."""
+    """Start a generation job — 2D image or 3D mesh depending on `mode`."""
     job_id = str(uuid.uuid4())[:8]
+    is_3d = mode == "3d"
 
     # Save uploaded reference images
     ref_paths = []
@@ -912,6 +1744,43 @@ async def generate(
             async with aiofiles.open(path, "wb") as f:
                 await f.write(await ref.read())
             ref_paths.append(str(path))
+
+    # Validation diverges by mode:
+    # - 2D: reference images require an IP-Adapter model (CLIP-vision conditioning).
+    # - 3D: at least one reference image is REQUIRED (Hy3D is image-conditioned),
+    #       and IP-Adapter doesn't apply.
+    if is_3d:
+        if backend != "comfyui":
+            return JSONResponse(
+                {"error": "3D generation only supported on the ComfyUI backend."},
+                status_code=400,
+            )
+        if not ref_paths:
+            return JSONResponse(
+                {"error": "3D generation requires a reference image — Hy3D and "
+                          "TRELLIS are both image-conditioned."},
+                status_code=400,
+            )
+        if engine not in ("hy3d", "trellis"):
+            return JSONResponse(
+                {"error": f"engine must be 'hy3d' or 'trellis', got {engine!r}"},
+                status_code=400,
+            )
+        # mode_3d vocabulary depends on the engine:
+        # - Hy3D: shape | pbr
+        # - TRELLIS: shape | textured
+        valid_modes = {"hy3d": ("shape", "pbr"), "trellis": ("shape", "textured")}
+        if mode_3d not in valid_modes[engine]:
+            return JSONResponse(
+                {"error": f"mode_3d for {engine} must be one of {valid_modes[engine]}, got {mode_3d!r}"},
+                status_code=400,
+            )
+    elif ref_paths and backend == "comfyui" and not ip_adapter_model:
+        return JSONResponse(
+            {"error": "Reference images require an IP-Adapter model on the ComfyUI backend. "
+                      "Pick one from the IP-Adapter Model dropdown, or remove the reference images."},
+            status_code=400,
+        )
 
     params = {
         "prompt": prompt,
@@ -931,10 +1800,52 @@ async def generate(
         "lora_strength_model": lora_strength_model if lora_strength_model > 0 else 0,
         "lora_strength_clip": lora_strength_clip if lora_strength_clip > 0 else 0,
         "reference_images": ref_paths,
+        "mode": mode,
+        "mode_3d": mode_3d,
+        "engine": engine,
+        "paint_model": paint_model,
+        "hy3d_cam_azimuths": hy3d_cam_azimuths,
+        "hy3d_cam_elevations": hy3d_cam_elevations,
+        "trellis_format": trellis_format,
+        "trellis_pipeline_type": trellis_pipeline_type,
+        "trellis_preset": trellis_preset,
+        "trellis_tweak_faithful": trellis_tweak_faithful == "1",
+        "trellis_tweak_fine_detail": trellis_tweak_fine_detail == "1",
+        "trellis_tweak_sharp_edges": trellis_tweak_sharp_edges == "1",
+        "auto_bg_removal": auto_bg_removal == "1",
     }
 
+    # Server-side guard: FP8 has no ROCm `addmm` kernel for Float8_e4m3fn at all.
+    # We initially thought this was cascade-only, but observed failures on the
+    # non-cascade `sample_shape_slat_multiview` path too (Apr 30, 21:06). The
+    # wrapper's GGUF/SDNQ dequant only handles certain code paths — anywhere
+    # raw FP8 weights reach a torch matmul, ROCm fails.
+    # Safest stance on ROCm: silently fall back FP8 → BF16 for any TRELLIS run.
+    # Once a ROCm FP8 kernel ships, this guard can be relaxed.
+    if (is_3d and engine == "trellis"
+            and trellis_format == "Safetensors (FP8)"):
+        params["trellis_format"] = "Safetensors (BF16)"
+
     jobs[job_id] = {"status": "queued", "params": params, "progress": 0}
-    job_queue.submit_background(_run_job(job_id, params), lane="gpu", job_id=job_id)
+    # 2D jobs are <1min so the default 300s gpu-lane timeout is fine.
+    # 3D jobs vary wildly (TRELLIS textured ~32 min, Hy3D shape ~30s),
+    # so look up the per-(engine, mode) outer timeout. Outer is sized
+    # so a healthy ComfyUI run finishes inside the inner timeout first;
+    # the outer is just a backstop for genuine hangs. Stash the inner
+    # timeout on params so backends/comfyui.py can read it without
+    # re-deriving the same logic.
+    if is_3d:
+        if engine == "trellis":
+            mode_flag = "textured" if params.get("mode_3d") in ("pbr", "textured") else "shape"
+        else:
+            mode_flag = params.get("mode_3d", "shape")
+        outer, inner = resolve_3d_timeouts(engine, mode_flag)
+        params["_inner_timeout_s"] = inner
+        job_timeout = outer
+    else:
+        job_timeout = 0  # use lane default (300s)
+    job_queue.submit_background(_run_job(job_id, params), lane="gpu",
+                                job_id=job_id, timeout=job_timeout)
 
     return {"job_id": job_id}
 
@@ -943,6 +1854,34 @@ async def generate(
 async def get_queue_status():
     """Current queue status across all resource lanes."""
     return job_queue.status()
+
+
+@app.get("/api/gpu-stats")
+async def get_gpu_stats():
+    """Proxy ComfyUI's /system_stats so the browser can surface VRAM info
+    in the 3D mode UI. Direct fetch from the browser would CORS-fail
+    (open-palette is on :7860, ComfyUI on :8188)."""
+    comfy_url = config.get("backends", {}).get("comfyui", {}).get("url", "")
+    if not comfy_url:
+        return {"available": False}
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=3) as client:
+            resp = await client.get(f"{comfy_url.rstrip('/')}/system_stats")
+            if resp.status_code != 200:
+                return {"available": False}
+            data = resp.json()
+            dev = (data.get("devices") or [{}])[0]
+            return {
+                "available": True,
+                "device_name": dev.get("name", "?"),
+                "vram_total_gb": round((dev.get("vram_total") or 0) / (1024 ** 3), 1),
+                "vram_free_gb": round((dev.get("vram_free") or 0) / (1024 ** 3), 1),
+                "torch_vram_used_gb": round(((dev.get("torch_vram_total") or 0) -
+                                             (dev.get("torch_vram_free") or 0)) / (1024 ** 3), 1),
+            }
+    except Exception:
+        return {"available": False}
 
 
 @app.get("/api/health/components")
@@ -1688,18 +2627,31 @@ async def list_crypto_logos():
 # --- Music Generation API ---
 
 _music_engine = None
+_music_engine_error: str | None = None
 
 
 def _get_music_engine():
-    global _music_engine
+    global _music_engine, _music_engine_error
     if _music_engine is None:
         try:
             from studio.music_gen import MusicGenEngine
             engine = MusicGenEngine(config.get("music", {}))
-            if engine.available():
-                _music_engine = engine
-        except Exception:
-            pass
+            # Force the real import so a missing transitive dep surfaces its
+            # actual name instead of collapsing to a generic "not installed".
+            import audiocraft  # noqa: F401
+            _music_engine = engine
+            _music_engine_error = None
+        except ImportError as e:
+            missing = getattr(e, "name", None) or "audiocraft"
+            if missing == "audiocraft":
+                _music_engine_error = "audiocraft not installed. Run: pip install audiocraft"
+            else:
+                _music_engine_error = (
+                    f"audiocraft is installed but its import requires '{missing}', "
+                    f"which is not installed. Run: pip install {missing}"
+                )
+        except Exception as e:
+            _music_engine_error = f"audiocraft failed to load: {e.__class__.__name__}: {e}"
     return _music_engine
 
 
@@ -1757,7 +2709,10 @@ async def music_status():
     engine = _get_music_engine()
     if engine:
         return {"available": True, "models": engine.models(), "modes": engine.modes()}
-    return {"available": False, "reason": "audiocraft not installed (pip install audiocraft)"}
+    return {
+        "available": False,
+        "reason": _music_engine_error or "audiocraft not installed (pip install audiocraft)",
+    }
 
 
 @app.post("/api/music/generate")
@@ -2262,6 +3217,8 @@ async def compare(
     lora_strength: float = Form(1.0),
     lora_strength_model: float = Form(1.0),
     lora_strength_clip: float = Form(0.6),
+    ip_adapter_model: str = Form(""),
+    ip_adapter_strength: float = Form(0.6),
     reference_images: list[UploadFile] = File(default=[]),
 ):
     """Launch same prompt across multiple backends for comparison."""
@@ -2279,6 +3236,16 @@ async def compare(
                 await f.write(await ref.read())
             ref_paths.append(str(path))
 
+    if ref_paths and not ip_adapter_model:
+        comfy_entries = [e for e in backend_list if e.get("backend") == "comfyui"]
+        if comfy_entries:
+            return JSONResponse(
+                {"error": "Reference images require an IP-Adapter model on the ComfyUI backend. "
+                          "Pick one from the IP-Adapter Model dropdown, or remove the ComfyUI "
+                          "entries from the comparison."},
+                status_code=400,
+            )
+
     comparison_id = str(uuid.uuid4())[:8]
     job_ids = []
 
@@ -2294,8 +3261,8 @@ async def compare(
             "steps": steps,
             "cfg_scale": cfg_scale,
             "seed": seed,
-            "ip_adapter_model": "",
-            "ip_adapter_strength": 0.6,
+            "ip_adapter_model": ip_adapter_model,
+            "ip_adapter_strength": ip_adapter_strength,
             "upscaler": "",
             "lora_model": lora_model,
             "lora_strength": lora_strength,
@@ -2312,7 +3279,15 @@ async def compare(
 
 # --- Style Remix API ---
 
-_BLEND_MODE_VALUES = {"style transfer", "standard", "prompt is more important"}
+# Valid IPAdapterBatch weight_type values in current ComfyUI_IPAdapter_plus.
+# The previous set ("standard", "prompt is more important") was rejected with
+# node_errors.value_not_in_list — those names were dropped upstream.
+_BLEND_MODE_VALUES = {
+    "strong style transfer",
+    "style transfer",
+    "style and composition",
+    "linear",
+}
 
 
 @app.post("/api/remix")
@@ -2321,11 +3296,15 @@ async def remix(
     base_gallery_id: str = Form(""),
     style_ref: UploadFile | None = File(default=None),
     crypto_logo_id: str = Form(""),
+    # Atlas-SAM re-texture path: when the caller supplies a mask, the
+    # backend post-composites the generated atlas back into the base
+    # using the mask (white = replace, black = preserve). Optional.
+    mask_image: UploadFile | None = File(default=None),
     preserve_character: float = Form(0.45),
     style_strength: float = Form(0.75),
     ip_start: float = Form(0.0),
     ip_end: float = Form(0.8),
-    blend_mode: str = Form("style transfer"),
+    blend_mode: str = Form("strong style transfer"),
     lora_model: str = Form(""),
     lora_strength: float = Form(0.55),
     model: str = Form("juggernautXL_v9.safetensors"),
@@ -2396,6 +3375,19 @@ async def remix(
     _shutil.copy2(base_source_path, comfy_input_dir / base_filename)
     _shutil.copy2(style_source_path, comfy_input_dir / style_filename)
 
+    # Atlas-SAM mask: only persisted + threaded into params when supplied.
+    # Backwards-compat — image-mode remix never sends a mask, so this
+    # branch is skipped and the existing pipeline runs unchanged.
+    mask_filename = ""
+    if mask_image is not None and mask_image.filename:
+        mask_id = str(uuid.uuid4())[:8]
+        mask_ext = Path(mask_image.filename).suffix or ".png"
+        mask_dest = Path("uploads") / f"remix_mask_{mask_id}{mask_ext}"
+        async with aiofiles.open(mask_dest, "wb") as f:
+            await f.write(await mask_image.read())
+        mask_filename = f"remix_mask_{uuid.uuid4().hex[:8]}{mask_ext}"
+        _shutil.copy2(mask_dest, comfy_input_dir / mask_filename)
+
     base_seed = _random.randint(0, 2**32 - 1 - batch_size) if seed == -1 else seed
 
     remix_id = str(uuid.uuid4())[:8]
@@ -2428,6 +3420,7 @@ async def remix(
             "hint": hint,
             "width": 1024,
             "height": 1024,
+            "mask_filename": mask_filename,  # empty string when not in mesh-mode
         }
         jobs[job_id] = {"status": "queued", "params": params, "progress": 0, "remix_id": remix_id}
         job_queue.submit_background(_run_job(job_id, params), lane="gpu", job_id=job_id)
@@ -2479,77 +3472,121 @@ async def _run_job(job_id: str, params: dict):
 
     try:
         backend_name = params["backend"]
-        backend = registry.get_backend(backend_name)
-        if not backend:
-            raise ValueError(f"Backend '{backend_name}' not available")
+        # Worldgen runs as its own subprocess pipeline outside the registry —
+        # see backends/worldgen.py and memory/project_worldgen_rocm.md. Skip
+        # the registry lookup for it; the dispatch later in this function
+        # routes worldgen-engine jobs to that module directly.
+        if backend_name == "worldgen":
+            backend = None
+        else:
+            backend = registry.get_backend(backend_name)
+            if not backend:
+                raise ValueError(f"Backend '{backend_name}' not available")
 
         import storage as store
-        output_path = store.asset_path(job_id, "image", ".png")
+        # Asset type and extension diverge for 3D mode — Hy3D/TRELLIS/Worldgen
+        # produce .glb; 2D image gen produces .png.
+        is_3d = params.get("mode") == "3d"
+        if is_3d:
+            output_path = store.asset_path(job_id, "mesh", ".glb")
+        else:
+            output_path = store.asset_path(job_id, "image", ".png")
 
         async def on_progress(pct: int, msg: str = ""):
-            jobs[job_id]["progress"] = pct
+            # Tolerate None for cosmetic status updates that don't move the bar.
+            if pct is not None:
+                jobs[job_id]["progress"] = pct
             await broadcast({
                 "type": "job_update", "job_id": job_id,
-                "status": "running", "progress": pct, "message": msg,
+                "status": "running",
+                "progress": jobs[job_id].get("progress", 0),
+                "message": msg,
             })
 
-        if params.get("remix"):
+        if is_3d:
+            # 3D dispatch: Hy3D vs TRELLIS vs Worldgen all share the same .glb
+            # output contract, so the rest of _run_job (sidecar JSON, gallery
+            # cache) treats them identically. Only the workflow + engine call
+            # differs. Worldgen is the odd one out — runs as its own subprocess
+            # pipeline (FLUX.1-dev + DA-2) rather than via ComfyUI.
+            engine = params.get("engine")
+            if engine == "worldgen":
+                from backends.worldgen import generate_world
+                worldgen_meta = await generate_world(
+                    params, str(output_path), on_progress,
+                )
+                # Merge worldgen-specific metadata into params so the sidecar
+                # JSON written below records what we actually produced.
+                params.update({k: v for k, v in worldgen_meta.items()
+                              if k not in params})
+            elif engine == "trellis":
+                await backend.generate_trellis(params, str(output_path), on_progress)
+            else:
+                await backend.generate_3d(params, str(output_path), on_progress)
+        elif params.get("remix"):
             await backend.generate_remix(params, str(output_path), on_progress)
         else:
             await backend.generate(params, str(output_path), on_progress)
 
-        # Save metadata alongside image + embed in PNG
+        # Save metadata sidecar for both 2D and 3D outputs.
         meta = {**params, "job_id": job_id, "created": datetime.now().isoformat()}
         ref_count = len(meta.pop("reference_images", []))
         meta["reference_image_count"] = ref_count
         async with aiofiles.open(output_path.with_suffix(".json"), "w") as f:
             await f.write(json.dumps(meta, indent=2))
 
-        # Embed metadata in PNG tEXt chunks (survives file sharing)
-        try:
-            from PIL import Image
-            from PIL.PngImagePlugin import PngInfo
-            img = Image.open(output_path)
-            png_meta = PngInfo()
-            png_meta.add_text("prompt", meta["prompt"])
-            if meta.get("negative_prompt"):
-                png_meta.add_text("negative_prompt", meta["negative_prompt"])
-            png_meta.add_text("backend", meta.get("backend", ""))
-            png_meta.add_text("model", meta.get("model", ""))
-            png_meta.add_text("steps", str(meta.get("steps", "")))
-            png_meta.add_text("cfg_scale", str(meta.get("cfg_scale", "")))
-            png_meta.add_text("seed", str(meta.get("seed", "")))
-            png_meta.add_text("size", f"{meta.get('width', '')}x{meta.get('height', '')}")
-            if ref_count > 0:
-                png_meta.add_text("reference_images", str(ref_count))
-            png_meta.add_text("generator", "Wyltek Studio")
-            img.save(output_path, pnginfo=png_meta)
-        except Exception:
-            pass  # metadata embedding is best-effort
-
-        # Score the image (~50ms, runs in thread executor)
         scores = None
-        try:
-            import scoring
-            scores = await scoring.score_and_save(
-                str(output_path), job_id, params.get("model", ""),
-                params.get("backend", ""), params.get("prompt", ""),
-                meta["created"],
-            )
-        except Exception:
-            pass  # scoring is best-effort
+        if not is_3d:
+            # PNG metadata + scoring are 2D-only. Embed text chunks in the PNG
+            # so prompts survive file sharing, then run the aesthetic scorer.
+            try:
+                from PIL import Image
+                from PIL.PngImagePlugin import PngInfo
+                img = Image.open(output_path)
+                png_meta = PngInfo()
+                png_meta.add_text("prompt", meta["prompt"])
+                if meta.get("negative_prompt"):
+                    png_meta.add_text("negative_prompt", meta["negative_prompt"])
+                png_meta.add_text("backend", meta.get("backend", ""))
+                png_meta.add_text("model", meta.get("model", ""))
+                png_meta.add_text("steps", str(meta.get("steps", "")))
+                png_meta.add_text("cfg_scale", str(meta.get("cfg_scale", "")))
+                png_meta.add_text("seed", str(meta.get("seed", "")))
+                png_meta.add_text("size", f"{meta.get('width', '')}x{meta.get('height', '')}")
+                if ref_count > 0:
+                    png_meta.add_text("reference_images", str(ref_count))
+                png_meta.add_text("generator", "Wyltek Studio")
+                img.save(output_path, pnginfo=png_meta)
+            except Exception:
+                pass  # metadata embedding is best-effort
+
+            try:
+                import scoring
+                scores = await scoring.score_and_save(
+                    str(output_path), job_id, params.get("model", ""),
+                    params.get("backend", ""), params.get("prompt", ""),
+                    meta["created"],
+                )
+            except Exception:
+                pass  # scoring is best-effort
+
+        # Output URL: storage layer resolves via filename (.png or .glb).
+        ext = ".glb" if is_3d else ".png"
+        output_url = f"/storage/{job_id}{ext}"
 
         _gallery_cache["items"] = None  # invalidate gallery cache
         jobs[job_id].update({
             "status": "complete",
             "progress": 100,
-            "output_url": f"/storage/{job_id}.png",
+            "output_url": output_url,
+            "asset_type": "mesh" if is_3d else "image",
             "scores": scores,
         })
         await broadcast({
             "type": "job_update", "job_id": job_id,
             "status": "complete", "progress": 100,
-            "output_url": f"/storage/{job_id}.png",
+            "output_url": output_url,
+            "asset_type": "mesh" if is_3d else "image",
             "scores": scores,
         })
 

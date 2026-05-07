@@ -352,9 +352,12 @@
 
     <!-- Single result -->
     <div class="tts-result" id="tts-result">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;gap:6px">
         <strong>Result</strong>
-        <button class="btn-outline" id="btn-send-tts" style="padding:4px 12px;font-size:11px;border-radius:6px;cursor:pointer;background:var(--surface-2);color:var(--accent);border:1px solid var(--accent);display:none" onclick="sendTtsToProject()">Send to Project</button>
+        <div style="display:flex;gap:6px">
+          <button id="btn-save-tts" style="padding:4px 12px;font-size:11px;border-radius:6px;cursor:pointer;background:var(--accent);color:#fff;border:1px solid var(--accent);display:none" onclick="saveTts()">💾 Save</button>
+          <button class="btn-outline" id="btn-send-tts" style="padding:4px 12px;font-size:11px;border-radius:6px;cursor:pointer;background:var(--surface-2);color:var(--accent);border:1px solid var(--accent);display:none" onclick="sendTtsToProject()">Send to Project</button>
+        </div>
       </div>
       <audio id="tts-audio" controls></audio>
       <div class="tts-meta" id="tts-meta"></div>
@@ -388,6 +391,33 @@
       if (!filename) { toast('Generate audio first'); return; }
       ProjectPicker.init(toast);
       ProjectPicker.show(filename);
+    }
+
+    // Save the TTS audio to device — share sheet on mobile, download on desktop.
+    async function saveTts() {
+      const audio = document.getElementById('tts-audio');
+      const url = audio && audio.src && audio.src.split('?')[0];
+      if (!url) { toast('Generate audio first'); return; }
+      try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const blob = await res.blob();
+        const inferred = audio.dataset.filename || ('tts-' + Date.now() + '.wav');
+        const file = new File([blob], inferred, { type: blob.type || 'audio/wav' });
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file], title: inferred });
+        } else {
+          const objUrl = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = objUrl; a.download = inferred;
+          document.body.appendChild(a); a.click(); a.remove();
+          setTimeout(() => URL.revokeObjectURL(objUrl), 1000);
+          toast('Downloaded ' + inferred);
+        }
+      } catch (err) {
+        if (err && err.name === 'AbortError') return;
+        toast('Save failed: ' + err.message);
+      }
     }
 
     // --- Init ---
@@ -550,6 +580,7 @@
 
         const sendBtn = document.getElementById('btn-send-tts');
         sendBtn.style.display = 'inline-block';
+        document.getElementById('btn-save-tts').style.display = 'inline-block';
 
         document.getElementById('tts-meta').innerHTML = `
           <span>Duration: ${data.duration}s</span>

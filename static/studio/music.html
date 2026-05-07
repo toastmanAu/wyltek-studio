@@ -154,9 +154,12 @@
         </div>
 
         <div class="result" id="result">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;gap:6px">
             <strong>Generated Track</strong>
-            <button id="btn-send-music" style="padding:4px 12px;font-size:11px;border-radius:6px;cursor:pointer;background:var(--surface-2);color:var(--accent);border:1px solid var(--accent);display:none" onclick="sendMusicToProject()">Send to Project</button>
+            <div style="display:flex;gap:6px">
+              <button id="btn-save-music" style="padding:4px 12px;font-size:11px;border-radius:6px;cursor:pointer;background:var(--accent);color:#fff;border:1px solid var(--accent);display:none" onclick="saveMusic()">💾 Save</button>
+              <button id="btn-send-music" style="padding:4px 12px;font-size:11px;border-radius:6px;cursor:pointer;background:var(--surface-2);color:var(--accent);border:1px solid var(--accent);display:none" onclick="sendMusicToProject()">Send to Project</button>
+            </div>
           </div>
           <audio id="result-audio" controls></audio>
           <div class="result-meta" id="result-meta"></div>
@@ -302,6 +305,7 @@
             audio.play().catch(function() {});
 
             document.getElementById('btn-send-music').style.display = 'inline-block';
+            document.getElementById('btn-save-music').style.display = 'inline-block';
 
             const meta = document.getElementById('result-meta');
             meta.textContent = '';
@@ -337,6 +341,47 @@
       if (!filename) { toast('Generate a track first'); return; }
       ProjectPicker.init(toast);
       ProjectPicker.show(filename);
+    }
+
+    // Local download — fetches the rendered audio as a Blob, then either
+    // shares via the OS share sheet (mobile, lands in Files / can be saved
+    // to other apps) or triggers a classic <a download> on desktop. Mirrors
+    // the same pattern used in the Frame Cutter's Save-to-Photos button.
+    async function saveMusic() {
+      const audio = document.getElementById('result-audio');
+      const url = audio.src && audio.src.split('?')[0];
+      if (!url) { toast('Generate a track first'); return; }
+      const btn = document.getElementById('btn-save-music');
+      btn.disabled = true;
+      try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const blob = await res.blob();
+        // Filename: keep server's name if available, else fall back to ts-stamped.
+        const inferred = audio.dataset.filename
+          || ('music-' + Date.now() + '.wav');
+        // ext is taken from the actual blob mime when possible (audio/wav, audio/mpeg).
+        const file = new File([blob], inferred, { type: blob.type || 'audio/wav' });
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file], title: inferred });
+          toast('Shared — pick "Save to Files" or another app');
+        } else {
+          const objUrl = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = objUrl;
+          a.download = inferred;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          setTimeout(() => URL.revokeObjectURL(objUrl), 1000);
+          toast('Downloaded ' + inferred);
+        }
+      } catch (err) {
+        if (err && err.name === 'AbortError') return;  // user cancelled share
+        toast('Save failed: ' + err.message);
+      } finally {
+        btn.disabled = false;
+      }
     }
 
     document.getElementById('music-prompt').addEventListener('keydown', (e) => {

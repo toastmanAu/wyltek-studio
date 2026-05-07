@@ -2,8 +2,10 @@
 
 import asyncio
 import base64
+import io
 import json
 import logging
+import time
 import uuid
 from pathlib import Path
 
@@ -94,15 +96,6 @@ MODEL_DEFAULTS = {
         "sampler": "euler", "scheduler": "simple",
         "steps": 4, "cfg": 1.0,
     },
-    # --- FLUX.2-klein (4-step distilled, qwen3_4b encoder) ---
-    # cfg=1.0 is non-negotiable — klein is guidance-distilled. The klein
-    # workflow branch in generate() also explicitly sets these values; the
-    # entry here ensures _resolve_defaults rewrites the generic UI defaults
-    # (steps=30, cfg=7.0) before they reach the workflow builder.
-    "flux-2-klein-base-4b.safetensors": {
-        "sampler": "euler", "scheduler": "simple",
-        "steps": 4, "cfg": 1.0,
-    },
     # --- SD3 / SD3.5 (MMDiT, triple CLIP: CLIP-L + CLIP-G + T5-XXL) ---
     # Shared defaults: dpmpp_2m + sgm_uniform, cfg ~4.5-5, steps ~25-30.
     # Use TripleCLIPLoaderGGUF so the GGUF T5 is picked up alongside the
@@ -134,6 +127,17 @@ MODEL_DEFAULTS = {
     "pixart_sigma_xl_1024.safetensors": {
         "sampler": "dpmpp_2m", "scheduler": "karras",
         "steps": 20, "cfg": 4.5, "width": 1024, "height": 1024,
+    },
+    # --- FLUX.2 Klein base (non-distilled) ---
+    # Klein has its own sampler chain (Flux2Scheduler + SamplerCustomAdvanced)
+    # so sampler/scheduler are omitted — they don't apply to this branch.
+    # cfg routes to FluxGuidance.guidance (see klein branch ~line 2110); BFL
+    # recommends 1.0-5.0. Without this entry, /api/compare's generic cfg=7.0
+    # over-bakes Klein output and reads as waxy / under-detailed next to other
+    # backends in the comparison. 34 steps + guidance 3.25 sits between the
+    # bring-up-verified sweet spot (28/3.5) and a detail-heavy profile (40/3.0).
+    "flux-2-klein-base-4b.safetensors": {
+        "steps": 34, "cfg": 3.25,
     },
 }
 
@@ -499,6 +503,1166 @@ ANIMATEDIFF_WORKFLOW = {
         "inputs": {"filename_prefix": "wyltek-video", "images": ["8", 0]},
     },
 }
+
+
+# Hunyuan3D image-to-3D workflows.
+# Hy3D is image-conditioned (not text), so all 3D generations require a
+# reference image. We expose two pipelines:
+#   - "shape":  ~10–20s, untextured white .glb (DiT + VAE decode + cleanup)
+#   - "pbr":    ~3–5min, full-color .glb with baked PBR textures via
+#               multi-view paint diffusion (DiT shape + delight + paint
+#               sampling + bake + UV apply)
+# The Hy3D wrapper's Hy3DModelLoader returns a (HY3DMODEL, HY3DVAE) tuple,
+# so the same node feeds both Hy3DGenerateMesh and Hy3DVAEDecode.
+def preprocess_hy3d_image(src_path: str, dst_path: str, *, border_ratio: float = 0.2) -> bool:
+    """Mirror the official Tencent Hunyuan3D-2 paint pipeline preprocessing.
+
+    Two operations the kijai wrapper doesn't do but the Tencent reference
+    pipeline insists on:
+
+    1. **Background removal** if input is RGB. The Hy3D conditioner explicitly
+       warns "no alpha channel, make sure background is already black" — and
+       silently produces worse texture/shape when the warning is ignored.
+
+    2. **Recenter + 20% pad** (matches official `recenter_image()`). Crop to
+       the alpha bbox, add a 20%-of-subject border on every side, then square
+       up the canvas. This standardizes subject scale + offset so the DiT and
+       paint diffusion see the subject in the position they were trained on.
+
+    Returns True if the image was modified, False if untouched (reads were
+    fine but writes are skipped — caller can copy original).
+    """
+    from PIL import Image
+    import numpy as np
+
+    try:
+        img = Image.open(src_path)
+    except Exception:
+        return False
+
+    # Background removal: only when input is RGB. Skip if already RGBA/LA
+    # since the user has either pre-cut it or Lift Subject did it on iOS.
+    if img.mode == "RGB":
+        try:
+            from rembg import remove
+            img = remove(img).convert("RGBA")
+        except Exception:
+            # rembg failure shouldn't block the whole job; fall back to
+            # original RGB and let the wrapper warn (and degrade) gracefully.
+            img.save(dst_path)
+            return True
+    elif img.mode != "RGBA":
+        img = img.convert("RGBA")
+
+    # Recenter + pad. Lifted from the official Tencent recenter_image() at
+    # hy3dgen/texgen/pipelines.py — same border_ratio default, same logic.
+    alpha = np.array(img)[:, :, 3]
+    nz = np.argwhere(alpha > 0)
+    if nz.size == 0:
+        # Fully transparent (or rembg ate everything) — write original ref so
+        # the user sees the same input they uploaded; the wrapper will surface
+        # the proper "no subject detected" failure.
+        img.save(dst_path)
+        return True
+    min_row, min_col = nz.min(axis=0)
+    max_row, max_col = nz.max(axis=0)
+    cropped = img.crop((min_col, min_row, max_col + 1, max_row + 1))
+
+    w, h = cropped.size
+    bw = int(w * border_ratio)
+    bh = int(h * border_ratio)
+    new_w, new_h = w + 2 * bw, h + 2 * bh
+    sq = max(new_w, new_h)
+    canvas = Image.new("RGBA", (sq, sq), (255, 255, 255, 0))
+    paste_x = (sq - new_w) // 2 + bw
+    paste_y = (sq - new_h) // 2 + bh
+    canvas.paste(cropped, (paste_x, paste_y))
+    canvas.save(dst_path)
+    return True
+
+
+def build_3d_workflow(
+    model: str,
+    image_filename: str,
+    *,
+    mode: str = "shape",
+    seed: int = 0,
+    cfg: float = 5.5,
+    steps: int = 50,
+    paint_model: str = "hunyuan3d-paint-v2-0",
+    delight_model: str = "hunyuan3d-delight-v2-0",
+    file_prefix: str = "3D/wyltek-3d",
+    octree: int = 384,
+    max_facenum: int = 50000,
+    cam_azimuths: str = "0, 90, 180, 270, 0, 180",
+    cam_elevations: str = "0, 0, 0, 0, 90, -90",
+) -> dict:
+    """Build a ComfyUI API-format workflow for Hy3D image-to-3D.
+
+    Args:
+        model: filename in ComfyUI/models/diffusion_models (e.g.
+            "hy3dgen/hunyuan3d-dit-v2-0-fp16.safetensors").
+        image_filename: name of an image already placed in ComfyUI's
+            input/ directory (LoadImage reads from there only).
+        mode: "shape" or "pbr".
+        file_prefix: ComfyUI's filename_prefix; the actual saved file
+            will be <output_dir>/<file_prefix>_NNNNN_.glb.
+    """
+    if mode not in ("shape", "pbr"):
+        raise ValueError(f"mode must be 'shape' or 'pbr', got {mode!r}")
+
+    wf: dict = {
+        # Reference image — must already be uploaded to ComfyUI/input/
+        "1": {
+            "class_type": "LoadImage",
+            "inputs": {"image": image_filename},
+        },
+        # Hy3D DiT + VAE bundle. attention_mode='sdpa' is the only widely
+        # supported one across ROCm/CUDA; flash isn't built for ROCm here.
+        "2": {
+            "class_type": "Hy3DModelLoader",
+            "inputs": {"model": model, "attention_mode": "sdpa"},
+        },
+        # Image-conditioned mesh sampler — the slow step (~5–15s on 7900XTX).
+        "3": {
+            "class_type": "Hy3DGenerateMesh",
+            "inputs": {
+                "pipeline": ["2", 0],
+                "image": ["1", 0],
+                "guidance_scale": cfg,
+                "steps": steps,
+                "seed": seed,
+            },
+        },
+        # Decode latent → trimesh. octree=384 is a balance of detail vs RAM;
+        # 512 doubles VRAM use, 256 loses small features.
+        "4": {
+            "class_type": "Hy3DVAEDecode",
+            "inputs": {
+                "vae": ["2", 1],
+                "latents": ["3", 0],
+                "box_v": 1.01,
+                "octree_resolution": octree,
+                "num_chunks": 32000,
+                "mc_level": 0.0,
+                "mc_algo": "mc",
+            },
+        },
+        # Cleanup: remove disconnected floaters, degenerate faces, decimate
+        # to <max_facenum> faces. smooth_normals off keeps sharp features.
+        "5": {
+            "class_type": "Hy3DPostprocessMesh",
+            "inputs": {
+                "trimesh": ["4", 0],
+                "remove_floaters": True,
+                "remove_degenerate_faces": True,
+                "reduce_faces": True,
+                "max_facenum": max_facenum,
+                "smooth_normals": False,
+            },
+        },
+    }
+
+    if mode == "shape":
+        # Single export — untextured shape only.
+        wf["6"] = {
+            "class_type": "Hy3DExportMesh",
+            "inputs": {
+                "trimesh": ["5", 0],
+                "filename_prefix": file_prefix,
+                "file_format": "glb",
+                "save_file": True,
+            },
+        }
+        return wf
+
+    # ----- PBR pipeline: shape mesh + texture-from-multiview-diffusion -----
+    # Auto-downloads paint + delight models on first run (~12 GB).
+    # Hy3DSampleMultiView expects normal+position maps from the shape mesh,
+    # samples views from the paint diffusion model conditioned on the
+    # delighted reference image, then bakes back to a UV texture.
+    wf.update({
+        # UV-unwrap the cleaned shape so we can bake into texture-space later.
+        "10": {
+            "class_type": "Hy3DMeshUVWrap",
+            "inputs": {"trimesh": ["5", 0]},
+        },
+        # 6-view camera rig: 4 azimuths around horizon + top + bottom.
+        # Weights deprioritise top/bottom because front views carry most signal.
+        "11": {
+            "class_type": "Hy3DCameraConfig",
+            "inputs": {
+                "camera_azimuths": cam_azimuths,
+                "camera_elevations": cam_elevations,
+                "view_weights": "1, 0.1, 0.5, 0.1, 0.05, 0.05",
+                "camera_distance": 1.45,
+                "ortho_scale": 1.2,
+            },
+        },
+        # Render normal+position maps of the bare mesh from each camera.
+        # render_size matches official Tencent reference (2048) — was 1024
+        # which halved texture detail. 4× pixel cost is OK on 24GB VRAM.
+        "12": {
+            "class_type": "Hy3DRenderMultiView",
+            "inputs": {
+                "trimesh": ["10", 0],
+                "render_size": 2048,
+                "texture_size": 2048,
+                "camera_config": ["11", 0],
+                "normal_space": "world",
+            },
+        },
+        # Auto-download paint diffusion model. v2-0 is the highest quality;
+        # -turbo halves time at a small fidelity cost.
+        "13": {
+            "class_type": "DownloadAndLoadHy3DPaintModel",
+            "inputs": {"model": paint_model},
+        },
+        # Auto-download delight model (removes baked-in lighting from
+        # the reference image so paint sampler doesn't double-shade).
+        "14": {
+            "class_type": "DownloadAndLoadHy3DDelightModel",
+            "inputs": {"model": delight_model},
+        },
+        # Strip lighting from reference image first.
+        "15": {
+            "class_type": "Hy3DDelightImage",
+            "inputs": {
+                "delight_pipe": ["14", 0],
+                "image": ["1", 0],
+                "steps": 50,
+                "width": 512,
+                "height": 512,
+                "cfg_image": 1.0,
+                "seed": seed,
+            },
+        },
+        # Default scheduler ('Euler A' / 'default') — same one example uses.
+        "16": {
+            "class_type": "Hy3DDiffusersSchedulerConfig",
+            "inputs": {
+                "pipeline": ["13", 0],
+                "scheduler": "Euler A",
+                "sigmas": "default",
+            },
+        },
+        # Paint sampler — generates view-consistent multi-view textures
+        # conditioned on (delighted_ref, normal_maps, position_maps).
+        "17": {
+            "class_type": "Hy3DSampleMultiView",
+            "inputs": {
+                "pipeline": ["13", 0],
+                "ref_image": ["15", 0],
+                "normal_maps": ["12", 0],
+                "position_maps": ["12", 1],
+                "view_size": 512,
+                "steps": 25,
+                "seed": seed + 1024,
+                "camera_config": ["11", 0],
+                "scheduler": ["16", 0],
+            },
+        },
+        # Project the multi-view textures back onto the UV atlas.
+        "18": {
+            "class_type": "Hy3DBakeFromMultiview",
+            "inputs": {
+                "images": ["17", 0],
+                "renderer": ["12", 2],
+                "camera_config": ["11", 0],
+            },
+        },
+        # Apply the baked texture image to the trimesh.
+        "19": {
+            "class_type": "Hy3DApplyTexture",
+            "inputs": {"texture": ["18", 0], "renderer": ["12", 2]},
+        },
+        # Final export with textures embedded in the .glb.
+        "20": {
+            "class_type": "Hy3DExportMesh",
+            "inputs": {
+                "trimesh": ["19", 0],
+                "filename_prefix": f"{file_prefix}_textured",
+                "file_format": "glb",
+                "save_file": True,
+            },
+        },
+    })
+    return wf
+
+
+def build_hy3d_multiview_workflow(
+    model: str,
+    view_filenames: dict,  # {"front": "f.png", "back": ..., "left": ..., "right": ...}
+    *,
+    mode: str = "shape",  # "shape" or "pbr"
+    seed: int = 0,
+    cfg: float = 5.5,
+    steps: int = 30,
+    paint_model: str = "hunyuan3d-paint-v2-0",
+    delight_model: str = "hunyuan3d-delight-v2-0",
+    file_prefix: str = "3D/wyltek-3d-mv",
+    octree: int = 384,
+    max_facenum: int = 50000,
+    scheduler: str = "FlowMatchEulerDiscreteScheduler",
+    cam_azimuths: str = "0, 90, 180, 270, 0, 180",
+    cam_elevations: str = "0, 0, 0, 0, 90, -90",
+) -> dict:
+    """Build a Hy3D multi-view shape (or shape+PBR) workflow.
+
+    Shape: routes through Hy3DGenerateMeshMultiView which accepts up to 4
+    optional view inputs (front/back/left/right) and conditions the DiT on
+    all provided views jointly. Front is required.
+
+    PBR (mode="pbr"): the multi-view shape feeds into the same paint pipeline
+    used by single-view PBR (UV-unwrap → render normals/positions → paint
+    sample → bake → apply). The paint pipeline's wrapper node hardcodes a
+    single ref_image, so we use the FRONT view as paint conditioning — this
+    is good enough for the texture step since the shape geometry already
+    incorporates back/left/right. Multi-image paint conditioning would need
+    a wrapper-side change which the user has declined.
+
+    Hy3D's multi-view DiT has a different inductive bias from TRELLIS's —
+    better at man-made / hard-surface / rectilinear subjects (boxes,
+    electronics, vehicles) where TRELLIS regresses toward organic curvature.
+    """
+    if mode not in ("shape", "pbr"):
+        raise ValueError(f"mode must be 'shape' or 'pbr', got {mode!r}")
+    if "front" not in view_filenames:
+        raise ValueError("Hy3D multi-view requires at least 'front'")
+
+    # The wrapper's conditioner runs torchvision Resize on 4D NCHW tensors,
+    # which silently no-ops (Resize expects 3D CHW or PIL). Result: views
+    # with different aspect ratios reach torch.cat unresized and crash with
+    # "Sizes of tensors must match except in dimension 0". Workaround: drop
+    # ComfyUI's built-in ImageScale between each LoadImage and the generator
+    # so all views arrive at the wrapper at a consistent 518x518 — the size
+    # the conditioner is built around (image_size=518 in conditioner.py).
+    SCALE_TARGET = 518
+
+    wf: dict = {
+        # Front view + its scale step.
+        "1": {"class_type": "LoadImage", "inputs": {"image": view_filenames["front"]}},
+        "1_scale": {
+            "class_type": "ImageScale",
+            "inputs": {
+                "image": ["1", 0],
+                "upscale_method": "lanczos",
+                "width": SCALE_TARGET,
+                "height": SCALE_TARGET,
+                "crop": "center",
+            },
+        },
+        # Same DiT loader as single-view — Hy3DGenerateMeshMultiView reuses
+        # the standard HY3DMODEL pipeline; no special multi-view checkpoint.
+        "2": {
+            "class_type": "Hy3DModelLoader",
+            "inputs": {"model": model, "attention_mode": "sdpa"},
+        },
+    }
+    # Conditionally add LoadImage + ImageScale pairs for back/left/right.
+    next_id = 21  # leave 3-20 free for the main pipeline below
+    view_to_node = {"front": "1_scale"}
+    for v in ("back", "left", "right"):
+        if v in view_filenames:
+            load_id = str(next_id)
+            scale_id = f"{next_id}_scale"
+            wf[load_id] = {
+                "class_type": "LoadImage",
+                "inputs": {"image": view_filenames[v]},
+            }
+            wf[scale_id] = {
+                "class_type": "ImageScale",
+                "inputs": {
+                    "image": [load_id, 0],
+                    "upscale_method": "lanczos",
+                    "width": SCALE_TARGET,
+                    "height": SCALE_TARGET,
+                    "crop": "center",
+                },
+            }
+            view_to_node[v] = scale_id
+            next_id += 1
+
+    # Multi-view mesh generator. front is required, others are optional —
+    # only include keys for views the caller actually provided so unset
+    # views default to None on the wrapper side (which the DiT handles).
+    mv_inputs = {
+        "pipeline": ["2", 0],
+        "guidance_scale": cfg,
+        "steps": steps,
+        "seed": seed,
+        "scheduler": scheduler,
+        "front": [view_to_node["front"], 0],
+    }
+    for v in ("back", "left", "right"):
+        if v in view_to_node:
+            mv_inputs[v] = [view_to_node[v], 0]
+    wf["3"] = {
+        "class_type": "Hy3DGenerateMeshMultiView",
+        "inputs": mv_inputs,
+    }
+
+    # Standard decode + cleanup chain — identical to single-view.
+    wf["4"] = {
+        "class_type": "Hy3DVAEDecode",
+        "inputs": {
+            "vae": ["2", 1],
+            "latents": ["3", 0],
+            "box_v": 1.01,
+            "octree_resolution": octree,
+            "num_chunks": 32000,
+            "mc_level": 0.0,
+            "mc_algo": "mc",
+        },
+    }
+    wf["5"] = {
+        "class_type": "Hy3DPostprocessMesh",
+        "inputs": {
+            "trimesh": ["4", 0],
+            "remove_floaters": True,
+            "remove_degenerate_faces": True,
+            "reduce_faces": True,
+            "max_facenum": max_facenum,
+            "smooth_normals": False,
+        },
+    }
+    if mode == "shape":
+        wf["6"] = {
+            "class_type": "Hy3DExportMesh",
+            "inputs": {
+                "trimesh": ["5", 0],
+                "filename_prefix": file_prefix,
+                "file_format": "glb",
+                "save_file": True,
+            },
+        }
+        return wf
+
+    # ----- PBR pipeline (multi-view shape + textured) -----
+    # Same chain as build_3d_workflow but reading the multi-view-derived mesh
+    # at node "5" and using the FRONT view (node "1", pre-resize) as the paint
+    # conditioning ref. Wrapper's Hy3DSampleMultiView only accepts one ref;
+    # back/left/right would need a wrapper change to also condition paint.
+    wf.update({
+        "10": {
+            "class_type": "Hy3DMeshUVWrap",
+            "inputs": {"trimesh": ["5", 0]},
+        },
+        "11": {
+            "class_type": "Hy3DCameraConfig",
+            "inputs": {
+                "camera_azimuths": cam_azimuths,
+                "camera_elevations": cam_elevations,
+                "view_weights": "1, 0.1, 0.5, 0.1, 0.05, 0.05",
+                "camera_distance": 1.45,
+                "ortho_scale": 1.2,
+            },
+        },
+        "12": {
+            "class_type": "Hy3DRenderMultiView",
+            "inputs": {
+                "trimesh": ["10", 0],
+                "render_size": 2048,
+                "texture_size": 2048,
+                "camera_config": ["11", 0],
+                "normal_space": "world",
+            },
+        },
+        "13": {
+            "class_type": "DownloadAndLoadHy3DPaintModel",
+            "inputs": {"model": paint_model},
+        },
+        "14": {
+            "class_type": "DownloadAndLoadHy3DDelightModel",
+            "inputs": {"model": delight_model},
+        },
+        "15": {
+            "class_type": "Hy3DDelightImage",
+            "inputs": {
+                # Use the original front LoadImage (not the 518² scaled one) —
+                # delight runs at 512 internally and re-resizes itself.
+                "delight_pipe": ["14", 0],
+                "image": ["1", 0],
+                "steps": 50,
+                "width": 512,
+                "height": 512,
+                "cfg_image": 1.0,
+                "seed": seed,
+            },
+        },
+        "16": {
+            "class_type": "Hy3DDiffusersSchedulerConfig",
+            "inputs": {
+                "pipeline": ["13", 0],
+                "scheduler": "Euler A",
+                "sigmas": "default",
+            },
+        },
+        "17": {
+            "class_type": "Hy3DSampleMultiView",
+            "inputs": {
+                "pipeline": ["13", 0],
+                "ref_image": ["15", 0],
+                "normal_maps": ["12", 0],
+                "position_maps": ["12", 1],
+                "view_size": 512,
+                "steps": 25,
+                "seed": seed + 1024,
+                "camera_config": ["11", 0],
+                "scheduler": ["16", 0],
+            },
+        },
+        "18": {
+            "class_type": "Hy3DBakeFromMultiview",
+            "inputs": {
+                "images": ["17", 0],
+                "renderer": ["12", 2],
+                "camera_config": ["11", 0],
+            },
+        },
+        "19": {
+            "class_type": "Hy3DApplyTexture",
+            "inputs": {
+                # Hy3DApplyTexture wants `texture` (IMAGE) and `renderer`
+                # (MESHRENDER) — NOT trimesh/image/mask. The node calls
+                # renderer.set_texture(texture) then renderer.save_mesh()
+                # which returns the textured trimesh. The trimesh implicitly
+                # comes from the renderer (carried since UV-unwrap at node 10).
+                "texture": ["18", 0],
+                "renderer": ["12", 2],
+            },
+        },
+        "20": {
+            "class_type": "Hy3DExportMesh",
+            "inputs": {
+                "trimesh": ["19", 0],
+                "filename_prefix": f"{file_prefix}_textured",
+                "file_format": "glb",
+                "save_file": True,
+            },
+        },
+    })
+    return wf
+
+
+# TRELLIS quality presets — coarse scenario buckets that map well-tuned
+# combos of the wrapper's ~20 hyperparameters onto a single user choice.
+# Returned dict is overlaid onto the generator node's `inputs` block, so any
+# key not set falls through to the LowPoly.json defaults.
+TRELLIS_QUALITY_PRESETS = {
+    # Default — fast, balanced, matches LowPoly.json's tested values.
+    "balanced": {},
+    # Hard surface (mech, vehicles, furniture, hard-edged objects). Higher
+    # CFG sticks closer to reference, RK4 sampler resolves edges sharply,
+    # bumped sparse_structure_resolution gives the skeleton more bins to
+    # represent corners cleanly.
+    "hard_surface": {
+        "shape_steps": 18,
+        "shape_guidance_strength": 8.0,
+        "sparse_structure_resolution": 48,
+        "max_num_tokens": 65536,
+        "shape_sampler": "rk4",
+    },
+    # Organic (creatures, characters, plants). Softer guidance lets the
+    # model contribute its prior for skin/cloth/feathers; heun is smoother
+    # than euler at the same step count.
+    "organic": {
+        "shape_steps": 20,
+        "shape_guidance_strength": 5.5,
+        "shape_sampler": "heun",
+    },
+    # Asymmetric / detailed (irregular poses, broken/aged objects, anything
+    # that needs to NOT regress to symmetry). Highest shape CFG.
+    "asymmetric": {
+        "shape_steps": 16,
+        "shape_guidance_strength": 9.0,
+        "sparse_structure_resolution": 40,
+    },
+    # Max quality — burns time, prioritizes everything.
+    "max_quality": {
+        "shape_steps": 30,
+        "shape_guidance_strength": 8.5,
+        "sparse_structure_steps": 20,
+        "sparse_structure_resolution": 64,
+        "max_num_tokens": 98304,
+        "shape_sampler": "rk4",
+        "sparse_structure_sampler": "rk4",
+    },
+}
+
+
+def _fmt_eta(seconds: float) -> str:
+    """Compact ETA string: '12s' under a minute, '2m18s' otherwise.
+
+    Used by the TRELLIS DiT heartbeat — keeps user-facing messages short.
+    """
+    s = int(max(0, seconds))
+    if s < 60:
+        return f"{s}s"
+    m, sec = divmod(s, 60)
+    return f"{m}m{sec:02d}s"
+
+
+def _resolve_trellis_quality_params(
+    preset: str = "balanced",
+    *,
+    tweak_faithful: bool = False,
+    tweak_fine_detail: bool = False,
+    tweak_sharp_edges: bool = False,
+) -> dict:
+    """Resolve a quality preset + 3 toggle modifiers into a flat overrides dict.
+
+    Toggles compose ON TOP of the preset — each one nudges a specific knob
+    without rewriting the whole bucket. They're additive, so combining them
+    produces predictable layered effects (e.g. hard_surface + faithful =
+    even higher CFG; organic + fine_detail = soft + dense).
+    """
+    overrides = dict(TRELLIS_QUALITY_PRESETS.get(preset, {}))
+    if tweak_faithful:
+        # Bump shape CFG to glue the result to the reference image's quirks.
+        overrides["shape_guidance_strength"] = max(
+            overrides.get("shape_guidance_strength", 6.5), 9.0
+        )
+    if tweak_fine_detail:
+        # Increase voxel-budget capacity + initial skeleton resolution so
+        # the model has room to encode small features.
+        overrides["sparse_structure_resolution"] = max(
+            overrides.get("sparse_structure_resolution", 32), 48
+        )
+        overrides["max_num_tokens"] = max(
+            overrides.get("max_num_tokens", 49152), 65536
+        )
+    if tweak_sharp_edges:
+        # RK4 is 4th-order vs euler 1st — sharper edge transitions at the
+        # same step count, ~30% slower per step.
+        overrides["shape_sampler"] = "rk4"
+        overrides["sparse_structure_resolution"] = max(
+            overrides.get("sparse_structure_resolution", 32), 48
+        )
+    return overrides
+
+
+# TRELLIS 2 image-to-3D workflows (egore/Aero-Ex GGUF wrapper).
+# Different family from Hy3D — uses its own pipeline object (TRELLIS2PIPELINE),
+# its own image preprocessing, and a 4B parameter model that comes in 6 quant
+# formats (BF16 / FP8 / GGUF Q4–Q8). The wrapper auto-downloads weights from
+# microsoft/TRELLIS.2-4B on first use.
+#
+# Pipeline shape mirrors example_workflows/LowPoly.json's graph:
+#   shape:    voxel_gen → Remesh → Simplify → FillHoles → ToTrimesh → Export(.glb)
+#   textured: + Continue → MeshTexturing → SmoothNormals → Export(textured.glb)
+#
+# Continue_GGUF is an ordering primitive — it returns input_1 unchanged but
+# blocks until input_2 (the white-mesh export side-effect) has run. Without
+# it, ComfyUI's scheduler can interleave the two exports unpredictably.
+def build_trellis_workflow(
+    image_filename: str,
+    *,
+    mode: str = "shape",  # "shape" or "textured"
+    model_format: str = "GGUF Q8_0",
+    seed: int = 0,
+    file_prefix: str = "3D/wyltek-trellis",
+    pipeline_type: str = "512",  # "512" | "1024" | "1024_cascade"
+    target_face_num: int = 50000,
+    backend: str = "sdpa",
+    low_vram: bool = True,
+    auto_bg_removal: bool = True,
+    quality_overrides: dict | None = None,
+) -> dict:
+    """Build a ComfyUI API-format workflow for TRELLIS 2 image-to-3D.
+
+    Args:
+        image_filename: name of an image already in ComfyUI/input/.
+        mode: "shape" (untextured ~30s) or "textured" (~3-5min).
+        model_format: TRELLIS quant — "Safetensors (BF16)" | "Safetensors (FP8)"
+                      | "GGUF Q8_0" | "GGUF Q6_K" | "GGUF Q5_K_M" | "GGUF Q4_K_M".
+        pipeline_type: voxel-grid resolution. 512 is the fast default;
+                       1024_cascade is highest quality at ~3x time.
+        backend: attention backend. "sdpa" is the only ROCm-compatible one
+                 (flash_attn / xformers are CUDA-only).
+    """
+    if mode not in ("shape", "textured"):
+        raise ValueError(f"mode must be 'shape' or 'textured', got {mode!r}")
+
+    # low_vram dispatches between two wrapper code paths with opposite bugs:
+    #   • low_vram=True:  trellis2_image_to_3d.py:1651 calls flow_model.to(self.device)
+    #                     before sampling — REQUIRED for non-cascade pipelines
+    #                     (512, 1024) because the wrapper's load path doesn't
+    #                     pre-place those models on GPU.
+    #   • low_vram=False: skips that move on the assumption "you loaded on GPU
+    #                     already" — only safe for the cascade pipelines, which
+    #                     route through sample_shape_slat_cascade_multiview and
+    #                     don't hit the same guard.
+    # The DINOv3 multi-view shape encoder bug that originally drove low_vram=False
+    # is fixed by our explicit self.model.cuda() patch in image_feature_extractor.py.
+    is_cascade = pipeline_type in ("1024_cascade", "1536_cascade")
+    low_vram = not is_cascade
+
+    # Voxel generator widget defaults — copied from LowPoly.json's tested values.
+    # Format: 13 sampler/guidance params spread across sparse-structure / shape /
+    # texture stages. These are pre-tuned for the 4B model and shouldn't be
+    # exposed to users without a clear reason to deviate.
+    wf: dict = {
+        "1": {  # ref image
+            "class_type": "Trellis2LoadImageWithTransparency_GGUF",
+            "inputs": {"image": image_filename},
+        },
+        "2": {  # preprocess. remove_background gates the rembg pre-step:
+                #   ON  → rembg adds alpha (safe for raw RGB photos, but rembg's
+                #         u2net default over-segments devices/keyboards)
+                #   OFF → trust the user's uploaded alpha; LoadImageWithTransparency
+                #         crashes with "index 3 out of bounds" if input is RGB,
+                #         so OFF requires a pre-cut transparent PNG.
+            "class_type": "Trellis2PreProcessImage_GGUF",
+            "inputs": {
+                "image": ["1", 2],
+                "padding": 25,
+                "remove_background": bool(auto_bg_removal),
+            },
+        },
+        "3": {  # 4B DiT pipeline. low_vram=True keeps VRAM under 16GB even at BF16,
+                # which leaves headroom for paint/delight if the user runs Hy3D after.
+            "class_type": "Trellis2LoadModel_GGUF",
+            "inputs": {
+                "modelname": "TRELLIS.2-4B",
+                "model_format": model_format,
+                "backend": backend,
+                "device": "cuda",
+                "low_vram": low_vram,
+                "keep_models_loaded": True,
+            },
+        },
+        "4": {  # the heavy step — voxel grid generation. ~10–60s depending on
+                # pipeline_type and quant.
+            "class_type": "Trellis2MeshWithVoxelAdvancedGenerator_GGUF",
+            "inputs": {
+                "pipeline": ["3", 0],
+                "image": ["2", 0],
+                "seed": seed,
+                "pipeline_type": pipeline_type,
+                # Sparse-structure stage (coarse occupancy):
+                "sparse_structure_steps": 12,
+                "sparse_structure_guidance_strength": 6.5,
+                "sparse_structure_guidance_rescale": 0.2,
+                "sparse_structure_rescale_t": 4.0,
+                # Shape stage (fine geometry):
+                "shape_steps": 12,
+                "shape_guidance_strength": 6.5,
+                "shape_guidance_rescale": 0.2,
+                "shape_rescale_t": 4.0,
+                # Texture-slat stage (latent texture, only used if generate_texture_slat=True):
+                "texture_steps": 12,
+                "texture_guidance_strength": 3.0,
+                "texture_guidance_rescale": 0.2,
+                "texture_rescale_t": 3.0,
+                "max_num_tokens": 999999,
+                "max_views": 4,
+                "sparse_structure_resolution": 32,
+                "generate_texture_slat": False,
+                # Guidance intervals (start=0, end=1 → guidance applied throughout):
+                "sparse_structure_guidance_interval_start": 0.0,
+                "sparse_structure_guidance_interval_end": 1.0,
+                "shape_guidance_interval_start": 0.0,
+                "shape_guidance_interval_end": 1.0,
+                "texture_guidance_interval_start": 0.0,
+                "texture_guidance_interval_end": 1.0,
+                "use_tiled_decoder": False,
+                # Samplers — euler is fast + stable for shape work.
+                "sparse_structure_sampler": "euler",
+                "shape_sampler": "euler",
+                "texture_sampler": "euler",
+                # Caller-provided preset overrides applied last so they win.
+                **(quality_overrides or {}),
+            },
+        },
+        "5": {  # remesh: clean up dual-contouring artifacts. 512 res matches LowPoly.
+            "class_type": "Trellis2Remesh_GGUF",
+            "inputs": {
+                "mesh": ["4", 0],
+                "remesh_band": 1.0,
+                "remesh_project": 0.0,
+                "dual_contouring_resolution": "512",
+                "remove_floaters": True,
+                "remove_inner_faces": True,
+            },
+        },
+        "6": {  # decimate to user-requested face budget. Cumesh is faster than Meshlib.
+            "class_type": "Trellis2SimplifyMesh_GGUF",
+            "inputs": {
+                "mesh": ["5", 0],
+                "target_face_num": target_face_num,
+                "method": "Cumesh",
+            },
+        },
+        "7": {  # plug topological holes from sparse coverage.
+            "class_type": "Trellis2FillHolesWithMeshlib_GGUF",
+            "inputs": {"mesh": ["6", 0]},
+        },
+        "8": {  # voxel/sparse mesh → trimesh for export. 90deg reorient matches
+                # the convention in LowPoly (Z-up → Y-up Blender/glTF).
+            "class_type": "Trellis2MeshWithVoxelToTrimesh_GGUF",
+            "inputs": {"mesh": ["7", 0], "reorient_vertices": "90 degrees"},
+        },
+    }
+
+    if mode == "shape":
+        wf["9"] = {  # final shape export
+            "class_type": "Trellis2ExportMesh_GGUF",
+            "inputs": {
+                "trimesh": ["8", 0],
+                "filename_prefix": file_prefix,
+                "file_format": "glb",
+                "save_file": True,
+            },
+        }
+        return wf
+
+    # ----- Textured path -----
+    # Mirror LowPoly: white-mesh export → Continue (forces ordering) →
+    # MeshTexturing → SmoothNormals → final textured export.
+    wf.update({
+        "9": {  # white-mesh sidecar — saves the geometry-only .glb first
+            "class_type": "Trellis2ExportMesh_GGUF",
+            "inputs": {
+                "trimesh": ["8", 0],
+                "filename_prefix": f"{file_prefix}_white",
+                "file_format": "glb",
+                "save_file": True,
+            },
+        },
+        "10": {  # Continue: passes input_1 through, but waits for input_2 to fire
+                 # so the white-mesh export completes before texturing starts.
+            "class_type": "Trellis2Continue_GGUF",
+            "inputs": {"input_1": ["8", 0], "input_2": ["9", 0]},
+        },
+        "11": {  # paint diffusion — ~3-4 min on 7900XTX at 1024 resolution.
+            "class_type": "Trellis2MeshTexturing_GGUF",
+            "inputs": {
+                "pipeline": ["3", 0],
+                "image": ["2", 0],
+                "trimesh": ["10", 0],
+                "seed": seed,
+                "texture_steps": 12,
+                "texture_guidance_strength": 3.0,
+                "texture_guidance_rescale": 0.2,
+                "texture_rescale_t": 3.0,
+                "resolution": 1024,
+                "texture_size": 1024,
+                "texture_alpha_mode": "OPAQUE",
+                "double_side_material": False,
+                "texture_guidance_interval_start": 0.0,
+                "texture_guidance_interval_end": 0.9,
+                "max_views": 4,
+                "bake_on_vertices": False,
+                "use_custom_normals": False,
+                "uv_unwrap_method": "Xatlas",  # robust default; Blender requires bpy
+                "mesh_cluster_threshold_cone_half_angle_rad": 60.0,
+                "use_tiled_encoder": False,
+                "encoder_tile_size": 512,
+                "encoder_overlap": 64,
+                "use_tiled_decoder_for_texture": False,
+                "decoder_tile_size": 512,
+                "decoder_overlap": 64,
+                "sampler": "euler",
+            },
+        },
+        "12": {  # de-block the textured normals (matches LowPoly final touch).
+            "class_type": "Trellis2SmoothNormals_GGUF",
+            "inputs": {"trimesh": ["11", 0]},
+        },
+        "13": {  # final textured glb — this is the file we report back as the result.
+            "class_type": "Trellis2ExportMesh_GGUF",
+            "inputs": {
+                "trimesh": ["12", 0],
+                "filename_prefix": f"{file_prefix}_textured",
+                "file_format": "glb",
+                "save_file": True,
+            },
+        },
+    })
+    return wf
+
+
+def build_trellis_multiview_workflow(
+    view_filenames: dict,  # {"front": "f.png", "back": "b.png", "left": ..., "right": ...}
+    *,
+    mode: str = "shape",  # "shape" or "textured"
+    model_format: str = "GGUF Q8_0",
+    seed: int = 0,
+    file_prefix: str = "3D/wyltek-trellis-mv",
+    pipeline_type: str = "512",  # "512" | "1024" | "1024_cascade" | "1536_cascade"
+    target_face_num: int = 50000,
+    backend: str = "sdpa",
+    low_vram: bool = True,
+    auto_bg_removal: bool = True,
+    auto_bg_removal_per_view: dict | None = None,  # per-view override map
+    front_axis: str = "z",
+    blend_temperature: float = 1.0,
+    quality_overrides: dict | None = None,
+) -> dict:
+    """Build a TRELLIS multi-view workflow.
+
+    `view_filenames` keys: "front" (required), and any of "back", "left",
+    "right" (optional). Each maps to an image filename in ComfyUI/input/.
+    Views the user didn't supply are simply not connected to the generator
+    — the multi-view DiT handles missing views by falling back to its prior.
+
+    Output structure mirrors build_trellis_workflow (shape or textured) but
+    routes through Trellis2MeshWithVoxelMultiViewGenerator_GGUF and, in
+    textured mode, Trellis2MeshTexturingMultiView_GGUF — both of which
+    accept the additional view inputs.
+    """
+    if mode not in ("shape", "textured"):
+        raise ValueError(f"mode must be 'shape' or 'textured', got {mode!r}")
+    if "front" not in view_filenames:
+        raise ValueError("multi-view workflow requires at least 'front'")
+
+    # See build_trellis_workflow() for the full reasoning on low_vram.
+    # Summary: cascade pipelines need False (different sampler), non-cascade
+    # need True (relies on the wrapper's .to(self.device) guard at line 1651).
+    is_cascade = pipeline_type in ("1024_cascade", "1536_cascade")
+    low_vram = not is_cascade
+
+    # One LoadImage + PreProcess pair per supplied view. We use a stable
+    # node-id scheme so the multi-view generator + texturing nodes can wire
+    # up cleanly: 100 + i for LoadImage, 200 + i for PreProcess, where i is
+    # the slot index (front=0, back=1, left=2, right=3).
+    slot_for = {"front": 0, "back": 1, "left": 2, "right": 3}
+    wf: dict = {}
+    preprocessed_for = {}  # view_name -> [node_id, output_slot]
+    per_view_bg = auto_bg_removal_per_view or {}
+    for view_name, img_filename in view_filenames.items():
+        if view_name not in slot_for:
+            continue
+        i = slot_for[view_name]
+        load_id = str(100 + i)
+        prep_id = str(200 + i)
+        # Per-view override beats the global toggle. This protects against
+        # the "index 3 out of bounds" crash on RGB inputs even when the
+        # user has Auto-BG-Removal off (e.g. they pre-cut some views via
+        # iPhone Lift Subject but left others as raw RGB photos).
+        view_bg_removal = per_view_bg.get(view_name, bool(auto_bg_removal))
+        wf[load_id] = {
+            "class_type": "Trellis2LoadImageWithTransparency_GGUF",
+            "inputs": {"image": img_filename},
+        }
+        wf[prep_id] = {
+            "class_type": "Trellis2PreProcessImage_GGUF",
+            "inputs": {
+                "image": [load_id, 2],  # slot 2 = transparency-aware IMAGE output
+                "padding": 25,
+                "remove_background": view_bg_removal,
+            },
+        }
+        preprocessed_for[view_name] = [prep_id, 0]
+
+    # 4B DiT pipeline loader.
+    wf["3"] = {
+        "class_type": "Trellis2LoadModel_GGUF",
+        "inputs": {
+            "modelname": "TRELLIS.2-4B",
+            "model_format": model_format,
+            "backend": backend,
+            "device": "cuda",
+            "low_vram": low_vram,
+            "keep_models_loaded": True,
+        },
+    }
+
+    # Multi-view voxel generator. front_image is required; others optional —
+    # we only set keys for views the caller actually provided. Unset optional
+    # inputs are treated as None by ComfyUI (the wrapper handles None internally).
+    mv_inputs = {
+        "pipeline": ["3", 0],
+        "front_image": preprocessed_for["front"],
+        "seed": seed,
+        "pipeline_type": pipeline_type,
+        # Same hyperparameter defaults as the single-view path — they're
+        # tuned for the 4B model and don't differ meaningfully across views.
+        "sparse_structure_steps": 12,
+        "sparse_structure_guidance_strength": 6.5,
+        "sparse_structure_guidance_rescale": 0.2,
+        "sparse_structure_rescale_t": 4.0,
+        "shape_steps": 12,
+        "shape_guidance_strength": 6.5,
+        "shape_guidance_rescale": 0.2,
+        "shape_rescale_t": 4.0,
+        "texture_steps": 12,
+        "texture_guidance_strength": 3.0,
+        "texture_guidance_rescale": 0.2,
+        "texture_rescale_t": 3.0,
+        "max_num_tokens": 999999,
+        "sparse_structure_resolution": 32,
+        "generate_texture_slat": False,
+        "sparse_structure_guidance_interval_start": 0.0,
+        "sparse_structure_guidance_interval_end": 1.0,
+        "shape_guidance_interval_start": 0.0,
+        "shape_guidance_interval_end": 1.0,
+        "texture_guidance_interval_start": 0.0,
+        "texture_guidance_interval_end": 1.0,
+        "use_tiled_decoder": False,
+        "front_axis": front_axis,
+        "blend_temperature": blend_temperature,
+        "sparse_structure_sampler": "euler",
+        "shape_sampler": "euler",
+        "texture_sampler": "euler",
+    }
+    if quality_overrides:
+        mv_inputs.update(quality_overrides)
+    for v in ("back", "left", "right"):
+        if v in preprocessed_for:
+            mv_inputs[f"{v}_image"] = preprocessed_for[v]
+    wf["4"] = {
+        "class_type": "Trellis2MeshWithVoxelMultiViewGenerator_GGUF",
+        "inputs": mv_inputs,
+    }
+
+    # Standard cleanup chain (same as single-view).
+    wf["5"] = {
+        "class_type": "Trellis2Remesh_GGUF",
+        "inputs": {
+            "mesh": ["4", 0], "remesh_band": 1.0, "remesh_project": 0.0,
+            "dual_contouring_resolution": "512",
+            "remove_floaters": True, "remove_inner_faces": True,
+        },
+    }
+    wf["6"] = {
+        "class_type": "Trellis2SimplifyMesh_GGUF",
+        "inputs": {"mesh": ["5", 0], "target_face_num": target_face_num, "method": "Cumesh"},
+    }
+    wf["7"] = {
+        "class_type": "Trellis2FillHolesWithMeshlib_GGUF",
+        "inputs": {"mesh": ["6", 0]},
+    }
+    wf["8"] = {
+        "class_type": "Trellis2MeshWithVoxelToTrimesh_GGUF",
+        "inputs": {"mesh": ["7", 0], "reorient_vertices": "90 degrees"},
+    }
+
+    if mode == "shape":
+        wf["9"] = {
+            "class_type": "Trellis2ExportMesh_GGUF",
+            "inputs": {
+                "trimesh": ["8", 0], "filename_prefix": file_prefix,
+                "file_format": "glb", "save_file": True,
+            },
+        }
+        return wf
+
+    # ----- Textured (multi-view) -----
+    # Trellis2MeshTexturingMultiView_GGUF accepts the same view set as the
+    # generator. front_image is required; back/left/right are required at
+    # the schema level (no [opt] in object_info) but pass empty/zero IMAGE
+    # tensors when missing — easier to just route the same preprocessed_for
+    # dict and only set keys that exist. ComfyUI rejects missing required
+    # inputs, so for views the user didn't supply we route the front image
+    # as a fallback (the texturing node handles repeated views gracefully).
+    fallback = preprocessed_for["front"]
+    tx_inputs = {
+        "pipeline": ["3", 0],
+        "front_image": preprocessed_for["front"],
+        "back_image":  preprocessed_for.get("back",  fallback),
+        "left_image":  preprocessed_for.get("left",  fallback),
+        "right_image": preprocessed_for.get("right", fallback),
+        "trimesh": ["8", 0],
+        "seed": seed,
+        "texture_steps": 12,
+        "texture_guidance_strength": 3.0,
+        "texture_guidance_rescale": 0.2,
+        "texture_rescale_t": 3.0,
+        "resolution": 1024,
+        "texture_size": 1024,
+        "texture_alpha_mode": "OPAQUE",
+        "double_side_material": False,
+        "texture_guidance_interval_start": 0.0,
+        "texture_guidance_interval_end": 0.9,
+        "bake_on_vertices": False,
+        "use_custom_normals": False,
+        "uv_unwrap_method": "Xatlas",
+        "mesh_cluster_threshold_cone_half_angle_rad": 60.0,
+        "front_axis": front_axis,
+        "blend_temperature": blend_temperature,
+        "use_tiled_encoder": False,
+        "encoder_tile_size": 512,
+        "encoder_overlap": 64,
+        "use_tiled_decoder_for_texture": False,
+        "decoder_tile_size": 512,
+        "decoder_overlap": 64,
+        "sampler": "euler",
+    }
+    wf.update({
+        "9": {
+            "class_type": "Trellis2ExportMesh_GGUF",
+            "inputs": {
+                "trimesh": ["8", 0],
+                "filename_prefix": f"{file_prefix}_white",
+                "file_format": "glb", "save_file": True,
+            },
+        },
+        "10": {
+            "class_type": "Trellis2Continue_GGUF",
+            "inputs": {"input_1": ["8", 0], "input_2": ["9", 0]},
+        },
+        "11": {
+            "class_type": "Trellis2MeshTexturingMultiView_GGUF",
+            "inputs": {**tx_inputs, "trimesh": ["10", 0]},
+        },
+        "12": {
+            "class_type": "Trellis2SmoothNormals_GGUF",
+            "inputs": {"trimesh": ["11", 0]},
+        },
+        "13": {
+            "class_type": "Trellis2ExportMesh_GGUF",
+            "inputs": {
+                "trimesh": ["12", 0],
+                "filename_prefix": f"{file_prefix}_textured",
+                "file_format": "glb", "save_file": True,
+            },
+        },
+    })
+    return wf
+
+
+async def _rescue_orphan_glb(
+    file_prefix: str,
+    output_path: str,
+    *,
+    grace_seconds: int = 30,
+    poll_interval: float = 2.0,
+    comfy_output_dir: Path = Path("/home/phill/ComfyUI/output"),
+) -> dict | None:
+    """Best-effort recovery of a `.glb` that ComfyUI may write *after* an
+    open-palette TimeoutError. Polls the ComfyUI output dir for up to
+    `grace_seconds` looking for a file matching ``<file_prefix>*_.glb``.
+    If a textured variant exists, prefers it. On match: copies to
+    `output_path` (preserving mtime) and returns a dict with rescue metadata.
+    Returns None on timeout or no match.
+
+    Caller should wrap this in ``asyncio.shield()`` if invoked from inside
+    an outer ``asyncio.wait_for`` cancellation path — otherwise the rescue
+    itself gets cancelled before it can copy.
+    """
+    from glob import glob
+    from datetime import datetime
+    import shutil
+    deadline = asyncio.get_event_loop().time() + grace_seconds
+    pattern = str(comfy_output_dir / f"{file_prefix}*_.glb")
+    while asyncio.get_event_loop().time() < deadline:
+        matches = sorted(glob(pattern))
+        # Match _textured_ on the basename only — directory names can
+        # legitimately contain "_textured_" (e.g. user's repo path) and
+        # would otherwise sweep every glb into the textured bucket.
+        textured = [m for m in matches if "_textured_" in Path(m).name]
+        chosen = textured[-1] if textured else (matches[-1] if matches else None)
+        if chosen:
+            shutil.copy2(chosen, output_path)
+            return {
+                "rescued": True,
+                "source": chosen,
+                "rescued_at": datetime.now().isoformat(),
+            }
+        await asyncio.sleep(poll_interval)
+    return None
 
 
 class ComfyUIBackend(BaseBackend):
@@ -1278,6 +2442,12 @@ class ComfyUIBackend(BaseBackend):
                     copied_refs.append(src.name)  # just filename, ComfyUI resolves from its input dir
             if copied_refs:
                 workflow = self._add_ip_adapter(workflow, copied_refs, params)
+        elif ref_images:
+            logger.warning(
+                "IP-Adapter: %d reference image(s) attached but ip_adapter_model is empty — "
+                "refs will be ignored and the model will run text-only.",
+                len(ref_images),
+            )
 
         await on_progress(5, "Submitting to ComfyUI...")
 
@@ -1614,11 +2784,607 @@ class ComfyUIBackend(BaseBackend):
                 resp.raise_for_status()
                 image_bytes = await resp.read()
 
-        with open(output_path, "wb") as f:
-            f.write(image_bytes)
+        # Atlas-SAM re-texture path: when the caller supplied a mask,
+        # composite the generated atlas back into the original base
+        # atlas so unmasked regions stay byte-stable. The base + mask
+        # both live in ComfyUI's input dir (server.py copied them).
+        mask_filename = params.get("mask_filename")
+        if mask_filename:
+            from PIL import Image as _PIL
+            from texture_io import composite_with_mask
+            comfy_input_dir = Path("/home/phill/ComfyUI/input")
+            with _PIL.open(comfy_input_dir / params["base_filename"]) as base_img, \
+                 _PIL.open(comfy_input_dir / mask_filename) as mask_img, \
+                 _PIL.open(io.BytesIO(image_bytes)) as gen_img:
+                composited = composite_with_mask(gen_img, base_img, mask_img)
+                composited.save(output_path, format="PNG")
+        else:
+            with open(output_path, "wb") as f:
+                f.write(image_bytes)
 
         await on_progress(100, "Done")
         return {"filename": Path(output_path).name}
+
+    async def generate_3d(self, params: dict, output_path: str, on_progress) -> dict:
+        """Generate a 3D mesh (.glb) via Hunyuan3D image-to-3D.
+
+        Required params:
+            reference_images: list[str] — at least one path; the first is used.
+            model: str — Hy3D DiT filename in ComfyUI/models/diffusion_models
+                   (e.g. "hy3dgen/hunyuan3d-dit-v2-0-fp16.safetensors").
+            mode_3d: "shape" or "pbr" (default "shape").
+            seed: int (default 0)
+        Optional:
+            paint_model, delight_model, octree, max_facenum, cfg_scale, steps.
+
+        Output: writes a .glb to ``output_path``. Returns dict with filename.
+        """
+        import shutil
+        from glob import glob
+
+        ref_images = params.get("reference_images") or []
+        if not ref_images:
+            raise RuntimeError(
+                "3D generation requires a reference image. "
+                "Hy3D is image-conditioned — generate or upload an image first."
+            )
+
+        url = self.url
+        ws_url = url.replace("http://", "ws://").replace("https://", "wss://") + "/ws"
+        client_id = str(uuid.uuid4())
+        prompt_api = f"{url}/prompt"
+
+        # Copy ALL provided refs into ComfyUI's input dir, keyed by view slot.
+        # Slot order matches the multi-view convention: 0=front, 1=back, 2=left, 3=right.
+        # Each ref runs through the Hy3D preprocess (rembg + recenter+pad) so
+        # the wrapper sees alpha-cut, properly-framed subjects regardless of
+        # what the user uploads. PNG output keeps the alpha channel intact.
+        comfy_input = Path("/home/phill/ComfyUI/input")
+        VIEW_NAMES = ["front", "back", "left", "right"]
+        view_filenames = {}
+        for slot_idx, ref_path in enumerate(ref_images[:4]):
+            if not ref_path:
+                continue
+            src = Path(ref_path)
+            if not src.exists():
+                raise RuntimeError(f"Reference image not found: {src}")
+            view_name = VIEW_NAMES[slot_idx]
+            v_name = f"hy3d_{client_id[:8]}_{view_name}.png"
+            dst = comfy_input / v_name
+            preprocessed = preprocess_hy3d_image(str(src), str(dst))
+            if not preprocessed:
+                shutil.copy2(src, dst)
+            view_filenames[view_name] = v_name
+        # Backward-compat alias for single-view path.
+        ref_name = view_filenames.get("front") or list(view_filenames.values())[0]
+
+        mode = params.get("mode_3d", "shape")
+        # Use a per-job unique prefix so we can find the saved .glb on disk
+        # without parsing ComfyUI's history. Subfolder "3D" keeps outputs tidy.
+        file_prefix = f"3D/wyltek-3d_{client_id[:8]}"
+
+        model_name = params.get("model", "")
+        if not model_name:
+            raise RuntimeError("3D generation: 'model' param required (Hy3D DiT filename)")
+
+        # 2D side uses seed=-1 to mean "random", but Hy3DGenerateMesh /
+        # Hy3DDelightImage declare seed with min=0 — passing -1 fails
+        # validation on every Hy3D node that touches it. Normalize here.
+        import random
+        raw_seed = int(params.get("seed", 0) or 0)
+        if raw_seed < 0:
+            raw_seed = random.randint(0, 2**31 - 1)
+
+        # Multi-view dispatch: 2+ slots filled → Hy3DGenerateMeshMultiView,
+        # works for both shape and PBR modes. PBR multi-view uses the same
+        # paint chain as single-view but feeds in the multi-view-derived mesh.
+        # Camera rig overrides — empty string from UI means "use defaults".
+        # Both builders default to the official Tencent 6-view rig.
+        cam_az = (params.get("hy3d_cam_azimuths") or "").strip() or "0, 90, 180, 270, 0, 180"
+        cam_el = (params.get("hy3d_cam_elevations") or "").strip() or "0, 0, 0, 0, 90, -90"
+
+        is_multiview = len(view_filenames) >= 2
+        if is_multiview:
+            workflow = build_hy3d_multiview_workflow(
+                model=model_name,
+                view_filenames=view_filenames,
+                mode=mode,
+                seed=raw_seed,
+                cfg=float(params.get("cfg_scale", 5.5) or 5.5),
+                steps=int(params.get("steps", 30) or 30),
+                paint_model=params.get("paint_model", "hunyuan3d-paint-v2-0"),
+                delight_model=params.get("delight_model", "hunyuan3d-delight-v2-0"),
+                file_prefix=file_prefix,
+                octree=int(params.get("octree", 384) or 384),
+                max_facenum=int(params.get("max_facenum", 50000) or 50000),
+                cam_azimuths=cam_az,
+                cam_elevations=cam_el,
+            )
+        else:
+            workflow = build_3d_workflow(
+                model=model_name,
+                image_filename=ref_name,
+                mode=mode,
+                seed=raw_seed,
+                cfg=float(params.get("cfg_scale", 5.5) or 5.5),
+                steps=int(params.get("steps", 50) or 50),
+                paint_model=params.get("paint_model", "hunyuan3d-paint-v2-0"),
+                delight_model=params.get("delight_model", "hunyuan3d-delight-v2-0"),
+                file_prefix=file_prefix,
+                octree=int(params.get("octree", 384) or 384),
+                max_facenum=int(params.get("max_facenum", 50000) or 50000),
+                cam_azimuths=cam_az,
+                cam_elevations=cam_el,
+            )
+
+        view_count = len(view_filenames)
+        view_label = f"{view_count}-view multi" if is_multiview else "single-view"
+        await on_progress(5, f"Submitting Hy3D {view_label} workflow ({mode})...")
+
+        # PBR pipeline can take several minutes; shape ~30s. Use a generous
+        # cap and rely on WebSocket events to track progress when available.
+        # Honour server.py's resolved per-mode inner timeout when present;
+        # fall back to the legacy values for tests / direct callers.
+        timeout_s = int(params.get("_inner_timeout_s") or (2100 if mode == "pbr" else 300))
+
+        async with aiohttp.ClientSession() as session:
+            payload = {"prompt": workflow, "client_id": client_id}
+            async with session.post(prompt_api, json=payload) as resp:
+                if resp.status != 200:
+                    text = await resp.text()
+                    try:
+                        err = json.loads(text)
+                        msgs = []
+                        if err.get("error", {}).get("message"):
+                            msgs.append(err["error"]["message"])
+                        for _, nerr in err.get("node_errors", {}).items():
+                            for e in nerr.get("errors", []):
+                                msgs.append(e.get("message", ""))
+                        raise RuntimeError("; ".join(m for m in msgs if m) or f"ComfyUI error {resp.status}")
+                    except (json.JSONDecodeError, KeyError):
+                        raise RuntimeError(f"ComfyUI error: {text[:300]}")
+                result = await resp.json()
+                prompt_id = result["prompt_id"]
+
+            await on_progress(8, "Queued — Hy3D loading model...")
+
+            rescued_meta: dict | None = None
+            try:
+                try:
+                    async with session.ws_connect(f"{ws_url}?clientId={client_id}", timeout=30) as ws:
+                        async for msg in ws:
+                            if msg.type == aiohttp.WSMsgType.TEXT:
+                                data = json.loads(msg.data)
+                                mtype = data.get("type")
+                                if mtype == "progress":
+                                    d = data["data"]
+                                    # Hy3D step counts vary: shape uses ~50, paint uses ~25.
+                                    # Map to 10-85% so download has room.
+                                    pct = int(10 + (d.get("value", 0) / max(d.get("max", 1), 1)) * 75)
+                                    await on_progress(pct, f"Hy3D step {d.get('value')}/{d.get('max')}")
+                                elif mtype == "execution_success" and data["data"].get("prompt_id") == prompt_id:
+                                    # ComfyUI 0.18+ emits this as the workflow-end event.
+                                    break
+                                elif mtype == "executing":
+                                    node = data["data"].get("node")
+                                    if node is None and data["data"].get("prompt_id") == prompt_id:
+                                        break  # legacy/null-node end event
+                                    if node:
+                                        label = workflow.get(node, {}).get("class_type", node)
+                                        await on_progress(None, f"Hy3D: {label}")
+                                elif mtype == "execution_error":
+                                    raise RuntimeError(f"ComfyUI execution error: {data['data']}")
+                except aiohttp.ClientError:
+                    # WS hiccup — fall back to history polling with the inner timeout.
+                    await self._poll_history_long(session, url, prompt_id, on_progress, timeout_s)
+            except (asyncio.CancelledError, RuntimeError) as e:
+                # Outer asyncio.wait_for cancelled OR inner poll/exec raised.
+                # Try to rescue any GLB ComfyUI may have written before/after.
+                # Shield so the rescue completes even if outer is cancelling us.
+                rescued_meta = await asyncio.shield(
+                    _rescue_orphan_glb(file_prefix, output_path)
+                )
+                if rescued_meta:
+                    await on_progress(95, "Hy3D finished late; rescued .glb")
+                else:
+                    raise
+
+            if rescued_meta:
+                # Rescue already copied the .glb to output_path; skip locate+copy.
+                await on_progress(100, "Done (rescued)")
+                return {
+                    "filename": Path(output_path).name,
+                    "format": "glb",
+                    "mode": mode,
+                    **rescued_meta,
+                }
+
+            await on_progress(90, "Locating .glb output...")
+
+            # Hy3DExportMesh returns relative_path under outputs[node]['glb_path'],
+            # but the structure is wrapper-version dependent. We use the unique
+            # filename_prefix to glob the output dir directly — robust either way.
+            comfy_output_dir = Path("/home/phill/ComfyUI/output")
+            pattern = str(comfy_output_dir / f"{file_prefix}*_.glb")
+            # PBR pipeline writes both untextured (file_prefix_*.glb) and
+            # textured (file_prefix_textured_*.glb). Prefer textured.
+            matches = sorted(glob(pattern))
+            textured = [m for m in matches if "_textured_" in m]
+            chosen = textured[-1] if textured else (matches[-1] if matches else None)
+            if not chosen:
+                raise RuntimeError(
+                    f"Hy3D finished but no .glb produced at {pattern}. "
+                    "Check ComfyUI logs for an error."
+                )
+
+            shutil.copy2(chosen, output_path)
+
+        await on_progress(100, "Done")
+        result = {"filename": Path(output_path).name, "format": "glb", "mode": mode}
+        if rescued_meta:
+            result.update(rescued_meta)
+        return result
+
+    async def generate_trellis(self, params: dict, output_path: str, on_progress) -> dict:
+        """Generate a 3D mesh (.glb) via TRELLIS 2 image-to-3D.
+
+        Mirrors the generate_3d (Hy3D) contract — same image-conditioned input,
+        same output_path semantics — so the upstream `_run_job` dispatcher can
+        treat the two engines symmetrically.
+
+        Required params:
+            reference_images: list[str], at least one.
+            mode_3d: "shape" or "textured" (default "shape").
+        Optional:
+            trellis_format: e.g. "GGUF Q8_0" (default), "Safetensors (BF16)" etc.
+            trellis_pipeline_type: "512" | "1024" | "1024_cascade".
+            seed, max_facenum.
+        """
+        import shutil
+        from glob import glob
+
+        ref_images = params.get("reference_images") or []
+        if not ref_images:
+            raise RuntimeError(
+                "TRELLIS generation requires a reference image — image-conditioned only."
+            )
+
+        url = self.url
+        ws_url = url.replace("http://", "ws://").replace("https://", "wss://") + "/ws"
+        client_id = str(uuid.uuid4())
+        prompt_api = f"{url}/prompt"
+
+        # Copy each provided reference image into ComfyUI's input dir under a
+        # unique per-job filename. Slot order is meaningful for multi-view:
+        # 0=front (required), 1=back, 2=left, 3=right.
+        comfy_input = Path("/home/phill/ComfyUI/input")
+        VIEW_NAMES = ["front", "back", "left", "right"]
+        view_filenames = {}        # view_name -> uploaded filename in input/
+        per_view_needs_bg = {}     # view_name -> True if RGB (no alpha)
+        for slot_idx, ref_path in enumerate(ref_images[:4]):
+            if not ref_path:
+                continue
+            src = Path(ref_path)
+            if not src.exists():
+                raise RuntimeError(f"Reference image not found: {src}")
+            view_name = VIEW_NAMES[slot_idx]
+            ref_name = f"trellis_{client_id[:8]}_{view_name}{src.suffix or '.png'}"
+            shutil.copy2(src, comfy_input / ref_name)
+            view_filenames[view_name] = ref_name
+            # Per-view alpha probe — RGB inputs MUST go through rembg or
+            # Trellis2PreProcessImage_GGUF crashes with "index 3 out of
+            # bounds" when it tries to read a missing alpha channel. We
+            # detect server-side and override the user's auto_bg_removal
+            # toggle to True for those views only.
+            try:
+                from PIL import Image
+                with Image.open(src) as im:
+                    has_alpha = (im.mode in ("RGBA", "LA", "PA")) or (
+                        "transparency" in im.info
+                    )
+                    per_view_needs_bg[view_name] = not has_alpha
+            except Exception:
+                # If PIL can't open it, leave to the user's setting and let
+                # the workflow surface the error.
+                pass
+        # Backward-compat alias for single-view path below.
+        ref_name = view_filenames.get("front") or list(view_filenames.values())[0]
+
+        # 2D's seed=-1 ("random") is a UI convention — TRELLIS nodes also reject
+        # negatives. Normalize the same way generate_3d does for consistency.
+        import random
+        raw_seed = int(params.get("seed", 0) or 0)
+        if raw_seed < 0:
+            raw_seed = random.randint(0, 2**31 - 1)
+
+        # Map UI mode names to TRELLIS pipeline names. Hy3D uses (shape, pbr);
+        # we expose (shape, textured) to TRELLIS to mirror the example file names.
+        mode_3d = params.get("mode_3d", "shape")
+        trellis_mode = "textured" if mode_3d in ("pbr", "textured") else "shape"
+
+        file_prefix = f"3D/wyltek-trellis_{client_id[:8]}"
+        # Pick single-view vs multi-view based on how many slots are filled.
+        # A single front view → single-view DiT (faster, established path).
+        # 2+ views → multi-view DiT, which uses the actual back/left/right
+        # pixel data instead of inferring it from the prior. Multi-view
+        # produces materially better samples for asymmetric subjects.
+        # Resolve quality preset + tweak toggles into a flat overrides dict
+        # that both single-view and multi-view builders can apply uniformly.
+        quality_overrides = _resolve_trellis_quality_params(
+            preset=params.get("trellis_preset", "balanced"),
+            tweak_faithful=bool(params.get("trellis_tweak_faithful", False)),
+            tweak_fine_detail=bool(params.get("trellis_tweak_fine_detail", False)),
+            tweak_sharp_edges=bool(params.get("trellis_tweak_sharp_edges", False)),
+        )
+
+        is_multiview = len(view_filenames) >= 2
+        if is_multiview:
+            # If the user disabled auto-bg-removal but supplied any RGB
+            # views, override per-view to True so PreProcess doesn't crash.
+            global_bg = bool(params.get("auto_bg_removal", True))
+            per_view_override = {
+                v: True if needs_bg else global_bg
+                for v, needs_bg in per_view_needs_bg.items()
+            }
+            workflow = build_trellis_multiview_workflow(
+                view_filenames=view_filenames,
+                mode=trellis_mode,
+                model_format=params.get("trellis_format", "GGUF Q8_0"),
+                seed=raw_seed,
+                file_prefix=file_prefix,
+                pipeline_type=params.get("trellis_pipeline_type", "512"),
+                target_face_num=int(params.get("max_facenum", 50000) or 50000),
+                auto_bg_removal=global_bg,
+                auto_bg_removal_per_view=per_view_override,
+                quality_overrides=quality_overrides,
+            )
+        else:
+            workflow = build_trellis_workflow(
+                image_filename=ref_name,
+                mode=trellis_mode,
+                model_format=params.get("trellis_format", "GGUF Q8_0"),
+                seed=raw_seed,
+                file_prefix=file_prefix,
+                pipeline_type=params.get("trellis_pipeline_type", "512"),
+                target_face_num=int(params.get("max_facenum", 50000) or 50000),
+                auto_bg_removal=bool(params.get("auto_bg_removal", True)),
+                quality_overrides=quality_overrides,
+            )
+
+        view_count = len(view_filenames)
+        view_label = f"{view_count}-view multi" if view_count >= 2 else "single-view"
+        await on_progress(5, f"Submitting TRELLIS {view_label} workflow ({trellis_mode})...")
+
+        # Textured pipeline runs the paint diffusion model, which is slow.
+        # First-ever run also auto-downloads the 4B weights (~3-8GB depending
+        # on quant) — that download has no progress event, so the timeout
+        # has to swallow it.
+        # Honour server.py's resolved per-mode inner timeout when present;
+        # fall back to the legacy values for tests / direct callers.
+        timeout_s = int(params.get("_inner_timeout_s") or (3000 if trellis_mode == "textured" else 600))
+
+        async with aiohttp.ClientSession() as session:
+            payload = {"prompt": workflow, "client_id": client_id}
+            async with session.post(prompt_api, json=payload) as resp:
+                if resp.status != 200:
+                    text = await resp.text()
+                    try:
+                        err = json.loads(text)
+                        msgs = []
+                        if err.get("error", {}).get("message"):
+                            msgs.append(err["error"]["message"])
+                        for _, nerr in err.get("node_errors", {}).items():
+                            for e in nerr.get("errors", []):
+                                msgs.append(e.get("message", ""))
+                        raise RuntimeError("; ".join(m for m in msgs if m) or f"ComfyUI error {resp.status}")
+                    except (json.JSONDecodeError, KeyError):
+                        raise RuntimeError(f"ComfyUI error: {text[:300]}")
+                result = await resp.json()
+                prompt_id = result["prompt_id"]
+
+            await on_progress(8, "Queued — TRELLIS loading model (first run downloads weights)...")
+
+            # Find the LoadModel node ID once so we can detect when execution
+            # enters it and start a download ticker. Subsequent nodes get
+            # generic step-progress events; only the LoadModel step is silent
+            # for ~5-10min during the first-ever HF download.
+            load_node_id = next(
+                (nid for nid, n in workflow.items() if n.get("class_type") == "Trellis2LoadModel_GGUF"),
+                None,
+            )
+            # The egore wrapper has its own model_manager (not HF cache) — it
+            # pulls weights from Aero-Ex/Trellis2-GGUF directly into
+            # ComfyUI/models/Trellis2/ via hf_hub_download(local_dir=...).
+            hf_trellis_dir = Path.home() / "ComfyUI/models/Trellis2"
+
+            def hf_dir_size_mb() -> int:
+                """Return total bytes of the TRELLIS HF cache as MB (0 if absent)."""
+                if not hf_trellis_dir.exists():
+                    return 0
+                total = 0
+                try:
+                    for f in hf_trellis_dir.rglob("*"):
+                        if f.is_file():
+                            total += f.stat().st_size
+                except (OSError, PermissionError):
+                    pass
+                return total // (1024 * 1024)
+
+            async def poll_hf_download():
+                """Tick every 3s while LoadModel runs; surface MB downloaded
+                so the user sees movement instead of a silent 5–10min wait."""
+                # ~2.5GB for Q4_K_M, ~8GB for BF16. Hard to predict exact size
+                # so we just show absolute progress without an ETA.
+                while True:
+                    try:
+                        mb = hf_dir_size_mb()
+                        if mb > 0:
+                            await on_progress(None, f"Downloading TRELLIS weights: {mb} MB on disk")
+                        else:
+                            await on_progress(None, "Loading TRELLIS model (HF download starting...)")
+                        await asyncio.sleep(3)
+                    except asyncio.CancelledError:
+                        return
+
+            download_task = None
+
+            # Per-step timing state for the DiT heartbeat. Slat-shape at 1024
+            # res can run ~14s/step on ROCm, which leaves the WS quiet for
+            # long stretches and reads as a hang. The heartbeat surfaces
+            # avg-step + ETA between real progress events. Reset on every
+            # node transition so SS-DiT step rate doesn't poison Slat-shape.
+            step_state = {
+                "last_t": None,    # monotonic ts of most recent progress event
+                "durations": [],   # rolling window of step intervals
+                "value": 0,
+                "max": 1,
+            }
+
+            async def heartbeat():
+                """Tick every 3s when the DiT has been silent >5s since its
+                last step. Stays quiet during non-sampler nodes (no last_t)."""
+                while True:
+                    try:
+                        await asyncio.sleep(3)
+                        last_t = step_state["last_t"]
+                        if last_t is None:
+                            continue
+                        elapsed = time.monotonic() - last_t
+                        if elapsed < 5:
+                            continue
+                        durations = step_state["durations"]
+                        avg = (sum(durations) / len(durations)) if durations else elapsed
+                        value = step_state["value"]
+                        mx = step_state["max"]
+                        eta_s = max(0, mx - value) * avg
+                        await on_progress(
+                            None,
+                            f"TRELLIS step {value}/{mx} — working "
+                            f"(+{int(elapsed)}s, ~{avg:.1f}s/step, ETA {_fmt_eta(eta_s)})",
+                        )
+                    except asyncio.CancelledError:
+                        return
+
+            heartbeat_task = None
+
+            rescued_meta: dict | None = None
+            try:
+                try:
+                    async with session.ws_connect(f"{ws_url}?clientId={client_id}", timeout=30) as ws:
+                        async for msg in ws:
+                            if msg.type == aiohttp.WSMsgType.TEXT:
+                                data = json.loads(msg.data)
+                                mtype = data.get("type")
+                                if mtype == "progress":
+                                    d = data["data"]
+                                    value = int(d.get("value", 0))
+                                    mx = max(int(d.get("max", 1)), 1)
+                                    pct = int(10 + (value / mx) * 75)
+                                    now = time.monotonic()
+                                    last_t = step_state["last_t"]
+                                    if last_t is not None:
+                                        step_state["durations"].append(now - last_t)
+                                        if len(step_state["durations"]) > 10:
+                                            step_state["durations"].pop(0)
+                                    step_state["last_t"] = now
+                                    step_state["value"] = value
+                                    step_state["max"] = mx
+                                    if heartbeat_task is None or heartbeat_task.done():
+                                        heartbeat_task = asyncio.create_task(heartbeat())
+                                    await on_progress(pct, f"TRELLIS step {value}/{mx}")
+                                elif mtype == "executing":
+                                    node = data["data"].get("node")
+                                    if node is None and data["data"].get("prompt_id") == prompt_id:
+                                        break
+                                    # When LoadModel starts, kick the HF download ticker.
+                                    # When any OTHER node starts, kill it — that means
+                                    # the model finished loading and execution moved on.
+                                    if node == load_node_id and download_task is None:
+                                        download_task = asyncio.create_task(poll_hf_download())
+                                    elif node and node != load_node_id and download_task is not None:
+                                        download_task.cancel()
+                                        download_task = None
+                                    # Reset per-step timing on every node transition.
+                                    # Heartbeat task itself stays alive but goes quiet
+                                    # (last_t=None) until the next progress event.
+                                    if node:
+                                        step_state["last_t"] = None
+                                        step_state["durations"] = []
+                                        label = workflow.get(node, {}).get("class_type", node)
+                                        # Strip the GGUF suffix from progress labels — feels less noisy.
+                                        label = label.replace("Trellis2", "").replace("_GGUF", "")
+                                        await on_progress(None, f"TRELLIS: {label}")
+                                elif mtype == "execution_error":
+                                    raise RuntimeError(f"ComfyUI execution error: {data['data']}")
+                except aiohttp.ClientError:
+                    await self._poll_history_long(session, url, prompt_id, on_progress, timeout_s)
+                finally:
+                    if download_task is not None:
+                        download_task.cancel()
+                    if heartbeat_task is not None:
+                        heartbeat_task.cancel()
+            except (asyncio.CancelledError, RuntimeError):
+                # Outer asyncio.wait_for cancelled OR inner poll/exec raised.
+                # Try to rescue any GLB ComfyUI may have written before/after.
+                # Shield so the rescue completes even if outer is cancelling us.
+                rescued_meta = await asyncio.shield(
+                    _rescue_orphan_glb(file_prefix, output_path)
+                )
+                if rescued_meta:
+                    await on_progress(95, "TRELLIS finished late; rescued .glb")
+                else:
+                    raise
+
+            if rescued_meta:
+                # Rescue already copied the .glb to output_path; skip locate+copy.
+                await on_progress(100, "Done (rescued)")
+                return {
+                    "filename": Path(output_path).name,
+                    "format": "glb",
+                    "mode": trellis_mode,
+                    "engine": "trellis",
+                    **rescued_meta,
+                }
+
+            await on_progress(90, "Locating TRELLIS .glb...")
+
+            # Same disk-scan trick as Hy3D — finding the textured output reliably
+            # is easier via globbing the file_prefix than parsing the variable
+            # output structure of Trellis2ExportMesh_GGUF across versions.
+            comfy_output_dir = Path("/home/phill/ComfyUI/output")
+            pattern = str(comfy_output_dir / f"{file_prefix}*_.glb")
+            matches = sorted(glob(pattern))
+            textured = [m for m in matches if "_textured_" in m]
+            chosen = textured[-1] if textured else (matches[-1] if matches else None)
+            if not chosen:
+                raise RuntimeError(
+                    f"TRELLIS finished but no .glb produced at {pattern}. "
+                    "Check ComfyUI logs for an error."
+                )
+
+            shutil.copy2(chosen, output_path)
+
+        await on_progress(100, "Done")
+        return {
+            "filename": Path(output_path).name,
+            "format": "glb",
+            "mode": trellis_mode,
+            "engine": "trellis",
+        }
+
+    async def _poll_history_long(self, session, url, prompt_id, on_progress, timeout_s: int):
+        """History-poll variant with caller-set timeout (for the slow PBR path)."""
+        ticks = max(1, timeout_s)
+        for i in range(ticks):
+            await asyncio.sleep(1)
+            async with session.get(f"{url}/history/{prompt_id}") as resp:
+                history = await resp.json()
+            if prompt_id in history:
+                return
+            if i % 10 == 0:
+                pct = min(10 + int(75 * i / ticks), 85)
+                await on_progress(pct, "Generating 3D mesh...")
+        raise RuntimeError(f"Hy3D generation timed out after {timeout_s}s")
 
     async def _poll_history(self, session, url, prompt_id, on_progress):
         """Fallback polling when WebSocket unavailable."""

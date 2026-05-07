@@ -111,6 +111,22 @@ def test_remix_rejects_out_of_range_batch_size(client):
     assert resp_big.status_code == 400
 
 
+def test_remix_rejects_stale_blend_mode_values(client):
+    # "standard" and "prompt is more important" used to be valid IPAdapter
+    # weight_type strings but were dropped upstream; ComfyUI now rejects them
+    # with node_errors.value_not_in_list. Validate early so the user gets a
+    # 400 instead of a silently-failing background job.
+    for stale in ("standard", "prompt is more important"):
+        resp = client.post("/api/remix", data=_valid_form(blend_mode=stale))
+        assert resp.status_code == 400, f"{stale!r} should be rejected"
+
+
+def test_remix_accepts_modern_blend_modes(client):
+    for value in ("strong style transfer", "style and composition", "linear"):
+        resp = client.post("/api/remix", data=_valid_form(blend_mode=value))
+        assert resp.status_code == 200, f"{value!r} should be accepted"
+
+
 def test_remix_accepts_valid_submission_and_returns_jobs(client):
     resp = client.post("/api/remix", data=_valid_form(batch_size=3))
     assert resp.status_code == 200

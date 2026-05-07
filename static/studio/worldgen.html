@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Wyltek Studio — Worldgen</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="stylesheet" href="/static/css/nav.css">
+  <script src="/static/js/nav.js"></script>
+  <script type="module" src="/static/js/model-viewer.min.js"></script>
+  <style>
+    .studio-page { max-width: 1400px; margin: 0 auto; padding: 32px 24px; }
+    .studio-header h2 { margin: 0 0 4px; }
+    .studio-header .subtitle { font-size: 13px; color: var(--text-dim); margin-bottom: 20px; }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+    .form-grid .full { grid-column: 1 / -1; }
+    .form-grid label {
+      display: block;
+      font-size: 10px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+    .form-grid select,
+    .form-grid input[type="number"],
+    .form-grid input[type="file"],
+    .form-grid textarea {
+      width: 100%;
+      padding: 8px 10px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-size: 13px;
+      font-family: inherit;
+    }
+    .form-grid textarea { min-height: 80px; resize: vertical; }
+    .ref-image-row {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      margin-top: 6px;
+    }
+    .ref-thumb {
+      width: 96px;
+      height: 96px;
+      border: 1px dashed var(--border);
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--surface);
+      overflow: hidden;
+      font-size: 11px;
+      color: var(--text-dim);
+    }
+    .ref-thumb img { max-width: 100%; max-height: 100%; }
+
+    .actions { display: flex; gap: 10px; align-items: center; margin: 14px 0 24px; }
+    .btn-primary {
+      padding: 10px 22px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-secondary {
+      padding: 10px 18px;
+      background: transparent;
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .progress-text { font-size: 12px; color: var(--text-dim); }
+
+    .output-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+      margin-top: 8px;
+    }
+    .output-card .meta {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      font-size: 12px;
+      color: var(--text-dim);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    model-viewer {
+      width: 100%;
+      height: 600px;
+      background: #1a1a1a;
+      --poster-color: #1a1a1a;
+    }
+    .empty-state {
+      padding: 60px 20px;
+      text-align: center;
+      color: var(--text-dim);
+      font-size: 13px;
+    }
+
+    .info-banner {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--accent);
+      padding: 10px 14px;
+      border-radius: 6px;
+      font-size: 12px;
+      color: var(--text-dim);
+      margin-bottom: 18px;
+      line-height: 1.5;
+    }
+    .info-banner code { font-size: 11px; background: rgba(0,0,0,0.3); padding: 1px 5px; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <main class="studio-page">
+    <div class="studio-header">
+      <h2>&#127757; Worldgen</h2>
+      <div class="subtitle">
+        Generate an explorable 3D scene from a text prompt or reference image. Powered by FLUX.1-dev + DA-2 depth + WorldGen LoRA.
+      </div>
+    </div>
+
+    <div class="info-banner" id="readiness-banner">
+      Loading backend status&hellip;
+    </div>
+
+    <div class="form-grid">
+      <div class="full">
+        <label for="prompt">Scene prompt</label>
+        <textarea id="prompt" placeholder="A cozy wooden cabin in a sunny forest clearing"></textarea>
+      </div>
+
+      <div>
+        <label for="mode">Mode</label>
+        <select id="mode">
+          <option value="t2s">Text &rarr; Scene</option>
+          <option value="i2s">Image &rarr; Scene</option>
+        </select>
+      </div>
+
+      <div>
+        <label for="output-format">Output</label>
+        <select id="output-format">
+          <option value="mesh">Mesh (.glb)</option>
+          <option value="splat" disabled>Gaussian Splat (.ply, ROCm pending)</option>
+        </select>
+      </div>
+
+      <div id="image-input-row" class="full" style="display: none;">
+        <label for="ref-image">Reference image (Image &rarr; Scene mode)</label>
+        <div class="ref-image-row">
+          <div class="ref-thumb" id="ref-thumb">No image</div>
+          <input type="file" id="ref-image" accept="image/*">
+        </div>
+      </div>
+
+      <div>
+        <label for="resolution">Panorama resolution</label>
+        <select id="resolution">
+          <option value="1024">1024 (faster)</option>
+          <option value="1600" selected>1600 (default)</option>
+          <option value="2048">2048 (slow, more detail)</option>
+        </select>
+      </div>
+
+      <div>
+        <label for="seed">Seed</label>
+        <input type="number" id="seed" value="42" min="0" step="1">
+      </div>
+    </div>
+
+    <div class="actions">
+      <button id="generate-btn" class="btn-primary">Generate scene</button>
+      <button id="cancel-btn" class="btn-secondary" style="display: none;">Cancel</button>
+      <span id="progress" class="progress-text"></span>
+    </div>
+
+    <div class="output-card">
+      <div class="meta">
+        <span id="output-meta">No scene generated yet</span>
+        <span><a id="download-link" href="#" download style="display: none; color: var(--accent); text-decoration: none;">Download .glb</a></span>
+      </div>
+      <div id="output-body" class="empty-state">
+        Generate a scene above to see it rendered here.
+      </div>
+    </div>
+  </main>
+
+  <script src="/static/studio/js/worldgen.js"></script>
+</body>
+</html>
