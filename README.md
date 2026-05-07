@@ -15,6 +15,7 @@ Local-first AI creative studio by [Wyltek Industries](https://github.com/toastma
 | **Music Studio** | MusicGen text-to-music, single/continuation/loop modes up to 180s. |
 | **Video Studio** | AnimateDiff text-to-video via ComfyUI. 8fps, 2–6 second clips. |
 | **Meme Forge** | Meme generator with templates, text overlays, and optional IP-Adapter conditioning. |
+| **Infographic Builder** | Eight template-driven infographic types (hub-and-spoke, comparison, timeline, stats, quadrant, list, geographic, hierarchical) powered by SenseNova-U1-8B-MoT, with optional numbered image references and inline post-edit canvas. |
 | **Projects** | Timeline compositor — drag clips, Ken Burns, xfade transitions, text overlays, narration + music mixing. |
 | **File Manager** | Project-based storage with unsorted bin. |
 | **Settings** | Configure backends, API keys, test connections. One-click model downloads. |
@@ -345,6 +346,66 @@ All generation is async. The server submits jobs and streams progress to the bro
 - For local image generation: NVIDIA GPU with 6GB+ VRAM (8GB+ recommended)
 - For background removal and SAM: CPU is fine (GPU accelerates SAM if available)
 - For cloud-only image generation: no GPU needed
+
+---
+
+## Infographic Builder
+
+Template-driven infographic page at `/studio/infographic`, powered by
+SenseNova-U1-8B-MoT. Eight built-in templates, optional numbered image
+references (`[Image 1]`, `[Image 2]`, …), draft (~73s) / final (~5min)
+tier toggle, and an inline post-edit canvas that lets you drop, resize,
+and paste PNG layers over the rendered output, then save the composite
+as a new entry in your render history.
+
+### Setup
+
+```bash
+./scripts/setup-sensenova.sh
+```
+
+Detects your platform (Linux+ROCm, Linux+CUDA, macOS Apple Silicon),
+creates `/data/venvs/sensenova-u1`, installs the right torch wheel,
+clones the SenseNova-U1 repo, and pulls weights via `huggingface-cli`
+(50-step + 8-step preview, ~33GB each). After it finishes, export the
+four `SENSENOVA_*` env vars it prints into your shell or systemd
+override.
+
+### Hardware matrix
+
+| Platform | Status |
+|---|---|
+| Linux + ROCm 7.2+, 24GB VRAM | Verified (RX 7900 XTX) |
+| Linux + CUDA 12.x, 24GB+ VRAM | Best-effort (community-verified) |
+| macOS Apple Silicon, 32GB+ unified | Best-effort (community-verified) |
+| Anything else | Unsupported |
+
+### Custom templates
+
+Drop a JSON file into `templates/infographics/` matching
+`studio/infographics_schema.json`. Hot-reloaded on page refresh — no
+server restart needed. The schema supports `text`, `image_ref`, `color`,
+`enum`, and `list` (composite) slot types.
+
+### Known limits
+
+- **Concurrent renders OOM the GPU.** Stop ComfyUI before rendering on
+  shared-GPU hardware. The page surfaces this with a precheck banner.
+- **Post-edit canvas (V1-canvas)** supports drop, move, resize, paste,
+  and save composite. Region-select to system-clipboard for a GIMP
+  round-trip is a v1.5 feature — the workaround is to download the
+  composite, edit in GIMP, and drop the result back onto the canvas.
+- **Image-ref output size** auto-derives from Image 1 when refs are
+  present (per SenseNova's `smart_resize`). The aspect dropdown greys
+  out in that case.
+- **A3B-MoT smaller variant** (3B-active MoE) is not yet supported. The
+  current install is 8B-MoT only (~33GB BF16). A3B support is a
+  follow-up for lower-VRAM hardware tiers.
+
+For the full design, see
+[`docs/superpowers/specs/2026-05-05-infographic-builder-design.md`](docs/superpowers/specs/2026-05-05-infographic-builder-design.md).
+
+---
 
 ## License
 

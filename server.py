@@ -5,6 +5,7 @@ import asyncio
 import base64
 import json
 import os
+import socket
 import tempfile
 import time
 import uuid
@@ -21,7 +22,15 @@ from fastapi.staticfiles import StaticFiles
 import health_actions
 import storage as store
 from backends import registry
+from backends import sensenova as _sensenova
+from backends.sensenova import ASPECT_BUCKETS as _SENSENOVA_ASPECTS
 from job_queue import JobQueue
+from pydantic import BaseModel, Field
+from studio.infographics import (
+    load_templates as _load_infographic_templates,
+    SlotValidationError as _InfographicSlotError,
+    assemble_prompt as _assemble_infographic_prompt,
+)
 
 # Global state
 config = {}
@@ -105,6 +114,11 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 app.mount("/outputs", StaticFiles(directory="outputs"), name="outputs")
 app.mount("/audio", StaticFiles(directory="outputs/audio"), name="audio")
 app.mount("/data/sample-packs", StaticFiles(directory="data/sample-packs"), name="sample-packs")
+Path("uploads").mkdir(parents=True, exist_ok=True)
+Path("uploads/infographic").mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+Path("templates").mkdir(parents=True, exist_ok=True)
+app.mount("/templates", StaticFiles(directory="templates"), name="templates")
 
 
 @app.get("/")
@@ -150,6 +164,11 @@ async def meme_page():
 @app.get("/studio/frames")
 async def frames_page():
     return FileResponse("static/studio/frames.html")
+
+
+@app.get("/studio/infographic")
+async def studio_infographic():
+    return FileResponse("static/studio/infographic.html")
 
 
 @app.get("/studio/image-edit")
@@ -3713,6 +3732,340 @@ async def _cancel_in_flight(job_id: str) -> None:
     docs/superpowers/plans/2026-05-04-modly-tier1-ports.md DECISION D1.
     """
     return
+
+
+_INFOGRAPHIC_TEMPLATES_DIR = Path(__file__).resolve().parent / "templates" / "infographics"
+_INFOGRAPHIC_UPLOADS_DIR = Path("uploads/infographic").resolve()
+
+
+@app.get("/api/infographic/templates")
+async def infographic_templates():
+    templates = _load_infographic_templates(_INFOGRAPHIC_TEMPLATES_DIR)
+    return [
+        {
+            "id": t["id"],
+            "name": t["name"],
+            "description": t["description"],
+            "preview": t.get("preview"),
+            "slots": t["slots"],
+        }
+        for t in templates.values()
+    ]
+
+
+class _InfographicRenderBody(BaseModel):
+    template_id: str
+    tier: str = Field(pattern="^(draft|final)$")
+    aspect: str | None = None
+    slots: dict
+    image_refs: list[str] = []
+    # Render-wide art direction appended to every template's assembled prompt.
+    # The SenseNova samples consistently put aesthetic notes in a trailing
+    # sentence outside any quoted content; that closing position is where the
+    # model attends most strongly to style / palette / typography cues.
+    style_notes: str = ""
+
+
+@app.post("/api/infographic/render", status_code=202)
+async def infographic_render(body: _InfographicRenderBody):
+    if body.aspect is not None and body.aspect not in _SENSENOVA_ASPECTS:
+        raise HTTPException(400, f"aspect={body.aspect!r} not in supported buckets")
+
+    templates = _load_infographic_templates(_INFOGRAPHIC_TEMPLATES_DIR)
+    tpl = templates.get(body.template_id)
+    if tpl is None:
+        raise HTTPException(404, f"Unknown template_id: {body.template_id}")
+
+    try:
+        result = _assemble_infographic_prompt(tpl, body.slots)
+    except _InfographicSlotError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    # Image refs were dropped from the infographic builder UI: the model
+    # treats them as background style/palette rather than literal placement,
+    # which mismatched user expectations. body.image_refs is kept on the
+    # request schema for API back-compat but always ignored — every render
+    # now goes through the T2I path (no autoregressive prefill, no lm_head
+    # OOM risk on the worker, cleaner BF16 output).
+    final_prompt = result.prompt
+    if body.style_notes.strip():
+        final_prompt = f"{final_prompt}\n\nOverall style: {body.style_notes.strip()}"
+
+    job_id = uuid.uuid4().hex[:12]
+    params = {
+        "prompt": final_prompt,
+        "image_paths": [],
+        "aspect": body.aspect,
+        "seed": 42,                       # Task 16+ may surface this
+        "tier": body.tier,
+        "template_id": body.template_id,
+        "slots": body.slots,
+        "style_notes": body.style_notes,
+    }
+    jobs[job_id] = {"status": "queued", "params": params, "progress": 0}
+    job_queue.submit_background(
+        _run_infographic_job(job_id, params),
+        lane="gpu",
+        job_id=job_id,
+    )
+    return {"job_id": job_id}
+
+
+async def _run_infographic_job(job_id: str, params: dict) -> None:
+    """Background runner for /studio/infographic renders.
+
+    Parallel to ``_run_job`` for image-gen backends — kept separate because
+    infographics use their own output directory (``outputs/infographic/{job_id}/``),
+    skip scoring/gallery, and persist a sidecar JSON (added in Task 28).
+    """
+    jobs[job_id]["status"] = "running"
+    await broadcast({
+        "type": "job_update", "job_id": job_id,
+        "status": "running", "progress": 0,
+    })
+
+    output_dir = Path("outputs/infographic") / job_id
+
+    async def on_progress(pct: int, msg: str = ""):
+        jobs[job_id]["progress"] = pct
+        await broadcast({
+            "type": "job_update", "job_id": job_id,
+            "status": "running", "progress": pct, "message": msg,
+        })
+
+    try:
+        png = await _sensenova.generate(
+            prompt=params["prompt"],
+            image_paths=params.get("image_paths") or [],
+            aspect=params.get("aspect"),
+            seed=params.get("seed", 42),
+            tier=params["tier"],
+            output_dir=output_dir,
+            on_progress=on_progress,
+        )
+        # Normalize output name to out.png so the history endpoint can find it.
+        canonical_png = output_dir / "out.png"
+        if png != canonical_png:
+            try:
+                png.rename(canonical_png)
+                png = canonical_png
+            except OSError:
+                # If rename fails, fall back to the original name. History
+                # may miss this render, but the job still completes.
+                pass
+
+        # Persist sidecar JSON for history pane (Task 28).
+        try:
+            sidecar = output_dir / "out.json"
+            sidecar.write_text(json.dumps({
+                "template_id": params.get("template_id"),
+                "slots": params.get("slots", {}),
+                "image_paths": params.get("image_paths", []),
+                "aspect": params.get("aspect"),
+                "tier": params["tier"],
+                "prompt": params.get("prompt"),
+                "seed": params.get("seed", 42),
+                "style_notes": params.get("style_notes", ""),
+            }, indent=2))
+        except Exception:
+            pass  # sidecar is best-effort; don't fail the job over it
+
+        # png is an absolute path under output_dir; build a static URL relative to /outputs.
+        try:
+            rel = png.relative_to(Path("outputs"))
+            output_url = f"/outputs/{rel.as_posix()}"
+        except ValueError:
+            output_url = str(png)
+
+        jobs[job_id].update({
+            "status": "complete",
+            "progress": 100,
+            "output_url": output_url,
+        })
+        await broadcast({
+            "type": "job_update", "job_id": job_id,
+            "status": "complete", "progress": 100,
+            "output_url": output_url,
+        })
+    except Exception as e:
+        jobs[job_id].update({"status": "error", "error": str(e)})
+        await broadcast({
+            "type": "job_update", "job_id": job_id,
+            "status": "error", "error": str(e),
+        })
+
+
+def _comfyui_running(host: str = "127.0.0.1", port: int = 8188, timeout: float = 0.5) -> bool:
+    """Cheap TCP probe: is ComfyUI listening on its default port?"""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+# SenseNova-U1 install probes — paths match scripts/setup-sensenova.sh defaults
+# and honour the same env-var overrides so a custom install reads consistently
+# from precheck and from the worker daemon.
+SENSENOVA_VENV_PATH = os.environ.get("SENSENOVA_VENV", "/data/venvs/sensenova-u1")
+SENSENOVA_WEIGHTS_PATH = os.environ.get(
+    "SENSENOVA_WEIGHTS_FINAL", "/data/sensenova-u1-weights")
+SENSENOVA_INSTALL_HINT = "./scripts/setup-sensenova.sh"
+
+
+def _sensenova_venv_present() -> bool:
+    return Path(SENSENOVA_VENV_PATH, "bin", "python").is_file()
+
+
+def _sensenova_weights_present() -> bool:
+    p = Path(SENSENOVA_WEIGHTS_PATH)
+    if not p.is_dir():
+        return False
+    # Treat empty dirs as not-installed — `huggingface-cli download` creates
+    # the dir before any weights land, so existence alone isn't enough.
+    return any(p.iterdir())
+
+
+@app.post("/api/infographic/upload")
+async def infographic_upload(file: UploadFile = File(...)):
+    """Upload an image reference for the infographic builder.
+
+    Saves to ``uploads/infographic/{uuid}.{ext}`` and returns both the
+    static URL (for thumbnail display) and the on-disk path (for
+    SenseNova subprocess to read directly).
+    """
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(400, f"Expected image/*, got {file.content_type!r}")
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "Empty upload")
+    ext = Path(file.filename or "ref.png").suffix.lower() or ".png"
+    if ext not in (".png", ".jpg", ".jpeg", ".webp"):
+        ext = ".png"
+    name = f"{uuid.uuid4().hex[:12]}{ext}"
+    out_dir = Path("uploads/infographic")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / name
+    async with aiofiles.open(out_path, "wb") as f:
+        await f.write(data)
+    return {
+        "url": f"/uploads/infographic/{name}",
+        "path": str(out_path),
+    }
+
+
+@app.get("/api/infographic/history")
+async def infographic_history(limit: int = 30):
+    """List recent infographic renders, newest first.
+
+    Walks ``outputs/infographic/{job_id}/`` directories that contain both
+    ``out.png`` and ``out.json``; skips any that don't have both.
+    """
+    base = Path("outputs/infographic")
+    if not base.exists():
+        return []
+    out: list[dict] = []
+    subdirs = sorted(
+        (p for p in base.iterdir() if p.is_dir()),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for sub in subdirs[:limit]:
+        png = sub / "out.png"
+        sidecar = sub / "out.json"
+        if not (png.exists() and sidecar.exists()):
+            continue
+        try:
+            data = json.loads(sidecar.read_text())
+        except json.JSONDecodeError:
+            continue
+        out.append({
+            "job_id": sub.name,
+            "png_url": f"/outputs/infographic/{sub.name}/out.png",
+            "sidecar": data,
+        })
+    return out
+
+
+@app.post("/api/infographic/composite")
+async def infographic_composite(
+    file: UploadFile = File(...),
+    base_render_id: str = Form(""),
+):
+    """Save a flattened post-edit composite as a new entry that shows up in history."""
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(400, f"Expected image/*, got {file.content_type!r}")
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "Empty upload")
+    new_id = "c-" + uuid.uuid4().hex[:8]
+    out_dir = Path("outputs/infographic") / new_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    png_path = out_dir / "out.png"
+    async with aiofiles.open(png_path, "wb") as f:
+        await f.write(data)
+    sidecar = out_dir / "out.json"
+    sidecar.write_text(json.dumps({
+        "composite_of": base_render_id,
+        "template_id": "composite",
+        "slots": {},
+        "tier": "composite",
+    }, indent=2))
+    return {
+        "job_id": new_id,
+        "png_url": f"/outputs/infographic/{new_id}/out.png",
+    }
+
+
+@app.get("/api/sensenova/precheck")
+async def sensenova_precheck():
+    """Health probe for the SenseNova-U1 backend.
+
+    Three independent failure modes are surfaced:
+
+    1. **Not installed** — venv or weights missing. Render must be disabled
+       and the UI shows the install command. SenseNova-U1 ships ~32 GB of
+       BF16 weights and a ~16 B parameter model; not every self-hosted user
+       can run it, so this is the most common state for first-run installs.
+    2. **VRAM tenancy** — installed, but ComfyUI is holding the GPU. Render
+       can proceed once the user stops ComfyUI; surfaced as a warning.
+    3. **Ready** — all clear.
+    """
+    venv_ok = _sensenova_venv_present()
+    weights_ok = _sensenova_weights_present()
+    installed = venv_ok and weights_ok
+    comfyui = _comfyui_running()
+
+    blockers: list[str] = []
+    if not venv_ok:
+        blockers.append(
+            f"SenseNova-U1 is not installed (venv missing at "
+            f"{SENSENOVA_VENV_PATH}). Run {SENSENOVA_INSTALL_HINT} first.")
+    if not weights_ok:
+        blockers.append(
+            f"SenseNova-U1 weights missing at {SENSENOVA_WEIGHTS_PATH}. "
+            f"Run {SENSENOVA_INSTALL_HINT} to download.")
+    if installed and comfyui:
+        blockers.append(
+            "ComfyUI is running on localhost:8188. SenseNova needs the full "
+            "GPU; stop ComfyUI before rendering.")
+
+    details = {
+        "venv_path": SENSENOVA_VENV_PATH,
+        "venv_present": venv_ok,
+        "weights_path": SENSENOVA_WEIGHTS_PATH,
+        "weights_present": weights_ok,
+        "comfyui_running": comfyui,
+    }
+    if not installed:
+        details["install_hint"] = SENSENOVA_INSTALL_HINT
+
+    return {
+        "ready": not blockers,
+        "installed": installed,
+        "blockers": blockers,
+        "details": details,
+    }
 
 
 if __name__ == "__main__":

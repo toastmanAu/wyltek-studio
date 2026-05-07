@@ -1,0 +1,49 @@
+{
+  "id": "hierarchy",
+  "name": "Hierarchical",
+  "description": "Pyramid, tree, or org chart.",
+  "preview": "templates/infographics/_previews/hierarchy.png",
+  "slots": [
+    {
+      "id": "title",
+      "type": "text",
+      "max_len": 200,
+      "required": true
+    },
+    {
+      "id": "root",
+      "type": "text",
+      "max_len": 120,
+      "required": true
+    },
+    {
+      "id": "levels",
+      "type": "list",
+      "min": 1,
+      "max": 4,
+      "item_slots": [
+        {
+          "id": "label",
+          "type": "text",
+          "max_len": 120,
+          "required": false
+        },
+        {
+          "id": "nodes",
+          "type": "list",
+          "min": 1,
+          "max": 6,
+          "item_slots": [
+            {
+              "id": "label",
+              "type": "text",
+              "max_len": 120,
+              "required": true
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "prompt_template": "A hierarchical org-chart infographic titled \"{{title}}\", flat illustration on cream paper, thick black outlines. Top: \"{{root}}\". Descending levels:{{#levels}}{{#label}} ({{label}}){{/label}}{{#nodes}} \"{{label}}\";{{/nodes}}{{/levels}} Each node a rounded-rectangle badge; black connector lines; alternating pastel level fills; soft drop shadows; rounded sans-serif labels."
+}

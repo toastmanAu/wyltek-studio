@@ -1,0 +1,53 @@
+{
+  "id": "quadrant",
+  "name": "Quadrant / 2x2 Matrix",
+  "description": "Two-axis 2x2 framework. Best for prioritization matrices, strategy frameworks.",
+  "preview": "templates/infographics/_previews/quadrant.png",
+  "slots": [
+    {
+      "id": "title",
+      "type": "text",
+      "max_len": 200,
+      "required": true
+    },
+    {
+      "id": "x_axis_low",
+      "type": "text",
+      "max_len": 80,
+      "required": true
+    },
+    {
+      "id": "x_axis_high",
+      "type": "text",
+      "max_len": 80,
+      "required": true
+    },
+    {
+      "id": "y_axis_low",
+      "type": "text",
+      "max_len": 80,
+      "required": true
+    },
+    {
+      "id": "y_axis_high",
+      "type": "text",
+      "max_len": 80,
+      "required": true
+    },
+    {
+      "id": "quadrants",
+      "type": "list",
+      "min": 4,
+      "max": 4,
+      "item_slots": [
+        {
+          "id": "label",
+          "type": "text",
+          "max_len": 120,
+          "required": true
+        }
+      ]
+    }
+  ],
+  "prompt_template": "A 2x2 quadrant matrix infographic titled \"{{title}}\", flat illustration on cream paper, thick black outlines. X-axis \"{{x_axis_low}}\" (left) -> \"{{x_axis_high}}\" (right). Y-axis \"{{y_axis_low}}\" (bottom) -> \"{{y_axis_high}}\" (top). Quadrants clockwise from top-left:{{#quadrants}} \"{{label}}\";{{/quadrants}} Each quadrant pastel-tinted; small mascot illustration; black axis arrows; soft drop shadows; monospaced axis labels."
+}
