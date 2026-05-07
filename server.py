@@ -2867,6 +2867,28 @@ def _comfyui_running(host: str = "127.0.0.1", port: int = 8188, timeout: float =
         return False
 
 
+# SenseNova-U1 install probes — paths match scripts/setup-sensenova.sh defaults
+# and honour the same env-var overrides so a custom install reads consistently
+# from precheck and from the worker daemon.
+SENSENOVA_VENV_PATH = os.environ.get("SENSENOVA_VENV", "/data/venvs/sensenova-u1")
+SENSENOVA_WEIGHTS_PATH = os.environ.get(
+    "SENSENOVA_WEIGHTS_FINAL", "/data/sensenova-u1-weights")
+SENSENOVA_INSTALL_HINT = "./scripts/setup-sensenova.sh"
+
+
+def _sensenova_venv_present() -> bool:
+    return Path(SENSENOVA_VENV_PATH, "bin", "python").is_file()
+
+
+def _sensenova_weights_present() -> bool:
+    p = Path(SENSENOVA_WEIGHTS_PATH)
+    if not p.is_dir():
+        return False
+    # Treat empty dirs as not-installed — `huggingface-cli download` creates
+    # the dir before any weights land, so existence alone isn't enough.
+    return any(p.iterdir())
+
+
 @app.post("/api/infographic/upload")
 async def infographic_upload(file: UploadFile = File(...)):
     """Upload an image reference for the infographic builder.
@@ -2960,12 +2982,53 @@ async def infographic_composite(
 
 @app.get("/api/sensenova/precheck")
 async def sensenova_precheck():
+    """Health probe for the SenseNova-U1 backend.
+
+    Three independent failure modes are surfaced:
+
+    1. **Not installed** — venv or weights missing. Render must be disabled
+       and the UI shows the install command. SenseNova-U1 ships ~32 GB of
+       BF16 weights and a ~16 B parameter model; not every self-hosted user
+       can run it, so this is the most common state for first-run installs.
+    2. **VRAM tenancy** — installed, but ComfyUI is holding the GPU. Render
+       can proceed once the user stops ComfyUI; surfaced as a warning.
+    3. **Ready** — all clear.
+    """
+    venv_ok = _sensenova_venv_present()
+    weights_ok = _sensenova_weights_present()
+    installed = venv_ok and weights_ok
+    comfyui = _comfyui_running()
+
     blockers: list[str] = []
-    if _comfyui_running():
+    if not venv_ok:
         blockers.append(
-            "ComfyUI is running on localhost:8188. SenseNova needs the full GPU; "
-            "stop ComfyUI before rendering.")
-    return {"ready": not blockers, "blockers": blockers}
+            f"SenseNova-U1 is not installed (venv missing at "
+            f"{SENSENOVA_VENV_PATH}). Run {SENSENOVA_INSTALL_HINT} first.")
+    if not weights_ok:
+        blockers.append(
+            f"SenseNova-U1 weights missing at {SENSENOVA_WEIGHTS_PATH}. "
+            f"Run {SENSENOVA_INSTALL_HINT} to download.")
+    if installed and comfyui:
+        blockers.append(
+            "ComfyUI is running on localhost:8188. SenseNova needs the full "
+            "GPU; stop ComfyUI before rendering.")
+
+    details = {
+        "venv_path": SENSENOVA_VENV_PATH,
+        "venv_present": venv_ok,
+        "weights_path": SENSENOVA_WEIGHTS_PATH,
+        "weights_present": weights_ok,
+        "comfyui_running": comfyui,
+    }
+    if not installed:
+        details["install_hint"] = SENSENOVA_INSTALL_HINT
+
+    return {
+        "ready": not blockers,
+        "installed": installed,
+        "blockers": blockers,
+        "details": details,
+    }
 
 
 if __name__ == "__main__":

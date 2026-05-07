@@ -53,6 +53,107 @@ loadTemplates().catch((e) => {
   els.previewStatus.textContent = `Failed to load templates: ${e.message}`;
 });
 
+// ── Precheck banner — installation + VRAM tenancy ─────────────────────────
+
+const precheckEls = {
+  banner: document.getElementById('precheck-banner'),
+};
+
+function clearChildren(node) {
+  while (node.firstChild) node.removeChild(node.firstChild);
+}
+
+function renderPrecheck(state) {
+  const el = precheckEls.banner;
+  if (!el) return;
+
+  clearChildren(el);
+  el.hidden = false;
+
+  if (state.ready) {
+    el.hidden = true;
+    els.renderBtn.disabled = !state.current;
+    return;
+  }
+
+  const notInstalled = state.installed === false;
+  // Install issue = red, hard-block. Tenancy issue = orange, soft warn.
+  el.style.background = notInstalled ? 'rgba(220,80,80,0.12)' : 'rgba(255,165,0,0.10)';
+  el.style.borderColor = notInstalled ? 'rgba(220,80,80,0.55)' : 'rgba(255,165,0,0.5)';
+
+  const heading = document.createElement('strong');
+  heading.textContent = notInstalled
+    ? 'SenseNova-U1 is not installed on this machine'
+    : 'SenseNova-U1 cannot render right now';
+  el.appendChild(heading);
+
+  const list = document.createElement('ul');
+  for (const msg of state.blockers || []) {
+    const li = document.createElement('li');
+    li.textContent = msg;
+    list.appendChild(li);
+  }
+  el.appendChild(list);
+
+  if (notInstalled) {
+    const help = document.createElement('p');
+    help.style.margin = '8px 0 0';
+    help.style.fontSize = '12px';
+    help.style.opacity = '0.85';
+    help.textContent = (
+      'SenseNova-U1-8B-MoT is a ~16B-parameter unified multimodal model. ' +
+      'It needs ~32 GB of BF16 weights on disk and a 24 GB GPU (with ' +
+      'CPU offload) to run. If your hardware can’t host it, the ' +
+      'rest of Wyltek Studio works without this page.'
+    );
+    el.appendChild(help);
+
+    const hint = (state.details && state.details.install_hint) || './scripts/setup-sensenova.sh';
+    const cmd = document.createElement('pre');
+    cmd.style.margin = '8px 0 0';
+    cmd.style.padding = '8px 10px';
+    cmd.style.background = 'rgba(0,0,0,0.35)';
+    cmd.style.borderRadius = '6px';
+    cmd.style.fontSize = '12px';
+    cmd.style.overflow = 'auto';
+    cmd.textContent = hint;
+    el.appendChild(cmd);
+  }
+
+  const actions = document.createElement('div');
+  actions.style.marginTop = '8px';
+  const recheck = document.createElement('button');
+  recheck.type = 'button';
+  recheck.textContent = 'Recheck';
+  recheck.addEventListener('click', () => { initPrecheck(); });
+  actions.appendChild(recheck);
+  el.appendChild(actions);
+
+  // Hard-block render only when not installed; tenancy is the user's call.
+  if (notInstalled) {
+    els.renderBtn.disabled = true;
+    els.renderBtn.title = 'SenseNova-U1 is not installed on this machine.';
+  }
+}
+
+async function initPrecheck() {
+  try {
+    const r = await fetch('/api/sensenova/precheck');
+    if (!r.ok) throw new Error(`precheck ${r.status}`);
+    renderPrecheck(await r.json());
+  } catch (e) {
+    // Network failure to our own API is itself a blocker — surface, don't swallow.
+    renderPrecheck({
+      ready: false,
+      installed: null,
+      blockers: [`Could not reach /api/sensenova/precheck: ${e.message}`],
+      details: {},
+    });
+  }
+}
+
+initPrecheck();
+
 // ── Task 15: Form generator from slot schema ──────────────────────────────
 
 function fieldId(path) {
