@@ -3182,6 +3182,8 @@ async def compare(
     lora_strength: float = Form(1.0),
     lora_strength_model: float = Form(1.0),
     lora_strength_clip: float = Form(0.6),
+    ip_adapter_model: str = Form(""),
+    ip_adapter_strength: float = Form(0.6),
     reference_images: list[UploadFile] = File(default=[]),
 ):
     """Launch same prompt across multiple backends for comparison."""
@@ -3199,6 +3201,16 @@ async def compare(
                 await f.write(await ref.read())
             ref_paths.append(str(path))
 
+    if ref_paths and not ip_adapter_model:
+        comfy_entries = [e for e in backend_list if e.get("backend") == "comfyui"]
+        if comfy_entries:
+            return JSONResponse(
+                {"error": "Reference images require an IP-Adapter model on the ComfyUI backend. "
+                          "Pick one from the IP-Adapter Model dropdown, or remove the ComfyUI "
+                          "entries from the comparison."},
+                status_code=400,
+            )
+
     comparison_id = str(uuid.uuid4())[:8]
     job_ids = []
 
@@ -3214,8 +3226,8 @@ async def compare(
             "steps": steps,
             "cfg_scale": cfg_scale,
             "seed": seed,
-            "ip_adapter_model": "",
-            "ip_adapter_strength": 0.6,
+            "ip_adapter_model": ip_adapter_model,
+            "ip_adapter_strength": ip_adapter_strength,
             "upscaler": "",
             "lora_model": lora_model,
             "lora_strength": lora_strength,
@@ -3232,7 +3244,15 @@ async def compare(
 
 # --- Style Remix API ---
 
-_BLEND_MODE_VALUES = {"style transfer", "standard", "prompt is more important"}
+# Valid IPAdapterBatch weight_type values in current ComfyUI_IPAdapter_plus.
+# The previous set ("standard", "prompt is more important") was rejected with
+# node_errors.value_not_in_list — those names were dropped upstream.
+_BLEND_MODE_VALUES = {
+    "strong style transfer",
+    "style transfer",
+    "style and composition",
+    "linear",
+}
 
 
 @app.post("/api/remix")
