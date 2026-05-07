@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Wyltek Studio — Mesh Editor</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="stylesheet" href="/static/css/nav.css">
+  <script src="/static/js/nav.js"></script>
+  <script type="module" src="/static/js/model-viewer.min.js"></script>
+  <style>
+    .studio-page { max-width: 1400px; margin: 0 auto; padding: 32px 24px; }
+    .studio-header h2 { margin: 0 0 4px; }
+    .studio-header .subtitle { font-size: 13px; color: var(--text-dim); margin-bottom: 20px; }
+
+    .info-banner {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--accent);
+      padding: 10px 14px;
+      border-radius: 6px;
+      font-size: 12px;
+      color: var(--text-dim);
+      margin-bottom: 18px;
+      line-height: 1.5;
+    }
+
+    .panes { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    @media (max-width: 980px) { .panes { grid-template-columns: 1fr; } }
+
+    .pane {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .pane-header {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      font-size: 12px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .pane-body { padding: 14px; min-height: 400px; }
+
+    model-viewer {
+      width: 100%;
+      height: 380px;
+      background: #1a1a1a;
+      --poster-color: #1a1a1a;
+      border-radius: 6px;
+    }
+    .empty-state {
+      padding: 60px 20px;
+      text-align: center;
+      color: var(--text-dim);
+      font-size: 13px;
+    }
+
+    .source-controls { display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+    .gallery-modal {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.6);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+    }
+    .gallery-modal.open { display: flex; }
+    .gallery-content {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      width: 80vw;
+      max-width: 800px;
+      max-height: 80vh;
+      overflow: auto;
+      padding: 18px;
+    }
+    .gallery-content h3 { margin: 0 0 12px; font-size: 16px; }
+    .gallery-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+      gap: 10px;
+    }
+    .gallery-item {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px;
+      cursor: pointer;
+      font-size: 11px;
+      color: var(--text);
+      text-align: center;
+      transition: border-color 0.1s;
+      word-break: break-all;
+    }
+    .gallery-item:hover { border-color: var(--accent); }
+    .gallery-item .icon { font-size: 32px; display: block; margin-bottom: 6px; }
+    /* Atlas-as-preview: optimistically load <basename>.texture.png and
+       fall back to .icon on 404. The atlas is a flat 2D representation
+       of the mesh's surface, near-free to render compared to a live
+       <model-viewer> per tile. */
+    .gallery-item .preview {
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      object-fit: cover;
+      border-radius: 4px;
+      margin-bottom: 6px;
+      display: block;
+      background: rgba(0,0,0,0.2);
+    }
+
+    .actions { display: flex; gap: 10px; align-items: center; margin: 14px 0; flex-wrap: wrap; }
+    .btn-primary {
+      padding: 9px 18px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-secondary {
+      padding: 9px 16px;
+      background: transparent;
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .btn-secondary:disabled { opacity: 0.5; cursor: not-allowed; }
+    .status-msg { font-size: 12px; color: var(--text-dim); }
+    .status-msg.ok { color: var(--success, #4ade80); }
+    .status-msg.err { color: tomato; }
+
+    .texture-preview {
+      margin-top: 12px;
+      padding: 10px;
+      background: rgba(0,0,0,0.2);
+      border-radius: 6px;
+    }
+    .texture-preview img { max-width: 100%; max-height: 240px; display: block; margin: 0 auto; image-rendering: pixelated; }
+    .texture-preview .meta { font-size: 11px; color: var(--text-dim); margin-top: 6px; text-align: center; }
+  </style>
+</head>
+<body>
+  <main class="studio-page">
+    <div class="studio-header">
+      <h2>Mesh Editor</h2>
+      <div class="subtitle">
+        Re-texture an existing 3D mesh without regenerating geometry. Extract the baseColor atlas, edit it with any 2D tool, then apply the result back to the mesh.
+      </div>
+    </div>
+
+    <div class="info-banner">
+      <strong>Path B (texture swap)</strong> — keeps geometry, UVs, and other PBR channels byte-stable. Only the baseColor PNG is rewritten. Square atlases only.
+    </div>
+
+    <div class="panes">
+      <!-- Source pane -->
+      <div class="pane">
+        <div class="pane-header">
+          <span>Source Mesh</span>
+          <span class="status-msg" id="src-status"></span>
+        </div>
+        <div class="pane-body">
+          <div class="source-controls">
+            <button class="btn-secondary" id="pick-gallery-btn">Pick from Gallery</button>
+            <button class="btn-secondary" id="upload-glb-btn">Upload .glb</button>
+            <input type="file" id="glb-file-input" accept=".glb,.gltf" style="display:none">
+          </div>
+          <div id="src-empty" class="empty-state">No mesh loaded — pick from gallery or upload a .glb</div>
+          <model-viewer id="src-mv" camera-controls auto-rotate shadow-intensity="1" exposure="1" environment-image="neutral" style="display:none"></model-viewer>
+
+          <div class="actions" id="src-actions" style="display:none">
+            <button class="btn-primary" id="extract-btn">Extract Texture</button>
+            <button class="btn-secondary" id="edit-in-image-btn" disabled>Edit in Image Editor &rarr;</button>
+            <button class="btn-secondary" id="edit-in-remix-btn" disabled>Style Remix &rarr;</button>
+          </div>
+
+          <div class="texture-preview" id="texture-preview" style="display:none">
+            <img id="texture-img" alt="Extracted texture">
+            <div class="meta" id="texture-meta"></div>
+          </div>
+
+          <div class="actions" id="apply-row" style="display:none; margin-top:14px">
+            <input type="file" id="edited-png-input" accept="image/png" style="display:none">
+            <button class="btn-primary" id="apply-btn">Apply Edited PNG</button>
+            <span class="status-msg" id="apply-status"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Result pane -->
+      <div class="pane">
+        <div class="pane-header">
+          <span>Re-textured Result</span>
+          <span class="status-msg" id="result-status"></span>
+        </div>
+        <div class="pane-body">
+          <div id="result-empty" class="empty-state">Apply an edited texture to see the result here</div>
+          <model-viewer id="result-mv" camera-controls auto-rotate shadow-intensity="1" exposure="1" environment-image="neutral" style="display:none"></model-viewer>
+          <div class="actions" id="result-actions" style="display:none">
+            <button class="btn-primary" id="download-result-btn">Download .glb</button>
+            <button class="btn-secondary" id="result-as-source-btn">Use as Source &uarr;</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Gallery picker modal -->
+    <div class="gallery-modal" id="gallery-modal">
+      <div class="gallery-content">
+        <h3>Pick a 3D Mesh</h3>
+        <div id="gallery-grid" class="gallery-grid"></div>
+        <div style="margin-top:14px;text-align:right">
+          <button class="btn-secondary" id="gallery-close-btn">Close</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    // ─── State ──────────────────────────────────────────────────────────
+    const state = {
+      sourceUrl: null,
+      textureUrl: null,
+      resultUrl: null,
+    };
+
+    const $ = (id) => document.getElementById(id);
+
+    // ─── DOM helpers (textContent-only, hook-friendly) ──────────────────
+    function clearChildren(el) {
+      while (el.firstChild) el.removeChild(el.firstChild);
+    }
+    function setEmptyState(el, message) {
+      clearChildren(el);
+      const div = document.createElement('div');
+      div.className = 'empty-state';
+      div.textContent = message;
+      el.appendChild(div);
+    }
+
+    // ─── Source loading ─────────────────────────────────────────────────
+    function loadSource(url) {
+      state.sourceUrl = url;
+      state.textureUrl = null;
+      const mv = $('src-mv');
+      const bust = url + (url.includes('?') ? '&' : '?') + 't=' + Date.now();
+      mv.src = bust;
+      mv.style.display = '';
+      $('src-empty').style.display = 'none';
+      $('src-actions').style.display = '';
+      $('texture-preview').style.display = 'none';
+      $('apply-row').style.display = 'none';
+      $('edit-in-image-btn').disabled = true;
+      $('edit-in-remix-btn').disabled = true;
+      $('src-status').textContent = url.split('/').pop();
+      $('src-status').className = 'status-msg ok';
+    }
+
+    // ─── Gallery picker ─────────────────────────────────────────────────
+    $('pick-gallery-btn').addEventListener('click', async () => {
+      $('gallery-modal').classList.add('open');
+      const grid = $('gallery-grid');
+      setEmptyState(grid, 'Loading...');
+      try {
+        const items = await fetch('/api/gallery').then(r => r.json());
+        const meshes = items.filter(i => (i.type === 'mesh') || /\.(glb|gltf)(\?|$)/i.test(i.url || ''));
+        clearChildren(grid);
+        if (!meshes.length) {
+          setEmptyState(grid, 'No meshes in gallery yet.');
+          return;
+        }
+        meshes.forEach(m => {
+          const tile = document.createElement('div');
+          tile.className = 'gallery-item';
+          const filename = (m.url || '').split('/').pop();
+
+          // Optimistic atlas preview — guess the cached texture path.
+          // /api/3d/extract-texture writes <basename>.texture.png next
+          // to the source, so we can predict the URL without any
+          // backend round-trip. If the cache doesn't exist, the img
+          // 404s and onerror swaps in the icon placeholder.
+          const previewUrl = (m.url || '').replace(/\.(glb|gltf)$/i, '.texture.png');
+          const icon = document.createElement('span');
+          icon.className = 'icon';
+          icon.textContent = '▢';
+          icon.style.display = 'none';
+
+          const preview = document.createElement('img');
+          preview.className = 'preview';
+          preview.loading = 'lazy';
+          preview.alt = '';
+          preview.src = previewUrl;
+          preview.addEventListener('error', () => {
+            // No cached atlas (mesh never extracted, or shape-only) —
+            // hide the broken img and reveal the placeholder icon.
+            preview.style.display = 'none';
+            icon.style.display = '';
+          });
+
+          tile.appendChild(preview);
+          tile.appendChild(icon);
+
+          const label = document.createElement('div');
+          label.textContent = filename;
+          tile.appendChild(label);
+
+          tile.addEventListener('click', () => {
+            loadSource(m.url);
+            $('gallery-modal').classList.remove('open');
+          });
+          grid.appendChild(tile);
+        });
+      } catch (err) {
+        setEmptyState(grid, 'Gallery fetch failed: ' + err.message);
+      }
+    });
+    $('gallery-close-btn').addEventListener('click', () => {
+      $('gallery-modal').classList.remove('open');
+    });
+
+    // ─── Upload .glb (deferred — gallery is enough for v1) ──────────────
+    $('upload-glb-btn').addEventListener('click', () => {
+      alert('Upload coming soon — for now, generate a mesh on the main page or pick one from the gallery.');
+    });
+
+    // ─── Extract texture ────────────────────────────────────────────────
+    $('extract-btn').addEventListener('click', async () => {
+      if (!state.sourceUrl) return;
+      const btn = $('extract-btn');
+      btn.disabled = true;
+      btn.textContent = 'Extracting...';
+      try {
+        const resp = await fetch('/api/3d/extract-texture', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ source_glb: state.sourceUrl }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+        state.textureUrl = data.texture_url;
+        const img = $('texture-img');
+        img.src = data.texture_url + '?t=' + Date.now();
+        $('texture-meta').textContent = `${data.width} × ${data.height} (material ${data.material_index})`;
+        $('texture-preview').style.display = '';
+        $('apply-row').style.display = '';
+        $('edit-in-image-btn').disabled = false;
+        $('edit-in-remix-btn').disabled = false;
+      } catch (err) {
+        alert('Extract failed: ' + err.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Extract Texture';
+      }
+    });
+
+    // ─── Hand off to image-edit / remix ─────────────────────────────────
+    function handoff(target) {
+      if (!state.sourceUrl || !state.textureUrl) return;
+      const params = new URLSearchParams({
+        retexture_glb: state.sourceUrl,
+        retexture_texture: state.textureUrl,
+      });
+      window.location.href = `/studio/${target}?${params.toString()}`;
+    }
+    $('edit-in-image-btn').addEventListener('click', () => handoff('image-edit'));
+    $('edit-in-remix-btn').addEventListener('click', () => handoff('remix'));
+
+    // ─── Apply uploaded edited PNG ──────────────────────────────────────
+    $('apply-btn').addEventListener('click', () => $('edited-png-input').click());
+    $('edited-png-input').addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (!file || !state.sourceUrl) return;
+      const status = $('apply-status');
+      status.textContent = 'Uploading...';
+      status.className = 'status-msg';
+
+      const reader = new FileReader();
+      reader.onload = async () => {
+        try {
+          const b64 = reader.result.split(',')[1];
+          // Stage the upload to /storage/ so /api/3d/apply-texture can
+          // resolve it. Tiny dedicated route — see server.py.
+          const stageResp = await fetch('/api/3d/stage-texture', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filename: file.name, image_b64: b64 }),
+          });
+          const stageData = await stageResp.json();
+          if (!stageResp.ok) throw new Error(stageData.error || `stage HTTP ${stageResp.status}`);
+
+          const applyResp = await fetch('/api/3d/apply-texture', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              source_glb: state.sourceUrl,
+              edited_texture: stageData.url,
+            }),
+          });
+          const applyData = await applyResp.json();
+          if (!applyResp.ok) throw new Error(applyData.error || `apply HTTP ${applyResp.status}`);
+
+          state.resultUrl = applyData.new_glb_url;
+          showResult(applyData.new_glb_url);
+          status.textContent = 'Applied';
+          status.className = 'status-msg ok';
+        } catch (err) {
+          status.textContent = 'Apply failed: ' + err.message;
+          status.className = 'status-msg err';
+        }
+      };
+      reader.readAsDataURL(file);
+      e.target.value = '';
+    });
+
+    // ─── Result viewer ──────────────────────────────────────────────────
+    function showResult(url) {
+      const mv = $('result-mv');
+      const bust = url + (url.includes('?') ? '&' : '?') + 't=' + Date.now();
+      mv.src = bust;
+      mv.style.display = '';
+      $('result-empty').style.display = 'none';
+      $('result-actions').style.display = '';
+      $('result-status').textContent = url.split('/').pop();
+      $('result-status').className = 'status-msg ok';
+    }
+
+    $('download-result-btn').addEventListener('click', () => {
+      if (!state.resultUrl) return;
+      const a = document.createElement('a');
+      a.href = state.resultUrl;
+      a.download = state.resultUrl.split('/').pop();
+      a.click();
+    });
+    $('result-as-source-btn').addEventListener('click', () => {
+      if (state.resultUrl) loadSource(state.resultUrl);
+    });
+
+    // ─── Mount: handle ?glb=… deep-link from apply handlers ─────────────
+    const params = new URLSearchParams(window.location.search);
+    const glbParam = params.get('glb');
+    if (glbParam) {
+      // Coming back from image-edit / remix after a successful apply —
+      // show the new mesh in the RESULT pane (since the apply already ran),
+      // not source. User can promote to source via "Use as Source".
+      state.resultUrl = glbParam;
+      showResult(glbParam);
+    }
+  </script>
+</body>
+</html>

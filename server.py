@@ -819,6 +819,188 @@ async def api_image_sam_segment(request: Request):
             tmp_path.unlink(missing_ok=True)
 
 
+# ----------------------------------------------------------------------------
+# 3D mesh re-texture (Path B: texture swap)
+# ----------------------------------------------------------------------------
+# These two endpoints decouple geometry from texture: the user can extract
+# the baseColor atlas of an existing GLB, run it through any 2D AI tool
+# (Style Remix, image-tools, Qwen, …), then write the edited PNG back into
+# a new GLB with identical geometry/UVs. See spec at
+# docs/superpowers/specs/2026-05-03-3d-retexture-design.md.
+
+def _resolve_storage_url(url_or_path: str) -> Path | None:
+    """Translate a storage URL or absolute path to a filesystem Path.
+
+    Accepts the URL conventions used across the studio:
+      - shorthand `/storage/<filename>` (gallery API — basename resolved
+        via `store.resolve_asset` searching projects+unsorted)
+      - deep `/storage/<dir>/<dir>/<filename>` (direct relative path)
+      - `/api/frame/serve?path=<abs>` (image-mutation endpoints; the real
+        path lives inside the query string, not the URL path)
+      - absolute `http(s)://host/...` (cache-busted asset URLs)
+
+    Returns None on lookup failure or path-traversal attempts.
+    """
+    import storage as store
+    from urllib.parse import urlsplit, parse_qs
+
+    if not url_or_path:
+        return None
+
+    # Strip any absolute origin so we work with the path component.
+    cleaned = url_or_path
+    for prefix in ("http://", "https://"):
+        if cleaned.startswith(prefix):
+            slash = cleaned.find("/", len(prefix))
+            cleaned = cleaned[slash:] if slash != -1 else ""
+            break
+
+    parts = urlsplit(cleaned)
+    path_only = parts.path
+    qs = parse_qs(parts.query)
+
+    if path_only == "/api/frame/serve":
+        # The actual filesystem path rides in the query string. _assert_under_storage
+        # below stops anything outside STORAGE_ROOT regardless.
+        raw = qs.get("path", [""])[0]
+        if not raw:
+            return None
+        candidate = Path(raw)
+    elif path_only.startswith("/storage/"):
+        rel = path_only[len("/storage/"):]
+        # Prefer the explicit deep path if it exists (avoids basename
+        # collisions across project subdirs); fall back to resolve_asset
+        # for shorthand `/storage/<filename>` URLs from /api/gallery.
+        direct = store.STORAGE_ROOT / rel
+        candidate = direct if direct.exists() else store.resolve_asset(path_only)
+    else:
+        candidate = Path(path_only)
+
+    if candidate is None:
+        return None
+    try:
+        candidate = candidate.resolve()
+        _assert_under_storage(candidate)
+    except (PermissionError, OSError):
+        return None
+    return candidate if candidate.exists() else None
+
+
+@app.post("/api/3d/extract-texture")
+async def api_3d_extract_texture(request: Request):
+    """Extract the baseColor PNG from a GLB.
+
+    Caches the result next to the source as `<stem>.texture.png` so
+    repeat extracts (e.g. user opens the texture editor twice) skip
+    the decode. Cache invalidates when the source GLB's mtime advances.
+    """
+    import storage as store
+    from texture_io import extract_basecolor
+
+    data = await request.json()
+    source = data.get("source_glb")
+    material_index = int(data.get("material_index", 0))
+
+    glb_path = _resolve_storage_url(source)
+    if glb_path is None:
+        return JSONResponse({"error": "Source GLB not found"}, status_code=404)
+
+    cache_path = glb_path.with_suffix(".texture.png")
+    cache_fresh = (
+        cache_path.exists()
+        and cache_path.stat().st_mtime >= glb_path.stat().st_mtime
+    )
+    if not cache_fresh:
+        try:
+            png_bytes, width, height = extract_basecolor(
+                glb_path, material_index=material_index
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        cache_path.write_bytes(png_bytes)
+    else:
+        from PIL import Image as _PIL
+        with _PIL.open(cache_path) as im:
+            width, height = im.size
+
+    # Return the shorthand `/storage/<basename>` URL — the gallery and
+    # serve_storage_file route both resolve by basename via resolve_asset,
+    # so the deep path stays an internal detail.
+    return JSONResponse({
+        "texture_url": f"/storage/{cache_path.name}",
+        "width": width,
+        "height": height,
+        "material_index": material_index,
+    })
+
+
+@app.post("/api/3d/apply-texture")
+async def api_3d_apply_texture(request: Request):
+    """Swap a GLB's baseColor with an edited PNG, write a new GLB.
+
+    Output goes next to the source as `<stem>-retex-<6chars>.glb` so
+    related files stay grouped. Geometry, UVs, and other PBR channels
+    (metallicRoughness, normal, occlusion, emissive) are byte-stable.
+    """
+    import storage as store
+    from texture_io import apply_basecolor
+
+    data = await request.json()
+    source = data.get("source_glb")
+    edited = data.get("edited_texture")
+    material_index = int(data.get("material_index", 0))
+
+    glb_path = _resolve_storage_url(source)
+    if glb_path is None:
+        return JSONResponse({"error": "Source GLB not found"}, status_code=404)
+    edited_path = _resolve_storage_url(edited)
+    if edited_path is None:
+        return JSONResponse({"error": "Edited texture not found"}, status_code=404)
+
+    out_filename = f"{glb_path.stem}-retex-{uuid.uuid4().hex[:6]}.glb"
+    out_path = glb_path.parent / out_filename
+
+    try:
+        apply_basecolor(
+            glb_path,
+            edited_path.read_bytes(),
+            out_path,
+            material_index=material_index,
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    return JSONResponse({"new_glb_url": f"/storage/{out_path.name}"})
+
+
+@app.post("/api/3d/stage-texture")
+async def api_3d_stage_texture(request: Request):
+    """Stage a base64-encoded PNG to /storage/ so it can be referenced
+    by `/api/3d/apply-texture`. Used by the mesh-edit page when the
+    user uploads an edited atlas directly (vs. routing through
+    image-edit / remix which already write to /storage/).
+    """
+    import storage as store
+
+    data = await request.json()
+    filename = (data.get("filename") or "edited").rsplit(".", 1)[0]
+    safe_stem = "".join(c for c in filename if c.isalnum() or c in "-_")[:40] or "edited"
+    b64 = data.get("image_b64")
+    if not b64:
+        return JSONResponse({"error": "image_b64 required"}, status_code=400)
+    try:
+        png_bytes = base64.b64decode(b64)
+    except Exception as exc:
+        return JSONResponse({"error": f"invalid base64: {exc}"}, status_code=400)
+
+    out_dir = store.unsorted_dir() / "images"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_filename = f"{safe_stem}-{uuid.uuid4().hex[:6]}.png"
+    out_path = out_dir / out_filename
+    out_path.write_bytes(png_bytes)
+    return JSONResponse({"url": f"/storage/{out_filename}"})
+
+
 @app.get("/api/meme/templates")
 async def api_meme_templates():
     """Return meme template definitions from templates.json."""
