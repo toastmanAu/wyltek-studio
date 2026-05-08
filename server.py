@@ -3928,6 +3928,87 @@ SENSENOVA_WEIGHTS_PATH = os.environ.get(
 SENSENOVA_INSTALL_HINT = "./scripts/setup-sensenova.sh"
 
 
+# LoRA header inspector — backs /api/lora/inspect so the compare modal can
+# warn about partial text-encoder binding (a known kohya-format quirk where
+# ComfyUI silently drops `lora_te*` keys whose module path doesn't exactly
+# match SDXLClipModel's namespace; the UNet half still applies).
+LORA_DIR = Path(os.environ.get("COMFYUI_LORA_DIR", "/data/ComfyUI/models/loras"))
+_LORA_INSPECT_CACHE: dict[str, tuple[float, dict]] = {}
+
+
+def _read_safetensors_keys(path: Path) -> list[str]:
+    """Return tensor names from a .safetensors file without loading weights.
+
+    Format: 8-byte little-endian uint64 = header length, then that many bytes
+    of UTF-8 JSON whose top-level keys are tensor names (plus an optional
+    ``__metadata__``). Reads only the header — typically a few KB even for
+    a 1 GB LoRA.
+    """
+    import struct
+    with path.open("rb") as f:
+        prefix = f.read(8)
+        if len(prefix) != 8:
+            return []
+        header_len = struct.unpack("<Q", prefix)[0]
+        # Sanity guard — a well-formed safetensors header is well under 100 MB.
+        if header_len <= 0 or header_len > 100_000_000:
+            return []
+        body = f.read(header_len)
+    header = json.loads(body.decode("utf-8"))
+    return [k for k in header.keys() if k != "__metadata__"]
+
+
+def _classify_lora_keys(keys: list[str]) -> dict:
+    """Bucket LoRA tensor names by training-script convention (kohya vs
+    diffusers vs unknown) and by which half of the network they patch."""
+    kohya_te = [k for k in keys if k.startswith(("lora_te1_", "lora_te2_", "lora_te_"))]
+    kohya_unet = [k for k in keys if k.startswith("lora_unet_")]
+    diffusers_te = [k for k in keys if "text_encoder" in k or ".text_model." in k]
+    diffusers_unet = [k for k in keys
+                      if k.startswith(("unet.", "lora.unet."))
+                      or "down_blocks" in k or "up_blocks" in k]
+    fmt = "kohya" if (kohya_te or kohya_unet) else \
+          "diffusers" if (diffusers_te or diffusers_unet) else \
+          "unknown"
+    te_keys = kohya_te if fmt == "kohya" else diffusers_te
+    unet_keys = kohya_unet if fmt == "kohya" else diffusers_unet
+    return {
+        "format": fmt,
+        "has_te_keys": bool(te_keys),
+        "te_key_count": len(te_keys),
+        "has_unet_keys": bool(unet_keys),
+        "unet_key_count": len(unet_keys),
+    }
+
+
+@app.get("/api/lora/inspect")
+async def inspect_lora(name: str):
+    """Surface what's inside a LoRA file so the compare modal can advise the
+    user about trigger words and partial text-encoder binding. Reads only the
+    safetensors header, cached by (name, mtime)."""
+    safe_name = Path(name).name
+    if (safe_name != name
+            or not safe_name.endswith(".safetensors")
+            or "/" in name or "\\" in name):
+        raise HTTPException(400, "invalid lora name")
+    path = LORA_DIR / safe_name
+    if not path.is_file():
+        raise HTTPException(404, "lora not found")
+    mtime = path.stat().st_mtime
+    cached = _LORA_INSPECT_CACHE.get(safe_name)
+    if cached and cached[0] == mtime:
+        info = cached[1]
+    else:
+        try:
+            keys = _read_safetensors_keys(path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            keys = []
+        info = _classify_lora_keys(keys)
+        _LORA_INSPECT_CACHE[safe_name] = (mtime, info)
+    from model_catalog import LORA_TRIGGERS
+    return {**info, "name": safe_name, "triggers": LORA_TRIGGERS.get(safe_name, [])}
+
+
 def _sensenova_venv_present() -> bool:
     return Path(SENSENOVA_VENV_PATH, "bin", "python").is_file()
 

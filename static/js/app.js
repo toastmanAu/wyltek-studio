@@ -857,6 +857,10 @@ function bindEvents() {
   ['cmp-lora-select', 'cmp-ipa-select'].forEach(id => {
     document.getElementById(id).addEventListener('change', applyCompareGhosting);
   });
+  // LoRA select also drives the partial-binding advisory (kohya TE keys
+  // sometimes silently fail to bind on SDXL — surface it before the user
+  // burns a compare run wondering why the trigger word didn't activate).
+  document.getElementById('cmp-lora-select').addEventListener('change', refreshLoraAdvisory);
   document.getElementById('cmp-lora-strength').addEventListener('input', (e) => {
     document.getElementById('cmp-lora-val').textContent = parseFloat(e.target.value).toFixed(2);
   });
@@ -1548,6 +1552,102 @@ function populateCompareModifiers() {
   note.textContent = refCount > 0
     ? `(using ${refCount} ref image${refCount > 1 ? 's' : ''} from main page)`
     : '(no ref images uploaded — upload on main page first)';
+
+  // Refresh advisory for whatever LoRA is preselected from the main page.
+  refreshLoraAdvisory();
+}
+
+// Cache LoRA inspect responses so reopening the modal or flipping selections
+// doesn't re-hit the backend. Keyed by safetensors filename — the server
+// already invalidates by mtime, this layer dedupes within a single page load.
+const _loraInspectCache = new Map();
+
+async function refreshLoraAdvisory() {
+  const sel = document.getElementById('cmp-lora-select');
+  const slot = document.getElementById('cmp-lora-advisory');
+  const name = sel.value;
+  slot.replaceChildren();
+  if (!name) { slot.hidden = true; return; }
+  let info = _loraInspectCache.get(name);
+  if (!info) {
+    try {
+      const resp = await fetch(`/api/lora/inspect?name=${encodeURIComponent(name)}`);
+      if (!resp.ok) throw new Error(`inspect ${resp.status}`);
+      info = await resp.json();
+      _loraInspectCache.set(name, info);
+    } catch (err) {
+      console.warn('[compare] lora inspect failed', name, err);
+      slot.hidden = true;
+      return;
+    }
+  }
+  const advisory = buildLoraAdvisory(info);
+  if (!advisory) { slot.hidden = true; return; }
+  slot.appendChild(renderAdvisoryNode(advisory));
+  slot.hidden = false;
+}
+
+// Pure DOM builder — takes a plain {level, message, triggers} object and
+// produces a safe DOM node (textContent only, never innerHTML).
+function renderAdvisoryNode({ level, message, triggers }) {
+  const wrap = document.createElement('div');
+  wrap.style.color = level === 'warn'
+    ? 'var(--warning, #d97706)'
+    : 'var(--text-dim)';
+
+  if (message) {
+    const p = document.createElement('div');
+    p.textContent = message;
+    wrap.appendChild(p);
+  }
+
+  if (Array.isArray(triggers) && triggers.length > 0) {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;align-items:center';
+    const lab = document.createElement('span');
+    lab.textContent = 'Triggers:';
+    lab.style.cssText = 'font-size:11px;color:var(--text-dim)';
+    row.appendChild(lab);
+    triggers.forEach(t => {
+      const chip = document.createElement('span');
+      chip.textContent = t;
+      chip.style.cssText = 'background:var(--bg-elevated,#222);padding:1px 6px;border-radius:3px;font-family:monospace;font-size:11px';
+      row.appendChild(chip);
+    });
+    wrap.appendChild(row);
+  }
+  return wrap;
+}
+
+// Decide what to tell the user about this LoRA's safetensors header.
+// Returns null to hide the advisory entirely.
+//
+// Rules (in priority order):
+//   1. kohya format + has_te_keys  → warn: partial-binding risk on SDXL
+//      (ComfyUI's SDXL clip loader silently drops `lora_te*` keys whose
+//      module paths don't match SDXLClipModel — UNet half still applies,
+//      so the LoRA "works" but prompt triggers feel weak).
+//   2. triggers present, no warn   → info: surface them as chips so the
+//      user knows what words to add to their prompt.
+//   3. otherwise                    → null (no advisory noise).
+//
+// The triggers array is always passed through when present, regardless of
+// level, so a warn advisory still shows the chips below the warning line.
+function buildLoraAdvisory(info) {
+  const triggers = Array.isArray(info.triggers) ? info.triggers : [];
+  const partialBindingRisk = info.format === 'kohya' && info.has_te_keys;
+
+  if (partialBindingRisk) {
+    return {
+      level: 'warn',
+      message: 'Kohya text-encoder keys present — may bind only partially on SDXL. Bump strength or weight the trigger word if results feel weak.',
+      triggers,
+    };
+  }
+  if (triggers.length > 0) {
+    return { level: 'info', message: '', triggers };
+  }
+  return null;
 }
 
 // Ghost any compare-option whose model arch doesn't match the selected
