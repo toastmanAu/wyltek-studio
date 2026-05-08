@@ -85,6 +85,26 @@
 
     .model-note { font-size: 12px; color: var(--text-dim); padding: 10px 14px; background: var(--surface-2); border-radius: 6px; margin-bottom: 14px; }
     .prompt-wrap textarea { width: 100%; padding: 10px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 13px; resize: vertical; min-height: 60px; }
+
+    /* Scale tab */
+    .scale-controls { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; }
+    .scale-controls .control-row { margin-bottom: 10px; }
+    .scale-controls .control-row:last-child { margin-bottom: 0; }
+    .pill-group { display: flex; gap: 4px; flex-wrap: wrap; }
+    .pill { padding: 6px 12px; font-size: 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; color: var(--text-dim); cursor: pointer; transition: all 0.15s; }
+    .pill:hover { color: var(--text); border-color: var(--accent); }
+    .pill.active { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
+    .pill-group.disabled .pill { opacity: 0.4; pointer-events: none; }
+    #scale-sizes { flex: 1; min-width: 200px; padding: 6px 10px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 12px; font-family: monospace; }
+    .scale-sheet { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 24px; min-height: 220px; display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-end; justify-content: center; }
+    .scale-sheet .img-placeholder { width: 100%; padding: 60px; text-align: center; color: var(--text-dim); font-size: 13px; }
+    .scale-tile { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+    .tile-canvas-wrap { background: repeating-conic-gradient(var(--surface-2) 0% 25%, var(--surface-3) 0% 50%) 50% / 8px 8px; padding: 4px; border-radius: 4px; border: 1px solid var(--border); display: inline-block; line-height: 0; }
+    .scale-tile canvas { display: block; max-width: 600px; max-height: 600px; }
+    .tile-meta { font-size: 11px; color: var(--text-dim); font-family: monospace; }
+    .tile-meta strong { color: var(--text); font-weight: 600; }
+    .tile-dl { padding: 3px 10px; font-size: 11px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 4px; color: var(--text-dim); cursor: pointer; transition: all 0.15s; }
+    .tile-dl:hover { color: var(--accent); border-color: var(--accent); }
   </style>
 </head>
 <body>
@@ -108,6 +128,7 @@
   <div class="tab-bar">
     <button class="tab-btn active" data-tab="bg-remove">Remove Background</button>
     <button class="tab-btn" data-tab="obj-remove">Remove Object</button>
+    <button class="tab-btn" data-tab="scale">Scale</button>
     <button class="tab-btn" data-tab="obj-add">Add / Replace <span class="badge-soon">soon</span></button>
   </div>
 
@@ -235,6 +256,56 @@
           <button class="btn-primary apply-mesh-btn" data-result-img="result-img-rm" style="display:none">Apply to Mesh</button>
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- ═══ SCALE ═══ -->
+  <div class="tab-panel" id="tab-scale">
+    <div class="model-note">
+      Preview an image at multiple sizes simultaneously — each tile renders at its <strong>real pixel size</strong>, so a 16-pixel tile is a literal 16-pixel image on screen. Useful for checking logo legibility at favicon size, or game sprites at mip-ladder sizes. All client-side, instant.
+    </div>
+
+    <div class="scale-controls">
+      <div class="control-row">
+        <span class="control-label">Mode</span>
+        <div class="pill-group" id="scale-mode">
+          <button class="pill active" data-mode="smooth" title="Bilinear smoothing — best for logos, photos, vector-style art">Smooth</button>
+          <button class="pill" data-mode="pixel" title="Nearest-neighbor — preserves hard pixel edges, best for sprites and pixel-art">Pixel-art</button>
+        </div>
+      </div>
+      <div class="control-row">
+        <span class="control-label">Ratio</span>
+        <div class="pill-group" id="scale-ratio">
+          <button class="pill active" data-ratio="native">Native</button>
+          <button class="pill" data-ratio="1:1">1:1</button>
+          <button class="pill" data-ratio="16:9">16:9</button>
+          <button class="pill" data-ratio="4:3">4:3</button>
+          <button class="pill" data-ratio="3:4">3:4</button>
+          <button class="pill" data-ratio="9:16">9:16</button>
+        </div>
+      </div>
+      <div class="control-row">
+        <span class="control-label">Fit</span>
+        <div class="pill-group disabled" id="scale-fit">
+          <button class="pill active" data-fit="cover" title="Crop source to fill target ratio (centred)">Cover</button>
+          <button class="pill" data-fit="contain" title="Fit whole source inside target ratio with transparent bars">Contain</button>
+          <button class="pill" data-fit="stretch" title="Squash/stretch source to exact target ratio">Stretch</button>
+        </div>
+      </div>
+      <div class="control-row">
+        <span class="control-label">Sizes</span>
+        <input type="text" id="scale-sizes" value="16, 32, 64, 128, 256, 512" spellcheck="false">
+        <button class="btn-outline" id="scale-sizes-reset">Reset</button>
+      </div>
+    </div>
+
+    <div class="scale-sheet" id="scale-sheet">
+      <div class="img-placeholder">Load an image above to start</div>
+    </div>
+
+    <div class="control-row" style="margin-top:14px;justify-content:flex-end;gap:8px">
+      <span class="status-msg" id="scale-status"></span>
+      <button class="btn-secondary" id="scale-download-all" disabled>Download All</button>
     </div>
   </div>
 
@@ -416,6 +487,9 @@ function applyImageToAll(src, name) {
   // Mask editors
   setupMaskEditor('rm', src);
   setupMaskEditor('add', src);
+
+  // Scale tab — sample sheet
+  setupScaleSheet(src, name);
 }
 
 // ═══════════════════════════════════════════════════════
@@ -852,6 +926,239 @@ document.getElementById('run-obj-remove').addEventListener('click', async () => 
     setTimeout(() => { bar.classList.remove('active'); fill.style.width = '0%'; }, 800);
   }
 });
+
+// ═══════════════════════════════════════════════════════
+// Scale tab — multi-size sample sheet (client-side only)
+// ═══════════════════════════════════════════════════════
+const scaleState = {
+  img: null,
+  srcMime: 'image/png',
+  srcName: 'image',
+  mode: 'smooth',
+  ratio: 'native',
+  fit: 'cover',
+  sizes: [16, 32, 64, 128, 256, 512],
+  tiles: [],
+};
+
+function _scaleMimeFromName(name) {
+  const ext = (name || '').split('.').pop().toLowerCase();
+  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg';
+  if (ext === 'webp') return 'image/webp';
+  return 'image/png';
+}
+
+function _scaleNormalizeOutputMime(mime) {
+  // canvas.toBlob reliably emits png/jpeg/webp; everything else falls back to png
+  // (lossless + alpha preserved, sane default for unknown sources).
+  if (mime === 'image/jpeg' || mime === 'image/webp') return mime;
+  return 'image/png';
+}
+
+function _scaleMimeToExt(mime) {
+  if (mime === 'image/jpeg') return 'jpg';
+  if (mime === 'image/webp') return 'webp';
+  return 'png';
+}
+
+function _scaleParseSizes(s) {
+  return (s || '')
+    .split(/[\s,]+/)
+    .map(t => parseInt(t, 10))
+    .filter(n => Number.isFinite(n) && n > 0 && n <= 4096)
+    .slice(0, 24);
+}
+
+function _scaleTargetDims(sizeLabel) {
+  // sizeLabel = longer edge of the resulting tile.
+  const { img, ratio } = scaleState;
+  const srcW = img.naturalWidth, srcH = img.naturalHeight;
+  if (ratio === 'native') {
+    if (srcW >= srcH) {
+      return { w: sizeLabel, h: Math.max(1, Math.round(sizeLabel * srcH / srcW)) };
+    }
+    return { w: Math.max(1, Math.round(sizeLabel * srcW / srcH)), h: sizeLabel };
+  }
+  const [a, b] = ratio.split(':').map(Number);
+  if (a >= b) return { w: sizeLabel, h: Math.max(1, Math.round(sizeLabel * b / a)) };
+  return { w: Math.max(1, Math.round(sizeLabel * a / b)), h: sizeLabel };
+}
+
+function _scaleSrcRect(srcW, srcH, dstW, dstH, fit) {
+  // Returns drawImage args: {sx,sy,sw,sh,dx,dy,dw,dh}
+  if (fit === 'stretch') {
+    return { sx: 0, sy: 0, sw: srcW, sh: srcH, dx: 0, dy: 0, dw: dstW, dh: dstH };
+  }
+  const srcRatio = srcW / srcH;
+  const dstRatio = dstW / dstH;
+  if (fit === 'cover') {
+    if (srcRatio > dstRatio) {
+      const sw = srcH * dstRatio;
+      return { sx: (srcW - sw) / 2, sy: 0, sw, sh: srcH, dx: 0, dy: 0, dw: dstW, dh: dstH };
+    }
+    const sh = srcW / dstRatio;
+    return { sx: 0, sy: (srcH - sh) / 2, sw: srcW, sh, dx: 0, dy: 0, dw: dstW, dh: dstH };
+  }
+  // contain — letterbox into dst
+  if (srcRatio > dstRatio) {
+    const dh = dstW / srcRatio;
+    return { sx: 0, sy: 0, sw: srcW, sh: srcH, dx: 0, dy: (dstH - dh) / 2, dw: dstW, dh };
+  }
+  const dw = dstH * srcRatio;
+  return { sx: 0, sy: 0, sw: srcW, sh: srcH, dx: (dstW - dw) / 2, dy: 0, dw, dh: dstH };
+}
+
+function _scaleResizeOne(sizeLabel) {
+  const { img, mode, ratio, fit } = scaleState;
+  const { w: dstW, h: dstH } = _scaleTargetDims(sizeLabel);
+  const canvas = document.createElement('canvas');
+  canvas.width = dstW;
+  canvas.height = dstH;
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = (mode === 'smooth');
+  if (ctx.imageSmoothingEnabled) ctx.imageSmoothingQuality = 'high';
+  // Native ratio always preserves source aspect, so the fit modes only kick
+  // in when the user has forced a non-native ratio.
+  const effectiveFit = ratio === 'native' ? 'stretch' : fit;
+  const r = _scaleSrcRect(img.naturalWidth, img.naturalHeight, dstW, dstH, effectiveFit);
+  ctx.drawImage(img, r.sx, r.sy, r.sw, r.sh, r.dx, r.dy, r.dw, r.dh);
+  return { canvas, w: dstW, h: dstH };
+}
+
+function _scaleDownloadTile(canvas, w, h, mime, ext, quality) {
+  canvas.toBlob(blob => {
+    if (!blob) return;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${scaleState.srcName}_${w}x${h}.${ext}`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }, mime, quality);
+}
+
+async function _scaleDownloadAll() {
+  const status = document.getElementById('scale-status');
+  status.textContent = `Downloading ${scaleState.tiles.length} files…`;
+  status.className = 'status-msg';
+  for (const t of scaleState.tiles) {
+    _scaleDownloadTile(t.canvas, t.w, t.h, t.mime, t.ext, t.quality);
+    // 80ms spacing keeps Chrome's "allow multiple downloads" prompt to a
+    // single dialog instead of one per file.
+    await new Promise(r => setTimeout(r, 80));
+  }
+  status.textContent = `Sent ${scaleState.tiles.length} files to your downloads folder.`;
+  status.className = 'status-msg ok';
+  setTimeout(() => { status.textContent = ''; status.className = 'status-msg'; }, 4000);
+}
+
+function _scalePlaceholder(text) {
+  const div = document.createElement('div');
+  div.className = 'img-placeholder';
+  div.textContent = text;
+  return div;
+}
+
+function _scaleClearSheet(sheet) {
+  while (sheet.firstChild) sheet.removeChild(sheet.firstChild);
+}
+
+function _scaleRenderSheet() {
+  const sheet = document.getElementById('scale-sheet');
+  const dlAllBtn = document.getElementById('scale-download-all');
+  _scaleClearSheet(sheet);
+  if (!scaleState.img) {
+    sheet.appendChild(_scalePlaceholder('Load an image above to start'));
+    dlAllBtn.disabled = true;
+    return;
+  }
+  scaleState.tiles = [];
+  const mime = _scaleNormalizeOutputMime(scaleState.srcMime);
+  const ext = _scaleMimeToExt(mime);
+  const quality = mime === 'image/jpeg' ? 0.92 : undefined;
+
+  scaleState.sizes.forEach(sizeLabel => {
+    const { canvas, w, h } = _scaleResizeOne(sizeLabel);
+    const tile = document.createElement('div');
+    tile.className = 'scale-tile';
+    const wrap = document.createElement('div');
+    wrap.className = 'tile-canvas-wrap';
+    wrap.appendChild(canvas);
+    tile.appendChild(wrap);
+    const meta = document.createElement('div');
+    meta.className = 'tile-meta';
+    const strong = document.createElement('strong');
+    strong.textContent = `${w}×${h}`;
+    meta.appendChild(strong);
+    tile.appendChild(meta);
+    const dlBtn = document.createElement('button');
+    dlBtn.className = 'tile-dl';
+    dlBtn.textContent = 'Download';
+    dlBtn.onclick = () => _scaleDownloadTile(canvas, w, h, mime, ext, quality);
+    tile.appendChild(dlBtn);
+    sheet.appendChild(tile);
+    scaleState.tiles.push({ canvas, w, h, mime, ext, quality });
+  });
+  dlAllBtn.disabled = false;
+}
+
+function setupScaleSheet(src, name) {
+  scaleState.srcMime = _scaleMimeFromName(name);
+  scaleState.srcName = (name || 'image').replace(/\.[^.]+$/, '') || 'image';
+  const img = new Image();
+  // Cross-origin handling: blob URLs and same-origin /storage/ paths are fine;
+  // /api/frame/serve is same-origin too. We don't set crossOrigin to avoid an
+  // unnecessary CORS preflight; canvas.toBlob won't taint for these sources.
+  img.onload = () => {
+    scaleState.img = img;
+    _scaleRenderSheet();
+  };
+  img.onerror = () => {
+    const sheet = document.getElementById('scale-sheet');
+    _scaleClearSheet(sheet);
+    sheet.appendChild(_scalePlaceholder('Could not load image for scaling.'));
+  };
+  img.src = src;
+}
+
+// Wire scale-tab controls once on page load.
+(function _wireScaleControls() {
+  const wirePills = (groupId, key, after) => {
+    document.querySelectorAll(`#${groupId} .pill`).forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll(`#${groupId} .pill`).forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        scaleState[key] = btn.dataset[key];
+        if (after) after();
+        if (scaleState.img) _scaleRenderSheet();
+      });
+    });
+  };
+  wirePills('scale-mode', 'mode');
+  wirePills('scale-ratio', 'ratio', () => {
+    // Fit only meaningful when ratio overrides aspect — otherwise grey it out.
+    document.getElementById('scale-fit').classList.toggle('disabled', scaleState.ratio === 'native');
+  });
+  wirePills('scale-fit', 'fit');
+
+  const sizesInput = document.getElementById('scale-sizes');
+  sizesInput.addEventListener('input', () => {
+    const parsed = _scaleParseSizes(sizesInput.value);
+    if (parsed.length) {
+      scaleState.sizes = parsed;
+      if (scaleState.img) _scaleRenderSheet();
+    }
+  });
+  document.getElementById('scale-sizes-reset').addEventListener('click', () => {
+    sizesInput.value = '16, 32, 64, 128, 256, 512';
+    scaleState.sizes = [16, 32, 64, 128, 256, 512];
+    if (scaleState.img) _scaleRenderSheet();
+  });
+
+  document.getElementById('scale-download-all').addEventListener('click', _scaleDownloadAll);
+})();
 </script>
 </body>
 </html>
