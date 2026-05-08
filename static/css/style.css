@@ -690,6 +690,21 @@ input[type="range"] {
   border-left: 2px solid var(--accent);
 }
 
+.size-warn {
+  margin-top: 6px;
+  padding: 6px 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-dim);
+  border-left: 2px solid var(--warning);
+}
+.size-warn.severe {
+  border-left-color: #d9534f;
+  color: var(--text);
+}
+
 /* Generate buttons row */
 .generate-buttons {
   display: flex;

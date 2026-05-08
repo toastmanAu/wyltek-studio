@@ -206,6 +206,7 @@
               <input type="number" id="height" value="1024" step="64" min="256" max="2048">
             </div>
           </div>
+          <div id="size-warn" class="size-warn" hidden></div>
           <div class="form-group" id="steps-group">
             <label>Steps</label>
             <div class="range-row">
@@ -361,6 +362,7 @@
             <input type="range" id="cmp-lora-strength" min="0" max="1.5" step="0.05" value="1.0" style="flex:1">
             <span class="range-value" id="cmp-lora-val" style="font-size:12px;color:var(--text-dim);min-width:36px;text-align:right">1.00</span>
           </div>
+          <div id="cmp-lora-advisory" style="margin-top:6px;font-size:11px;line-height:1.4;color:var(--text-dim)" hidden></div>
         </div>
         <div style="flex:1;min-width:220px">
           <label style="font-size:12px;color:var(--text-dim);display:block;margin-bottom:4px">IP-Adapter <span id="cmp-ipa-refnote" style="color:var(--text-dim);font-style:italic"></span></label>

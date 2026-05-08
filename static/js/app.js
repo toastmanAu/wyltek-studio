@@ -167,6 +167,42 @@ const MODEL_DEFAULTS = {
   },
 };
 
+function _checkSizeWarning() {
+  const el = document.getElementById('size-warn');
+  if (!el) return;
+  const modelId = document.getElementById('model-select').value;
+  const isLocal = modelId.endsWith('.safetensors') || modelId.endsWith('.gguf');
+  const defaults = MODEL_DEFAULTS[modelId];
+  if (!isLocal || !defaults) { el.hidden = true; el.classList.remove('severe'); return; }
+
+  const w = parseInt(document.getElementById('width').value, 10) || 0;
+  const h = parseInt(document.getElementById('height').value, 10) || 0;
+  if (!w || !h) { el.hidden = true; return; }
+
+  const tw = defaults.width, th = defaults.height;
+  const ratio = (w * h) / (tw * th);
+
+  let msg = '', severe = false;
+  if (ratio < 0.35) {
+    severe = true;
+    msg = `Far below trained resolution (${tw}×${th}). Diffusion models produce duplicated subjects, garbled anatomy, and surreal artifacts when run this small. Recommended: ${tw}×${th}.`;
+  } else if (ratio < 0.6) {
+    msg = `Below trained resolution (${tw}×${th}). Quality may degrade noticeably. For best results use ${tw}×${th}.`;
+  } else if (ratio > 2.5) {
+    severe = true;
+    msg = `Far above trained resolution (${tw}×${th}). Expect duplicated/tiled subjects. Use ${tw}×${th} and upscale after.`;
+  } else if (ratio > 1.6) {
+    msg = `Above trained resolution (${tw}×${th}). May produce tiling or duplicated detail. Consider ${tw}×${th} + upscale.`;
+  } else {
+    el.hidden = true;
+    el.classList.remove('severe');
+    return;
+  }
+  el.textContent = msg;
+  el.classList.toggle('severe', severe);
+  el.hidden = false;
+}
+
 // --- Init ---
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -620,6 +656,7 @@ function updateModelInfo() {
     document.getElementById('cfg-scale').value = defaults.cfg;
     document.getElementById('cfg-val').textContent = defaults.cfg.toFixed(1);
   }
+  _checkSizeWarning();
 
   // LoRA compatibility — disable selector + silently clear for non-SDXL models
   const loraSelect = document.getElementById('lora-select');
@@ -668,6 +705,11 @@ function bindEvents() {
     const content = document.getElementById('advanced-content');
     content.classList.toggle('open');
     document.getElementById('advanced-toggle').classList.toggle('open');
+  });
+
+  // Size-vs-trained-resolution warning — fires on any manual W/H edit.
+  ['width', 'height'].forEach(id => {
+    document.getElementById(id).addEventListener('input', _checkSizeWarning);
   });
 
   // 2D/3D mode toggle. Top-level pills swap the output type; sub-pills
