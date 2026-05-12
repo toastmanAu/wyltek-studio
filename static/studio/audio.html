@@ -163,6 +163,7 @@
     <button class="tab-btn active" onclick="switchTab('extract', this)">Extract from Video</button>
     <button class="tab-btn" onclick="switchTab('convert', this)">Convert</button>
     <button class="tab-btn" onclick="switchTab('cut', this)">Cut Audio</button>
+    <button class="tab-btn" onclick="switchTab('sfx', this); initSfxTab();">Generate SFX</button>
   </div>
 
   <!-- TAB 1: EXTRACT -->
@@ -306,6 +307,53 @@
       <audio id="cut-player" controls></audio>
       <div class="result-meta" id="cut-meta"></div>
       <a id="cut-dl" class="btn-secondary" download>&#8595; Download</a>
+    </div>
+  </div>
+
+  <!-- TAB 4: SFX GENERATION (AudioGen) -->
+  <div id="tab-sfx" class="tab-panel">
+    <div id="sfx-unavailable" class="status-msg" style="display:none"></div>
+
+    <div id="sfx-ui">
+      <div style="background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:14px;font-size:13px;line-height:1.5;color:var(--text-dim)">
+        <strong style="color:var(--text)">AudioGen — environmental sounds &amp; SFX.</strong>
+        Describe a sound, get up to 10s of audio. Best for short SFX (footsteps, rain, applause, glass breaking,
+        sci-fi blips, ambient beds). For music or melody, use the
+        <a href="/studio/music" style="color:var(--accent)">Music tab</a> instead.
+      </div>
+
+      <div class="ctrl-group" style="margin-bottom:14px">
+        <label for="sfx-prompt">Prompt</label>
+        <textarea id="sfx-prompt" rows="3" placeholder="e.g. heavy rain on a tin roof, distant thunder"
+                  style="width:100%;padding:8px 10px;border-radius:8px;background:var(--input-bg,#0d0d0d);border:1px solid var(--border);color:var(--text);font:inherit;resize:vertical"></textarea>
+      </div>
+
+      <div class="controls-row" style="align-items:flex-end">
+        <div class="ctrl-group" style="flex:1;min-width:200px">
+          <label for="sfx-duration">Duration: <span id="sfx-duration-val">5</span>s</label>
+          <input type="range" id="sfx-duration" min="1" max="10" step="0.5" value="5" style="width:100%"
+                 oninput="document.getElementById('sfx-duration-val').textContent = this.value">
+        </div>
+        <div class="ctrl-group">
+          <label for="sfx-model">Model</label>
+          <select id="sfx-model"></select>
+        </div>
+        <button class="btn-primary" id="sfx-btn" onclick="runSfx()" disabled>
+          &#127925; Generate
+        </button>
+      </div>
+
+      <div class="status-msg" id="sfx-status"></div>
+
+      <div class="result-card" id="sfx-result">
+        <h4>&#10003; Generated SFX</h4>
+        <audio id="sfx-player" controls></audio>
+        <div class="result-meta" id="sfx-meta"></div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <a id="sfx-dl" class="btn-secondary" download>&#8595; Download</a>
+          <button class="btn-secondary" onclick="sendSfxToCut()">&#9986; Send to Cut</button>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -644,6 +692,162 @@ async function runCut() {
     btn.disabled = false;
     btn.textContent = '✂ Cut';
   }
+}
+
+// ─── SFX Generation (AudioGen) ──────────────────────────────────────────────
+//
+// Mirrors the music page's flow but single-shot only. The /api/sfx/generate
+// endpoint submits to the gpu lane (Semaphore(1)) so this serialises with
+// worldgen / image-gen / musicgen - no concurrent VRAM contention here.
+
+let sfxInited = false;
+let sfxLastJobId = null;
+
+async function initSfxTab() {
+  if (sfxInited) return;
+  sfxInited = true;
+  try {
+    const r = await fetch('/api/sfx/status');
+    const data = await r.json();
+    if (!data.available) {
+      document.getElementById('sfx-ui').style.display = 'none';
+      const el = document.getElementById('sfx-unavailable');
+      el.style.display = '';
+      el.className = 'status-msg error';
+      el.textContent = 'SFX generation not available: ' + (data.reason || 'unknown');
+      return;
+    }
+    const sel = document.getElementById('sfx-model');
+    sel.textContent = '';
+    for (const m of data.models) {
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = `${m.name} (${m.params})`;
+      sel.appendChild(opt);
+    }
+    if (data.max_duration) {
+      const slider = document.getElementById('sfx-duration');
+      slider.max = data.max_duration;
+    }
+    document.getElementById('sfx-btn').disabled = false;
+  } catch (err) {
+    const el = document.getElementById('sfx-unavailable');
+    el.style.display = '';
+    el.className = 'status-msg error';
+    el.textContent = 'Could not reach /api/sfx/status: ' + err.message;
+    document.getElementById('sfx-ui').style.display = 'none';
+  }
+}
+
+async function runSfx() {
+  const prompt = document.getElementById('sfx-prompt').value.trim();
+  const duration = parseFloat(document.getElementById('sfx-duration').value);
+  const model = document.getElementById('sfx-model').value;
+  if (!prompt) {
+    setStatus('sfx-status', 'Enter a prompt first.', 'error');
+    return;
+  }
+  const btn = document.getElementById('sfx-btn');
+  btn.disabled = true;
+  btn.textContent = '⏳ Submitting…';
+  document.getElementById('sfx-result').classList.remove('visible');
+  setStatus('sfx-status', 'Submitting…', 'info');
+
+  try {
+    const r = await fetch('/api/sfx/generate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({prompt, duration, model}),
+    });
+    if (!r.ok) {
+      const text = await r.text();
+      throw new Error(`${r.status}: ${text}`);
+    }
+    const {job_id} = await r.json();
+    sfxLastJobId = job_id;
+    btn.textContent = '⏳ Generating…';
+    setStatus('sfx-status', `Job ${job_id} queued (gpu lane). First run downloads ~5 GB of weights, then it's cached.`, 'info');
+    await pollSfxJob(job_id);
+  } catch (err) {
+    setStatus('sfx-status', 'Request failed: ' + err.message, 'error');
+    btn.textContent = '🎵 Generate';
+    btn.disabled = false;
+  }
+}
+
+async function pollSfxJob(jobId) {
+  // Poll every 2s; the model can take 5-60s depending on cold-load + duration.
+  while (true) {
+    await new Promise(r => setTimeout(r, 2000));
+    let r;
+    try {
+      r = await fetch(`/api/job/${jobId}`);
+    } catch {
+      setStatus('sfx-status', 'Connection lost. Retrying…', 'warn');
+      continue;
+    }
+    if (!r.ok) {
+      setStatus('sfx-status', `Poll failed: ${r.status}`, 'error');
+      break;
+    }
+    const job = await r.json();
+    if (job.status === 'queued') {
+      setStatus('sfx-status', 'Queued — waiting for GPU lane (another job is running).', 'info');
+      continue;
+    }
+    if (job.status === 'running') {
+      setStatus('sfx-status', 'Generating audio…', 'info');
+      continue;
+    }
+    if (job.status === 'complete') {
+      const url = job.url || `/storage/${jobId}.wav`;
+      const player = document.getElementById('sfx-player');
+      player.src = url + `?t=${Date.now()}`;
+      const dl = document.getElementById('sfx-dl');
+      dl.href = url;
+      dl.download = `sfx-${jobId}.wav`;
+      buildMeta(document.getElementById('sfx-meta'), [
+        {label: 'Duration', value: job.duration + 's'},
+        {label: 'Sample rate', value: job.sample_rate + ' Hz'},
+        {label: 'Model', value: (job.model || '').split('/').pop()},
+        {label: 'Job', value: jobId},
+      ]);
+      // .visible toggle matches the extract/convert/cut tabs - the
+      // .result-card CSS defaults to display:none and only the .visible
+      // class flips it to block. style.display='' falls back to that
+      // default and stays hidden, so this is the right idiom here.
+      document.getElementById('sfx-result').classList.add('visible');
+      setStatus('sfx-status', 'Done.', 'success');
+      break;
+    }
+    if (job.status === 'error' || job.status === 'failed' || job.status === 'cancelled') {
+      setStatus('sfx-status',
+        job.status === 'cancelled' ? 'Cancelled.' : ('Failed: ' + (job.error || 'unknown')),
+        'error');
+      break;
+    }
+  }
+  const btn = document.getElementById('sfx-btn');
+  btn.disabled = false;
+  btn.textContent = '🎵 Generate';
+}
+
+function sendSfxToCut() {
+  // Forward the produced SFX to the Cut tab. The cut endpoint accepts a
+  // file URL via fetch+blob to keep the form's upload path unchanged.
+  if (!sfxLastJobId) return;
+  const url = `/storage/${sfxLastJobId}.wav`;
+  fetch(url).then(r => r.blob()).then(blob => {
+    const file = new File([blob], `sfx-${sfxLastJobId}.wav`, {type: 'audio/wav'});
+    const input = document.getElementById('cut-file');
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    input.files = dt.files;
+    document.querySelectorAll('.tab-btn').forEach((b, i) => {
+      if (b.textContent.trim().startsWith('Cut')) b.click();
+    });
+    if (typeof onCutFile === 'function') onCutFile(input);
+  });
 }
 </script>
 </body>

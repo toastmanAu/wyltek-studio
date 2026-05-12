@@ -53,22 +53,160 @@ loadTemplates().catch((e) => {
   els.previewStatus.textContent = `Failed to load templates: ${e.message}`;
 });
 
-// ── Precheck banner — installation + VRAM tenancy ─────────────────────────
+// ── Worker lifecycle + precheck — installation, GPU tenancy, cancel ──────
 
 const precheckEls = {
   banner: document.getElementById('precheck-banner'),
 };
 
+const workerEls = {
+  bar: document.getElementById('worker-bar'),
+  sensePill: document.getElementById('sense-pill'),
+  comfyPill: document.getElementById('comfy-pill'),
+  senseStart: document.getElementById('sense-start'),
+  senseStop: document.getElementById('sense-stop'),
+  senseRestart: document.getElementById('sense-restart'),
+  comfyStart: document.getElementById('comfy-start'),
+  comfyStop: document.getElementById('comfy-stop'),
+  vramReadout: document.getElementById('vram-readout'),
+  cancelBtn: document.getElementById('cancel-btn'),
+};
+
+// Tracks the last precheck result so the auto-start logic can read it
+// without re-issuing the request.
+let lastPrecheck = null;
+// One-shot guard so we don't repeatedly auto-start the worker if the user
+// explicitly stopped it.
+let autoStartFired = false;
+// While a render is in flight, the Cancel button targets this job id.
+let activeJobId = null;
+
 function clearChildren(node) {
   while (node.firstChild) node.removeChild(node.firstChild);
 }
 
+// ── Worker status pill rendering ─────────────────────────────────────────
+
+function setPill(pillEl, name, status) {
+  // status: {state, listening, detail: {loaded, vram_gb, vram_max_gb}}
+  if (!pillEl) return;
+  const state = (status && status.state) || 'unknown';
+  pillEl.classList.remove(
+    'state-running', 'state-starting', 'state-stopped',
+    'state-crashed', 'state-unknown'
+  );
+  pillEl.classList.add(`state-${state}`);
+
+  const labelEl = pillEl.querySelector('.label');
+  const niceState = ({
+    running: 'running',
+    starting: 'starting (loading)',
+    stopped: 'stopped',
+    crashed: 'crashed',
+    unknown: 'unknown',
+  })[state] || state;
+  if (labelEl) labelEl.textContent = `${name}: ${niceState}`;
+}
+
+function updateButtonStates(workers) {
+  if (!workers) return;
+  const sense = workers.sensenova || {};
+  const comfy = workers.comfyui || {};
+
+  // Worker action buttons. Disable during transient states so users can't
+  // double-fire start while it's already starting.
+  workerEls.senseStart.disabled = sense.state === 'running' || sense.state === 'starting';
+  workerEls.senseStop.disabled = sense.state === 'stopped' || sense.state === 'unknown';
+  workerEls.senseRestart.disabled = sense.state === 'stopped' || sense.state === 'unknown';
+
+  workerEls.comfyStart.disabled = comfy.state === 'running' || comfy.state === 'starting';
+  workerEls.comfyStop.disabled = comfy.state === 'stopped' || comfy.state === 'unknown';
+
+  // VRAM readout from the SenseNova worker /status (when up).
+  const d = sense.detail || {};
+  if (d.vram_gb != null && d.vram_max_gb != null) {
+    workerEls.vramReadout.textContent =
+      `GPU: ${d.vram_gb.toFixed(1)} / ${d.vram_max_gb.toFixed(1)} GB`;
+  } else {
+    workerEls.vramReadout.textContent = '';
+  }
+}
+
+async function refreshWorkers() {
+  try {
+    const r = await fetch('/api/workers/status');
+    if (!r.ok) return null;
+    const w = await r.json();
+    setPill(workerEls.sensePill, 'SenseNova worker', w.sensenova);
+    setPill(workerEls.comfyPill, 'ComfyUI', w.comfyui);
+    updateButtonStates(w);
+    return w;
+  } catch {
+    return null;
+  }
+}
+
+// Poll workers every 3s while page is in view, every 15s when hidden.
+function startWorkerPolling() {
+  refreshWorkers();
+  let interval = setInterval(refreshWorkers, 3000);
+  document.addEventListener('visibilitychange', () => {
+    clearInterval(interval);
+    interval = setInterval(refreshWorkers, document.hidden ? 15000 : 3000);
+  });
+}
+startWorkerPolling();
+
+// ── Lifecycle button handlers ────────────────────────────────────────────
+
+async function postJSON(url) {
+  const r = await fetch(url, {method: 'POST'});
+  if (!r.ok) throw new Error(`${url}: ${r.status}`);
+  return r.json();
+}
+
+async function lifecycleAction(url, btn, optimisticLabel) {
+  // Optimistic feedback so the user knows the click registered while
+  // systemctl takes its ~0.5-1s to return.
+  const prev = btn.textContent;
+  btn.disabled = true;
+  if (optimisticLabel) btn.textContent = optimisticLabel;
+  try {
+    const result = await postJSON(url);
+    if (!result.ok) {
+      const msg = result.error || `rc=${result.rc}`;
+      els.previewStatus.hidden = false;
+      els.previewStatus.textContent = `Lifecycle action failed: ${msg}`;
+    }
+  } catch (e) {
+    els.previewStatus.hidden = false;
+    els.previewStatus.textContent = `Lifecycle action failed: ${e.message}`;
+  } finally {
+    btn.textContent = prev;
+    await refreshWorkers();
+    initPrecheck();
+  }
+}
+
+workerEls.senseStart.addEventListener('click',
+  () => lifecycleAction('/api/sensenova/worker/start', workerEls.senseStart, 'Starting…'));
+workerEls.senseStop.addEventListener('click',
+  () => { autoStartFired = true; return lifecycleAction('/api/sensenova/worker/stop', workerEls.senseStop, 'Stopping…'); });
+workerEls.senseRestart.addEventListener('click',
+  () => lifecycleAction('/api/sensenova/worker/restart', workerEls.senseRestart, 'Restarting…'));
+workerEls.comfyStart.addEventListener('click',
+  () => lifecycleAction('/api/comfyui/start', workerEls.comfyStart, 'Starting…'));
+workerEls.comfyStop.addEventListener('click',
+  () => lifecycleAction('/api/comfyui/stop', workerEls.comfyStop, 'Stopping…'));
+
+// ── Precheck banner ──────────────────────────────────────────────────────
+
 function renderPrecheck(state) {
+  lastPrecheck = state;
   const el = precheckEls.banner;
   if (!el) return;
 
   clearChildren(el);
-  el.hidden = false;
 
   if (state.ready) {
     el.hidden = true;
@@ -76,8 +214,8 @@ function renderPrecheck(state) {
     return;
   }
 
+  el.hidden = false;
   const notInstalled = state.installed === false;
-  // Install issue = red, hard-block. Tenancy issue = orange, soft warn.
   el.style.background = notInstalled ? 'rgba(220,80,80,0.12)' : 'rgba(255,165,0,0.10)';
   el.style.borderColor = notInstalled ? 'rgba(220,80,80,0.55)' : 'rgba(255,165,0,0.5)';
 
@@ -120,19 +258,84 @@ function renderPrecheck(state) {
     el.appendChild(cmd);
   }
 
+  // Inline action buttons — replaces the old "open a terminal" instructions.
   const actions = document.createElement('div');
-  actions.style.marginTop = '8px';
+  actions.className = 'inline-actions';
+
+  const d = state.details || {};
+  const comfyState = d.comfyui && d.comfyui.state;
+  const workerState = d.worker && d.worker.state;
+
+  if (!notInstalled && (comfyState === 'running' || comfyState === 'starting')) {
+    const stopComfy = document.createElement('button');
+    stopComfy.type = 'button';
+    stopComfy.textContent = 'Stop ComfyUI';
+    stopComfy.addEventListener('click', async () => {
+      stopComfy.disabled = true;
+      stopComfy.textContent = 'Stopping…';
+      await postJSON('/api/comfyui/stop').catch(() => {});
+      autoStartFired = false; // Let auto-start retry the worker once GPU is free.
+      await refreshWorkers();
+      initPrecheck();
+    });
+    actions.appendChild(stopComfy);
+  }
+
+  if (!notInstalled && (workerState === 'stopped' || workerState === 'crashed')) {
+    const startWorker = document.createElement('button');
+    startWorker.type = 'button';
+    startWorker.textContent = workerState === 'crashed' ? 'Restart worker' : 'Start worker';
+    startWorker.addEventListener('click', async () => {
+      startWorker.disabled = true;
+      startWorker.textContent = 'Starting…';
+      const url = workerState === 'crashed'
+        ? '/api/sensenova/worker/restart'
+        : '/api/sensenova/worker/start';
+      await postJSON(url).catch(() => {});
+      await refreshWorkers();
+      initPrecheck();
+    });
+    actions.appendChild(startWorker);
+  }
+
   const recheck = document.createElement('button');
   recheck.type = 'button';
+  recheck.className = 'secondary';
   recheck.textContent = 'Recheck';
   recheck.addEventListener('click', () => { initPrecheck(); });
   actions.appendChild(recheck);
+
   el.appendChild(actions);
 
-  // Hard-block render only when not installed; tenancy is the user's call.
+  // Hard-block render only when not installed. Other states are UI-resolvable.
   if (notInstalled) {
     els.renderBtn.disabled = true;
     els.renderBtn.title = 'SenseNova-U1 is not installed on this machine.';
+  } else {
+    // Soft-block: button enabled iff worker reports running. The actual
+    // render call will fail informatively otherwise, but disabling the
+    // button avoids accidental clicks that produce a misleading error.
+    els.renderBtn.disabled = workerState !== 'running' || !state.current;
+    els.renderBtn.title = workerState !== 'running'
+      ? `SenseNova worker is ${workerState}. Use the worker bar above to start it.`
+      : '';
+  }
+
+  // Auto-start path (user picked this in setup). Conditions:
+  //  - installed
+  //  - ComfyUI not blocking (state stopped/unknown)
+  //  - worker explicitly stopped (NOT crashed — crashes get a manual button
+  //    so loops don't go unnoticed)
+  //  - we haven't already fired once this session
+  if (!autoStartFired
+      && !notInstalled
+      && (comfyState === 'stopped' || comfyState === 'unknown')
+      && workerState === 'stopped') {
+    autoStartFired = true;
+    postJSON('/api/sensenova/worker/start')
+      .then(refreshWorkers)
+      .then(initPrecheck)
+      .catch(() => {});
   }
 }
 
@@ -142,7 +345,6 @@ async function initPrecheck() {
     if (!r.ok) throw new Error(`precheck ${r.status}`);
     renderPrecheck(await r.json());
   } catch (e) {
-    // Network failure to our own API is itself a blocker — surface, don't swallow.
     renderPrecheck({
       ready: false,
       installed: null,
@@ -153,6 +355,41 @@ async function initPrecheck() {
 }
 
 initPrecheck();
+// Recheck precheck periodically so 'starting' → 'running' transitions clear
+// the banner without the user clicking Recheck.
+setInterval(() => { if (!document.hidden) initPrecheck(); }, 5000);
+
+// ── Cancel button ────────────────────────────────────────────────────────
+
+function setRenderRunningUI(running, jobId) {
+  activeJobId = running ? jobId : null;
+  workerEls.cancelBtn.hidden = !running;
+  els.renderBtn.disabled = running;
+}
+
+workerEls.cancelBtn.addEventListener('click', async () => {
+  if (!activeJobId) return;
+  const btn = workerEls.cancelBtn;
+  btn.disabled = true;
+  const prev = btn.textContent;
+  btn.textContent = 'Cancelling…';
+  try {
+    const r = await fetch(`/api/job/${activeJobId}/cancel`, {method: 'POST'});
+    const body = await r.json();
+    els.previewStatus.hidden = false;
+    els.previewStatus.textContent = body.ok
+      ? 'Cancelled. Worker restart pending — GPU will be free in ~2s.'
+      : `Cancel returned: ${JSON.stringify(body)}`;
+  } catch (e) {
+    els.previewStatus.hidden = false;
+    els.previewStatus.textContent = `Cancel failed: ${e.message}`;
+  } finally {
+    btn.textContent = prev;
+    btn.disabled = false;
+    setRenderRunningUI(false, null);
+    refreshWorkers();
+  }
+});
 
 // ── Task 15: Form generator from slot schema ──────────────────────────────
 
@@ -366,11 +603,12 @@ async function submitRender() {
     }
     const {job_id} = await r.json();
     state.lastRenderId = job_id;
+    setRenderRunningUI(true, job_id);
     els.previewStatus.textContent = `Job ${job_id} submitted; polling…`;
     pollJob(job_id);
   } catch (e) {
     els.previewStatus.textContent = `Error: ${e.message}`;
-    els.renderBtn.disabled = false;
+    setRenderRunningUI(false, null);
   }
 }
 
@@ -393,12 +631,17 @@ async function pollJob(jobId) {
       await previewCanvas.setBase(url + `?t=${Date.now()}`);
       canvasTools.hidden = false;
       els.previewStatus.hidden = true;
-      els.renderBtn.disabled = false;
+      setRenderRunningUI(false, null);
       return;
     }
     if (job.status === 'error' || job.status === 'failed') {
       els.previewStatus.textContent = `Failed: ${job.error || job.message || 'unknown'}`;
-      els.renderBtn.disabled = false;
+      setRenderRunningUI(false, null);
+      return;
+    }
+    if (job.status === 'cancelled') {
+      els.previewStatus.textContent = 'Cancelled.';
+      setRenderRunningUI(false, null);
       return;
     }
   }

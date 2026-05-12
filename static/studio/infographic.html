@@ -65,6 +65,66 @@
       border: none; cursor: pointer; font-weight: 600;
     }
     #render-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    #cancel-btn {
+      width: 100%; margin-top: 6px;
+      padding: 8px; border-radius: 8px;
+      background: rgba(220, 80, 80, 0.18); color: #ffb3b3;
+      border: 1px solid rgba(220, 80, 80, 0.55); cursor: pointer;
+      font-weight: 600;
+    }
+    #cancel-btn[hidden] { display: none; }
+    #cancel-btn:hover { background: rgba(220, 80, 80, 0.3); }
+
+    /* Worker lifecycle bar — UI replacement for terminal systemctl. */
+    .worker-bar {
+      display: flex; gap: 8px; flex-wrap: wrap;
+      padding: 10px 12px; margin: 0 16px 8px;
+      background: var(--card-bg, #1a1a1a);
+      border: 1px solid var(--border, #333);
+      border-radius: 10px;
+      font-size: 12px;
+      align-items: center;
+    }
+    .worker-pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 4px 10px; border-radius: 999px;
+      border: 1px solid var(--border, #333);
+      background: rgba(255,255,255,0.03);
+    }
+    .worker-pill .dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: #888;
+    }
+    .worker-pill.state-running .dot   { background: #4ade80; }
+    .worker-pill.state-starting .dot  { background: #fbbf24; animation: blink 1s infinite; }
+    .worker-pill.state-stopped .dot   { background: #6b7280; }
+    .worker-pill.state-crashed .dot   { background: #ef4444; }
+    .worker-pill.state-unknown .dot   { background: #a78bfa; }
+    @keyframes blink { 50% { opacity: 0.3; } }
+    .worker-btn {
+      padding: 4px 10px; font-size: 11px;
+      background: transparent; color: var(--text, #eee);
+      border: 1px solid var(--border, #333); border-radius: 6px;
+      cursor: pointer;
+    }
+    .worker-btn:hover { border-color: var(--accent, #4a90e2); }
+    .worker-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .worker-btn.danger { color: #ffb3b3; border-color: rgba(220,80,80,0.5); }
+    .worker-bar .sep { flex: 0 0 1px; align-self: stretch; background: var(--border, #333); margin: 0 2px; }
+    .worker-bar .spacer { flex: 1; }
+    .worker-bar .vram { color: var(--text-dim, #888); font-variant-numeric: tabular-nums; }
+    #precheck-banner .inline-actions {
+      display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap;
+    }
+    #precheck-banner .inline-actions button {
+      margin: 0; padding: 6px 12px;
+      border: none; border-radius: 6px; cursor: pointer;
+      color: #fff; background: var(--accent, #4a90e2);
+    }
+    #precheck-banner .inline-actions button.secondary {
+      background: transparent; color: var(--text, #eee);
+      border: 1px solid var(--border, #333);
+    }
     #precheck-banner button {
       margin-top: 8px; padding: 6px 12px;
       background: var(--accent, #4a90e2); color: #fff;
@@ -104,6 +164,24 @@
 </head>
 <body>
   <div id="precheck-banner" class="warning" hidden style="margin: 16px 16px 0; padding: 12px 16px; background: rgba(255,165,0,0.1); border: 1px solid rgba(255,165,0,0.5); border-radius: 8px; color: var(--text, #eee);"></div>
+  <div class="worker-bar" id="worker-bar" style="margin-top: 16px;">
+    <span class="worker-pill state-unknown" id="sense-pill">
+      <span class="dot"></span>
+      <span class="label">SenseNova worker: …</span>
+    </span>
+    <button type="button" class="worker-btn" id="sense-start">Start worker</button>
+    <button type="button" class="worker-btn" id="sense-restart">Restart</button>
+    <button type="button" class="worker-btn danger" id="sense-stop">Stop</button>
+    <span class="sep"></span>
+    <span class="worker-pill state-unknown" id="comfy-pill">
+      <span class="dot"></span>
+      <span class="label">ComfyUI: …</span>
+    </span>
+    <button type="button" class="worker-btn" id="comfy-start">Start ComfyUI</button>
+    <button type="button" class="worker-btn danger" id="comfy-stop">Stop ComfyUI</button>
+    <span class="spacer"></span>
+    <span class="vram" id="vram-readout"></span>
+  </div>
   <main class="infographic-page">
     <aside class="template-pane" id="template-pane">
       <h2 style="margin-top:0">Infographic Builder</h2>
@@ -148,6 +226,7 @@
           </select>
         </label>
         <button type="button" id="render-btn" disabled>Render</button>
+        <button type="button" id="cancel-btn" hidden>Cancel render</button>
       </fieldset>
     </aside>
     <section class="preview-pane">

@@ -16,7 +16,7 @@ import aiofiles
 import uvicorn
 import yaml
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 import health_actions
@@ -31,6 +31,7 @@ from studio.infographics import (
     SlotValidationError as _InfographicSlotError,
     assemble_prompt as _assemble_infographic_prompt,
 )
+from studio import worker_lifecycle as _wl
 
 # Global state
 config = {}
@@ -119,6 +120,91 @@ Path("uploads/infographic").mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 Path("templates").mkdir(parents=True, exist_ok=True)
 app.mount("/templates", StaticFiles(directory="templates"), name="templates")
+
+
+_DOWNLOAD_ROOTS = {
+    "outputs": Path("outputs").resolve(),
+    "uploads": Path("uploads").resolve(),
+}
+
+
+@app.get("/download")
+async def force_download(path: str):
+    # iOS Safari / iOS PWA navigate to bare static URLs and route binary files
+    # (.glb, .zip, etc.) into Quick Look — which has no Cancel/Back button and
+    # traps the user. Re-serving the same file with Content-Disposition:
+    # attachment makes iOS save it to the Files app instead.
+    raw = path.lstrip("/")
+    head, _, rest = raw.partition("/")
+    if not rest:
+        raise HTTPException(status_code=404)
+
+    if head == "storage":
+        # Generated meshes/images live here — resolve_asset already reduces
+        # input to basename and searches projects + unsorted, so traversal
+        # is structurally impossible.
+        target = store.resolve_asset(rest)
+        if target is None or not target.is_file():
+            raise HTTPException(status_code=404)
+        return FileResponse(target, filename=target.name)
+
+    root = _DOWNLOAD_ROOTS.get(head)
+    if root is None:
+        raise HTTPException(status_code=404)
+    target = (root / rest).resolve()
+    if root not in target.parents or not target.is_file():
+        raise HTTPException(status_code=404)
+    return FileResponse(target, filename=target.name)
+
+
+@app.get("/save", response_class=HTMLResponse)
+async def save_page(path: str):
+    # iOS standalone PWA can't trigger downloads in its in-app Safari overlay
+    # for binary responses (blank page) or blob URLs from another document
+    # (10% stall). Renderable HTML wrappers always paint, and the user can
+    # tap the inner <a download> link or long-press → "Download Linked File"
+    # to land the file in the Files app.
+    name = Path(path).name or "download"
+    # Light XSS hardening — the path comes from a query param and gets
+    # interpolated into the HTML. Reject any name with control chars or HTML
+    # metacharacters; the resolver downstream will validate the actual file.
+    if any(c in name for c in '<>"\'&\n\r\t'):
+        raise HTTPException(status_code=400)
+    safe_path = path.replace('"', '%22')
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Save {name}</title>
+<style>
+  html, body {{ margin: 0; padding: 0; height: 100%; background: #0f0f10; color: #f4f4f5; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }}
+  .wrap {{ min-height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 28px 24px; box-sizing: border-box; }}
+  .name {{ font-size: 17px; font-weight: 600; word-break: break-all; margin-bottom: 24px; max-width: 100%; opacity: 0.85; }}
+  .btn {{ display: inline-block; padding: 18px 36px; background: #2563eb; color: #fff; text-decoration: none; border-radius: 14px; font-size: 17px; font-weight: 600; -webkit-tap-highlight-color: transparent; -webkit-touch-callout: default; touch-action: manipulation; }}
+  .ios-steps {{ margin-top: 28px; padding: 16px 20px; background: rgba(255,255,255,0.06); border-radius: 12px; max-width: 340px; font-size: 14px; line-height: 1.6; }}
+  .ios-steps b {{ color: #f4f4f5; }}
+  .ios-steps ol {{ margin: 8px 0 0; padding-left: 20px; }}
+  .ios-steps li {{ margin-bottom: 6px; opacity: 0.85; }}
+  .desktop-hint {{ margin-top: 20px; font-size: 12px; opacity: 0.45; }}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="name">{name}</div>
+  <a class="btn" href="{safe_path}" download="{name}">Download</a>
+  <div class="ios-steps">
+    <b>On iPhone / iPad:</b>
+    <ol>
+      <li>Press and hold the Download button.</li>
+      <li>Tap <b>Open in Browser</b>.</li>
+      <li>Safari will save the file — find it in Files → Downloads.</li>
+    </ol>
+  </div>
+  <div class="desktop-hint">On desktop, just tap Download.</div>
+</div>
+</body>
+</html>"""
 
 
 @app.get("/")
@@ -2767,7 +2853,157 @@ async def music_generate(request: Request):
         except Exception as e:
             jobs[job_id].update({"status": "error", "error": str(e)})
 
-    asyncio.create_task(_do())
+    # Music runs on the same GPU as ComfyUI/WorldGen, so it MUST go through
+    # the gpu lane (Semaphore(1) - serial). A bare asyncio.create_task here
+    # bypasses the lane and lets musicgen run concurrently with an active
+    # worldgen / image-gen job; on a 24 GB 7900 XTX that combo blew up at
+    # hipErrorLaunchFailure on 2026-05-12 and triggered an amdgpu MODE1
+    # reset. 1800s timeout matches 3D mesh runs - long continuation chunks
+    # (3 x 30 s) can push past the 300 s gpu default. job_id matches the
+    # user-facing id so /api/job/{id}/cancel can actually find the task.
+    job_queue.submit_background(
+        _do(), lane="gpu", job_id=job_id, timeout=1800,
+    )
+
+    return {"job_id": job_id, "status": "queued"}
+
+
+# --- SFX Generation API (AudioGen) ---
+#
+# Mirror of the Music API above: same audiocraft library, same GPU
+# claim/release pattern, same gpu-lane serialisation. AudioGen is built
+# for environmental sounds and SFX (footsteps, rain, applause, glass
+# breaking) rather than music - if a user wants drum patterns or melody,
+# they should use the Music page instead.
+
+_sfx_engine = None
+_sfx_engine_error: str | None = None
+
+
+def _get_sfx_engine():
+    global _sfx_engine, _sfx_engine_error
+    if _sfx_engine is None:
+        try:
+            from studio.sfx_gen import SfxGenEngine
+            engine = SfxGenEngine(config.get("sfx", {}))
+            # Force the AudioGen import so transitive misses surface their
+            # real name (audiocraft itself is shared with MusicGen).
+            from audiocraft.models import AudioGen  # noqa: F401
+            _sfx_engine = engine
+            _sfx_engine_error = None
+        except ImportError as e:
+            missing = getattr(e, "name", None) or "audiocraft"
+            if missing == "audiocraft":
+                _sfx_engine_error = "audiocraft not installed. Run: pip install audiocraft"
+            else:
+                _sfx_engine_error = (
+                    f"audiocraft is installed but its import requires '{missing}', "
+                    f"which is not installed. Run: pip install {missing}"
+                )
+        except Exception as e:
+            _sfx_engine_error = f"audiocraft failed to load: {e.__class__.__name__}: {e}"
+    return _sfx_engine
+
+
+@app.post("/api/gpu/claim-sfx")
+async def gpu_claim_sfx():
+    """Free ComfyUI VRAM and preload the AudioGen model on the GPU.
+
+    Mirror of /api/gpu/claim-music. Stops ComfyUI from holding ~12 GB
+    of FLUX/SDXL weights so AudioGen's ~5 GB has room.
+    """
+    await _free_comfyui()
+    engine = _get_sfx_engine()
+    if not engine:
+        return JSONResponse(
+            {"error": _sfx_engine_error or "AudioGen not available"},
+            status_code=503)
+    engine.preload()
+    raw_device = getattr(engine, "_device", "unknown")
+    if raw_device == "cuda":
+        try:
+            import torch
+            device_label = torch.cuda.get_device_name(0)
+        except Exception:
+            device_label = "GPU"
+    elif raw_device == "cpu":
+        device_label = "CPU"
+    else:
+        device_label = raw_device
+    return {"ok": True, "device": device_label}
+
+
+@app.post("/api/gpu/release-sfx")
+async def gpu_release_sfx():
+    """Unload AudioGen so ComfyUI / other workloads can use VRAM."""
+    engine = _get_sfx_engine()
+    if engine:
+        engine._unload_model()
+    return {"ok": True}
+
+
+@app.get("/api/sfx/status")
+async def sfx_status():
+    """Check if SFX generation is available + what model(s) it offers."""
+    engine = _get_sfx_engine()
+    if engine:
+        return {"available": True, "models": engine.models(),
+                "max_duration": engine.MAX_DURATION}
+    return {
+        "available": False,
+        "reason": _sfx_engine_error or "audiocraft not installed (pip install audiocraft)",
+    }
+
+
+@app.post("/api/sfx/generate")
+async def sfx_generate(request: Request):
+    """Generate an SFX clip from a text prompt.
+
+    Returns immediately with a job_id; poll /api/job/{id} or use the WS
+    broadcast like other GPU jobs. Submission goes through job_queue on
+    lane="gpu" (Semaphore(1)) so it serialises against ComfyUI worldgen
+    and MusicGen - the same crash this fixes on 2026-05-12.
+    """
+    engine = _get_sfx_engine()
+    if not engine:
+        return JSONResponse(
+            {"error": _sfx_engine_error or "SFX generation not available"},
+            status_code=503)
+
+    data = await request.json()
+    prompt = data.get("prompt", "").strip()
+    duration = float(data.get("duration", 5.0))
+    model_id = data.get("model", "") or None
+
+    if not prompt:
+        return JSONResponse({"error": "No prompt provided"}, status_code=400)
+
+    job_id = str(uuid.uuid4())[:8]
+    import storage as store
+    output_path = str(store.asset_path(job_id, "audio", ".wav"))
+
+    jobs[job_id] = {"status": "queued", "progress": 0, "type": "sfx"}
+
+    async def _do():
+        try:
+            jobs[job_id]["status"] = "running"
+            meta = await engine.generate(prompt, output_path, duration, model_id)
+            jobs[job_id].update({
+                "status": "complete", "progress": 100,
+                "url": f"/storage/{job_id}.wav",
+                "prompt": prompt,
+                **meta,
+            })
+        except Exception as e:
+            jobs[job_id].update({"status": "error", "error": str(e)})
+
+    # gpu lane (Semaphore(1)) - serialises with worldgen / image-gen /
+    # musicgen. 600s timeout covers a 10s clip with model cold-load and
+    # CPU fallback if VRAM is tight. job_id matches the user-facing id so
+    # /api/job/{id}/cancel can actually find the task.
+    job_queue.submit_background(
+        _do(), lane="gpu", job_id=job_id, timeout=600,
+    )
 
     return {"job_id": job_id, "status": "queued"}
 
@@ -3737,16 +3973,51 @@ async def api_job_cancel(job_id: str):
 
 
 async def _cancel_in_flight(job_id: str) -> None:
-    """DECISION D1 = option (i): wrapper-only cancel.
+    """Backend-aware cancel: actually free the GPU, not just the asyncio task.
 
-    No-op here — JobQueue.cancel() already cancelled the wrapper task,
-    which propagates CancelledError through asyncio.wait_for in submit().
-    ComfyUI continues until its next prompt boundary; orphan-rescue picks
-    up any late-arriving GLB. To switch to option (ii) graceful DELETE
-    or option (iii) DELETE+kill, replace this body — see plan
-    docs/superpowers/plans/2026-05-04-modly-tier1-ports.md DECISION D1.
+    The asyncio cancel from JobQueue.cancel() unblocks our event loop, but
+    by itself does NOT preempt CUDA/ROCm kernels - those run to completion
+    inside the worker process. So we also signal the relevant backend:
+
+    * **SenseNova infographic jobs** → restart sensenova-worker.service.
+      The worker holds a single GPU lock around each render; a SIGTERM is
+      the only reliable way to interrupt the in-flight diffusion loop. The
+      unit has Restart=on-failure so an explicit restart bounces it back
+      up clean.
+    * **ComfyUI image / 3D / worldgen jobs** → POST /interrupt to the
+      ComfyUI HTTP API. Stops the current step boundary and clears the
+      queue head; the orphan-rescue path in backends/comfyui.py still
+      picks up any in-progress GLB.
+
+    Best-effort: a failure here doesn't block the user-visible "cancelled"
+    status the caller will set - the asyncio cancel already happened.
     """
-    return
+    job = jobs.get(job_id) or {}
+    params = job.get("params") or {}
+    # Infographic jobs always go through SenseNova; identify them by the
+    # presence of template_id (set by infographic_render) or fall back to
+    # the legacy params shape.
+    is_sensenova = ("template_id" in params) or (params.get("backend") == "sensenova")
+
+    if is_sensenova:
+        try:
+            await _wl.sensenova_restart()
+        except Exception as exc:
+            print(f"[cancel] sensenova restart failed for {job_id}: {exc}")
+        return
+
+    # ComfyUI-backed: send /interrupt. URL is read from config so a remote
+    # ComfyUI is reachable too. 1.5s timeout - this is a localhost call on
+    # the happy path.
+    comfy_url = config.get("backends", {}).get("comfyui", {}).get("url", "")
+    if not comfy_url:
+        return
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=1.5) as client:
+            await client.post(f"{comfy_url.rstrip('/')}/interrupt")
+    except Exception as exc:
+        print(f"[cancel] comfyui /interrupt failed for {job_id}: {exc}")
 
 
 _INFOGRAPHIC_TEMPLATES_DIR = Path(__file__).resolve().parent / "templates" / "infographics"
@@ -4117,20 +4388,26 @@ async def infographic_composite(
 async def sensenova_precheck():
     """Health probe for the SenseNova-U1 backend.
 
-    Three independent failure modes are surfaced:
+    Failure modes surfaced (in increasing order of how-actionable-from-UI):
 
-    1. **Not installed** — venv or weights missing. Render must be disabled
-       and the UI shows the install command. SenseNova-U1 ships ~32 GB of
-       BF16 weights and a ~16 B parameter model; not every self-hosted user
-       can run it, so this is the most common state for first-run installs.
-    2. **VRAM tenancy** — installed, but ComfyUI is holding the GPU. Render
-       can proceed once the user stops ComfyUI; surfaced as a warning.
-    3. **Ready** — all clear.
+    1. **Not installed** — venv or weights missing. Hard-block render and
+       point at ``scripts/setup-sensenova.sh``.
+    2. **ComfyUI holding the GPU** — installed and worker would be ready,
+       but ComfyUI is up. Soft-block: UI offers a one-click Stop ComfyUI
+       button (POST /api/comfyui/stop) instead of telling the user to open
+       a terminal.
+    3. **Worker not running** — installed, GPU free, but
+       ``sensenova-worker.service`` is stopped or loading. Soft-block: UI
+       offers Start/Restart, or auto-starts on page open.
+    4. **Ready** — worker running AND model loaded.
     """
     venv_ok = _sensenova_venv_present()
     weights_ok = _sensenova_weights_present()
     installed = venv_ok and weights_ok
-    comfyui = _comfyui_running()
+
+    worker = await _wl.sensenova_status()
+    comfy = await _wl.comfyui_status()
+    comfyui_blocking = comfy.state in ("running", "starting")
 
     blockers: list[str] = []
     if not venv_ok:
@@ -4141,27 +4418,106 @@ async def sensenova_precheck():
         blockers.append(
             f"SenseNova-U1 weights missing at {SENSENOVA_WEIGHTS_PATH}. "
             f"Run {SENSENOVA_INSTALL_HINT} to download.")
-    if installed and comfyui:
+    if installed and comfyui_blocking:
         blockers.append(
-            "ComfyUI is running on localhost:8188. SenseNova needs the full "
-            "GPU; stop ComfyUI before rendering.")
+            "ComfyUI is using the GPU. Click 'Stop ComfyUI' to free it for "
+            "SenseNova — you can restart ComfyUI from this page when done.")
+    if installed and not comfyui_blocking and worker.state == "stopped":
+        blockers.append(
+            "SenseNova worker is stopped. Click 'Start worker' (or wait for "
+            "auto-start) — first load takes ~25s while 32 GB of BF16 weights "
+            "page onto the GPU.")
+    if installed and not comfyui_blocking and worker.state == "starting":
+        blockers.append(
+            "SenseNova worker is starting (loading model weights). This "
+            "usually finishes in 20-30 seconds.")
+    if installed and worker.state == "crashed":
+        blockers.append(
+            "SenseNova worker crashed. Click 'Restart worker' — check "
+            "`journalctl --user -u sensenova-worker` if it keeps failing.")
+
+    ready = installed and not comfyui_blocking and worker.state == "running"
 
     details = {
         "venv_path": SENSENOVA_VENV_PATH,
         "venv_present": venv_ok,
         "weights_path": SENSENOVA_WEIGHTS_PATH,
         "weights_present": weights_ok,
-        "comfyui_running": comfyui,
+        # Legacy field — kept for any older client that still reads it.
+        "comfyui_running": comfyui_blocking,
+        "comfyui": comfy.to_dict(),
+        "worker": worker.to_dict(),
     }
     if not installed:
         details["install_hint"] = SENSENOVA_INSTALL_HINT
 
     return {
-        "ready": not blockers,
+        "ready": ready,
         "installed": installed,
         "blockers": blockers,
         "details": details,
     }
+
+
+# ===== Worker lifecycle controls (UI-driven; no terminal access needed) =====
+#
+# Two services, four verbs each. All routed through systemctl --user via
+# studio.worker_lifecycle (argv list, no shell). The infographic page wires
+# these to buttons so users never have to drop to a terminal to free the GPU
+# or restart a wedged worker.
+
+@app.get("/api/workers/status")
+async def workers_status():
+    """Both worker states in one round-trip for the UI status pill."""
+    return await _wl.all_statuses()
+
+
+@app.get("/api/sensenova/worker/status")
+async def sensenova_worker_status():
+    s = await _wl.sensenova_status()
+    return s.to_dict()
+
+
+@app.post("/api/sensenova/worker/start")
+async def sensenova_worker_start():
+    return await _wl.sensenova_start()
+
+
+@app.post("/api/sensenova/worker/stop")
+async def sensenova_worker_stop():
+    return await _wl.sensenova_stop()
+
+
+@app.post("/api/sensenova/worker/restart")
+async def sensenova_worker_restart():
+    return await _wl.sensenova_restart()
+
+
+@app.get("/api/comfyui/status")
+async def comfyui_lifecycle_status():
+    s = await _wl.comfyui_status()
+    return s.to_dict()
+
+
+@app.post("/api/comfyui/start")
+async def comfyui_lifecycle_start():
+    return await _wl.comfyui_start()
+
+
+@app.post("/api/comfyui/stop")
+async def comfyui_lifecycle_stop():
+    """Stop ComfyUI to free the GPU for the SenseNova worker.
+
+    Mirror of the manual `systemctl --user stop comfyui.service` the
+    infographic precheck used to ask for. Pair with /api/comfyui/start
+    after the infographic session.
+    """
+    return await _wl.comfyui_stop()
+
+
+@app.post("/api/comfyui/restart")
+async def comfyui_lifecycle_restart():
+    return await _wl.comfyui_restart()
 
 
 if __name__ == "__main__":
