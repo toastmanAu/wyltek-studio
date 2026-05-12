@@ -226,7 +226,10 @@ def _run_t2i_sync(body: dict) -> dict:
     with torch.inference_mode():
         out = _MODEL.t2i_generate(
             _TOKENIZER, prompt,
-            image_size=(height, width),
+            # NEO-Unify expects (W, H), not (H, W) — modeling_neo_chat reads
+            # image_size[0] as width, image_size[1] as height (see line 577-578
+            # of the upstream package). Square smoke tests previously hid this.
+            image_size=(width, height),
             cfg_scale=cfg_scale,
             num_steps=num_steps,
             seed=seed,
@@ -280,7 +283,7 @@ def _run_interleave_sync(body: dict) -> dict:
         text, image_tensors = _MODEL.interleave_gen(
             _TOKENIZER, prompt,
             images=input_images,
-            image_size=(height, width),
+            image_size=(width, height),  # (W, H) — see _run_t2i_sync comment
             cfg_scale=cfg_scale,
             img_cfg_scale=img_cfg_scale,
             num_steps=num_steps,

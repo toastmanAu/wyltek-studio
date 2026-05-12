@@ -1,20 +1,43 @@
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 from fastapi.testclient import TestClient
 from server import app
+from studio.worker_lifecycle import WorkerStatus
 
 
-def _patch_install(*, venv: bool, weights: bool, comfyui: bool):
-    """Compose patches for all three precheck probes in one place."""
-    return (
-        patch("server._sensenova_venv_present", return_value=venv),
-        patch("server._sensenova_weights_present", return_value=weights),
-        patch("server._comfyui_running", return_value=comfyui),
+def _ws(name: str, running: bool) -> WorkerStatus:
+    """Build a WorkerStatus matching what worker_lifecycle returns."""
+    return WorkerStatus(
+        name=name,
+        state="running" if running else "stopped",
+        unit_active=running,
+        unit_substate="running" if running else "dead",
+        listening=running,
+        detail={"loaded": running} if running else {},
     )
 
 
-def _get(venv: bool, weights: bool, comfyui: bool):
-    pa, pb, pc = _patch_install(venv=venv, weights=weights, comfyui=comfyui)
-    with pa, pb, pc:
+def _patch_install(*, venv: bool, weights: bool, comfyui: bool, worker: bool = True):
+    """Compose patches for every probe the /api/sensenova/precheck endpoint
+    consults. The endpoint calls both the cheap booleans (venv/weights) and
+    the async worker-lifecycle status helpers (comfyui/sensenova), so all
+    four need to be mocked to get a deterministic response."""
+    return (
+        patch("server._sensenova_venv_present", return_value=venv),
+        patch("server._sensenova_weights_present", return_value=weights),
+        # _comfyui_running is kept for backward-compat callers but the
+        # precheck endpoint actually consults _wl.comfyui_status().
+        patch("server._comfyui_running", return_value=comfyui),
+        patch("server._wl.comfyui_status",
+              new=AsyncMock(return_value=_ws("comfyui", comfyui))),
+        patch("server._wl.sensenova_status",
+              new=AsyncMock(return_value=_ws("sensenova-worker", worker))),
+    )
+
+
+def _get(venv: bool, weights: bool, comfyui: bool, worker: bool = True):
+    patches = _patch_install(venv=venv, weights=weights, comfyui=comfyui, worker=worker)
+    pa, pb, pc, pd, pe = patches
+    with pa, pb, pc, pd, pe:
         return TestClient(app).get("/api/sensenova/precheck").json()
 
 

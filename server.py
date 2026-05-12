@@ -26,11 +26,6 @@ from backends import sensenova as _sensenova
 from backends.sensenova import ASPECT_BUCKETS as _SENSENOVA_ASPECTS
 from job_queue import JobQueue
 from pydantic import BaseModel, Field
-from studio.infographics import (
-    load_templates as _load_infographic_templates,
-    SlotValidationError as _InfographicSlotError,
-    assemble_prompt as _assemble_infographic_prompt,
-)
 from studio import worker_lifecycle as _wl
 
 # Global state
@@ -116,7 +111,6 @@ app.mount("/outputs", StaticFiles(directory="outputs"), name="outputs")
 app.mount("/audio", StaticFiles(directory="outputs/audio"), name="audio")
 app.mount("/data/sample-packs", StaticFiles(directory="data/sample-packs"), name="sample-packs")
 Path("uploads").mkdir(parents=True, exist_ok=True)
-Path("uploads/infographic").mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 Path("templates").mkdir(parents=True, exist_ok=True)
 app.mount("/templates", StaticFiles(directory="templates"), name="templates")
@@ -3994,10 +3988,7 @@ async def _cancel_in_flight(job_id: str) -> None:
     """
     job = jobs.get(job_id) or {}
     params = job.get("params") or {}
-    # Infographic jobs always go through SenseNova; identify them by the
-    # presence of template_id (set by infographic_render) or fall back to
-    # the legacy params shape.
-    is_sensenova = ("template_id" in params) or (params.get("backend") == "sensenova")
+    is_sensenova = params.get("backend") == "sensenova"
 
     if is_sensenova:
         try:
@@ -4020,97 +4011,65 @@ async def _cancel_in_flight(job_id: str) -> None:
         print(f"[cancel] comfyui /interrupt failed for {job_id}: {exc}")
 
 
-_INFOGRAPHIC_TEMPLATES_DIR = Path(__file__).resolve().parent / "templates" / "infographics"
-_INFOGRAPHIC_UPLOADS_DIR = Path("uploads/infographic").resolve()
+# -----------------------------------------------------------------------------
+# /api/sensenova/render — freeform-prompt SenseNova render.
+#
+# Takes a complete prompt + explicit dimensions, runs T2I via the worker
+# daemon, and broadcasts progress over the same WS the rest of the studio
+# uses. Cancel-via-restart is handled by the hook above (_cancel_in_flight)
+# which keys on params["backend"] == "sensenova".
+# -----------------------------------------------------------------------------
 
 
-@app.get("/api/infographic/templates")
-async def infographic_templates():
-    templates = _load_infographic_templates(_INFOGRAPHIC_TEMPLATES_DIR)
-    return [
-        {
-            "id": t["id"],
-            "name": t["name"],
-            "description": t["description"],
-            "preview": t.get("preview"),
-            "slots": t["slots"],
-        }
-        for t in templates.values()
-    ]
+class _SenseNovaRenderBody(BaseModel):
+    prompt: str = Field(min_length=1)
+    width: int = Field(ge=512, le=2592)
+    height: int = Field(ge=512, le=2592)
+    seed: int = Field(default=42, ge=0)
+    cfg_scale: float = Field(default=4.0, ge=0.5, le=10.0)
+    num_steps: int = Field(default=50, ge=4, le=100)
 
 
-class _InfographicRenderBody(BaseModel):
-    template_id: str
-    tier: str = Field(pattern="^(draft|final)$")
-    aspect: str | None = None
-    slots: dict
-    image_refs: list[str] = []
-    # Render-wide art direction appended to every template's assembled prompt.
-    # The SenseNova samples consistently put aesthetic notes in a trailing
-    # sentence outside any quoted content; that closing position is where the
-    # model attends most strongly to style / palette / typography cues.
-    style_notes: str = ""
-
-
-@app.post("/api/infographic/render", status_code=202)
-async def infographic_render(body: _InfographicRenderBody):
-    if body.aspect is not None and body.aspect not in _SENSENOVA_ASPECTS:
-        raise HTTPException(400, f"aspect={body.aspect!r} not in supported buckets")
-
-    templates = _load_infographic_templates(_INFOGRAPHIC_TEMPLATES_DIR)
-    tpl = templates.get(body.template_id)
-    if tpl is None:
-        raise HTTPException(404, f"Unknown template_id: {body.template_id}")
-
-    try:
-        result = _assemble_infographic_prompt(tpl, body.slots)
-    except _InfographicSlotError as exc:
-        raise HTTPException(400, str(exc)) from exc
-
-    # Image refs were dropped from the infographic builder UI: the model
-    # treats them as background style/palette rather than literal placement,
-    # which mismatched user expectations. body.image_refs is kept on the
-    # request schema for API back-compat but always ignored — every render
-    # now goes through the T2I path (no autoregressive prefill, no lm_head
-    # OOM risk on the worker, cleaner BF16 output).
-    final_prompt = result.prompt
-    if body.style_notes.strip():
-        final_prompt = f"{final_prompt}\n\nOverall style: {body.style_notes.strip()}"
-
+@app.post("/api/sensenova/render", status_code=202)
+async def sensenova_render(body: _SenseNovaRenderBody):
+    """Freeform-prompt SenseNova render. Returns job_id; PNG arrives over WS."""
     job_id = uuid.uuid4().hex[:12]
     params = {
-        "prompt": final_prompt,
-        "image_paths": [],
-        "aspect": body.aspect,
-        "seed": 42,                       # Task 16+ may surface this
-        "tier": body.tier,
-        "template_id": body.template_id,
-        "slots": body.slots,
-        "style_notes": body.style_notes,
+        "prompt": body.prompt,
+        "width": body.width,
+        "height": body.height,
+        "seed": body.seed,
+        "cfg_scale": body.cfg_scale,
+        "num_steps": body.num_steps,
+        "backend": "sensenova",  # tells the cancel hook to restart the worker
     }
     jobs[job_id] = {"status": "queued", "params": params, "progress": 0}
     job_queue.submit_background(
-        _run_infographic_job(job_id, params),
+        _run_sensenova_render_job(job_id, params),
         lane="gpu",
         job_id=job_id,
+        # 30 min — SenseNova at 2048+ can take 5–7 min; the JobQueue's
+        # default 300 s gpu-lane timeout was clipping renders mid-flight,
+        # leaving the worker to finish into an orphan PNG and the UI stuck.
+        timeout=1800,
     )
     return {"job_id": job_id}
 
 
-async def _run_infographic_job(job_id: str, params: dict) -> None:
-    """Background runner for /studio/infographic renders.
+async def _run_sensenova_render_job(job_id: str, params: dict) -> None:
+    """Background runner — bypasses the template assembler entirely."""
+    from backends import sensenova_client
+    from backends.sensenova_client import SenseNovaWorkerError
+    from progress_smooth import SmoothProgress
 
-    Parallel to ``_run_job`` for image-gen backends — kept separate because
-    infographics use their own output directory (``outputs/infographic/{job_id}/``),
-    skip scoring/gallery, and persist a sidecar JSON (added in Task 28).
-    """
     jobs[job_id]["status"] = "running"
     await broadcast({
         "type": "job_update", "job_id": job_id,
         "status": "running", "progress": 0,
     })
 
-    output_dir = Path("outputs/infographic") / job_id
+    output_dir = Path("outputs/sensenova-render") / job_id
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     async def on_progress(pct: int, msg: str = ""):
         jobs[job_id]["progress"] = pct
@@ -4120,43 +4079,42 @@ async def _run_infographic_job(job_id: str, params: dict) -> None:
         })
 
     try:
-        png = await _sensenova.generate(
-            prompt=params["prompt"],
-            image_paths=params.get("image_paths") or [],
-            aspect=params.get("aspect"),
-            seed=params.get("seed", 42),
-            tier=params["tier"],
-            output_dir=output_dir,
-            on_progress=on_progress,
-        )
-        # Normalize output name to out.png so the history endpoint can find it.
-        canonical_png = output_dir / "out.png"
-        if png != canonical_png:
+        async with SmoothProgress(on_progress, tick_seconds=2.0, max_creep=85) as sp:
+            await sp.set(10, "rendering")
+            png = await sensenova_client.render_t2i(
+                prompt=params["prompt"],
+                output_dir=output_dir,
+                width=params["width"],
+                height=params["height"],
+                seed=params["seed"],
+                cfg_scale=params["cfg_scale"],
+                num_steps=params["num_steps"],
+                timeout_s=1800,
+            )
+            await sp.set(95, "saving")
+
+        # Canonicalise to out.png so a future history view can find it.
+        canonical = output_dir / "out.png"
+        if png != canonical:
             try:
-                png.rename(canonical_png)
-                png = canonical_png
+                png.rename(canonical)
+                png = canonical
             except OSError:
-                # If rename fails, fall back to the original name. History
-                # may miss this render, but the job still completes.
                 pass
 
-        # Persist sidecar JSON for history pane (Task 28).
+        # Sidecar with the full params (for future history/re-render features).
         try:
-            sidecar = output_dir / "out.json"
-            sidecar.write_text(json.dumps({
-                "template_id": params.get("template_id"),
-                "slots": params.get("slots", {}),
-                "image_paths": params.get("image_paths", []),
-                "aspect": params.get("aspect"),
-                "tier": params["tier"],
-                "prompt": params.get("prompt"),
-                "seed": params.get("seed", 42),
-                "style_notes": params.get("style_notes", ""),
+            (output_dir / "out.json").write_text(json.dumps({
+                "prompt": params["prompt"],
+                "width": params["width"],
+                "height": params["height"],
+                "seed": params["seed"],
+                "cfg_scale": params["cfg_scale"],
+                "num_steps": params["num_steps"],
             }, indent=2))
         except Exception:
-            pass  # sidecar is best-effort; don't fail the job over it
+            pass
 
-        # png is an absolute path under output_dir; build a static URL relative to /outputs.
         try:
             rel = png.relative_to(Path("outputs"))
             output_url = f"/outputs/{rel.as_posix()}"
@@ -4164,15 +4122,31 @@ async def _run_infographic_job(job_id: str, params: dict) -> None:
             output_url = str(png)
 
         jobs[job_id].update({
-            "status": "complete",
-            "progress": 100,
-            "output_url": output_url,
+            "status": "complete", "progress": 100, "output_url": output_url,
         })
         await broadcast({
             "type": "job_update", "job_id": job_id,
-            "status": "complete", "progress": 100,
-            "output_url": output_url,
+            "status": "complete", "progress": 100, "output_url": output_url,
         })
+    except SenseNovaWorkerError as exc:
+        jobs[job_id].update({"status": "error", "error": str(exc)})
+        await broadcast({
+            "type": "job_update", "job_id": job_id,
+            "status": "error", "error": str(exc),
+        })
+    except asyncio.CancelledError:
+        # JobQueue's wait_for timeout, or an explicit /cancel, raises this.
+        # CancelledError is a BaseException — without this branch the job
+        # dict stayed at "running" forever and the UI got stuck at 95%.
+        jobs[job_id].update({"status": "cancelled"})
+        try:
+            await broadcast({
+                "type": "job_update", "job_id": job_id,
+                "status": "cancelled",
+            })
+        except Exception:
+            pass
+        raise  # let the JobQueue see it
     except Exception as e:
         jobs[job_id].update({"status": "error", "error": str(e)})
         await broadcast({
@@ -4291,97 +4265,6 @@ def _sensenova_weights_present() -> bool:
     # Treat empty dirs as not-installed — `huggingface-cli download` creates
     # the dir before any weights land, so existence alone isn't enough.
     return any(p.iterdir())
-
-
-@app.post("/api/infographic/upload")
-async def infographic_upload(file: UploadFile = File(...)):
-    """Upload an image reference for the infographic builder.
-
-    Saves to ``uploads/infographic/{uuid}.{ext}`` and returns both the
-    static URL (for thumbnail display) and the on-disk path (for
-    SenseNova subprocess to read directly).
-    """
-    if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(400, f"Expected image/*, got {file.content_type!r}")
-    data = await file.read()
-    if not data:
-        raise HTTPException(400, "Empty upload")
-    ext = Path(file.filename or "ref.png").suffix.lower() or ".png"
-    if ext not in (".png", ".jpg", ".jpeg", ".webp"):
-        ext = ".png"
-    name = f"{uuid.uuid4().hex[:12]}{ext}"
-    out_dir = Path("uploads/infographic")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / name
-    async with aiofiles.open(out_path, "wb") as f:
-        await f.write(data)
-    return {
-        "url": f"/uploads/infographic/{name}",
-        "path": str(out_path),
-    }
-
-
-@app.get("/api/infographic/history")
-async def infographic_history(limit: int = 30):
-    """List recent infographic renders, newest first.
-
-    Walks ``outputs/infographic/{job_id}/`` directories that contain both
-    ``out.png`` and ``out.json``; skips any that don't have both.
-    """
-    base = Path("outputs/infographic")
-    if not base.exists():
-        return []
-    out: list[dict] = []
-    subdirs = sorted(
-        (p for p in base.iterdir() if p.is_dir()),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-    for sub in subdirs[:limit]:
-        png = sub / "out.png"
-        sidecar = sub / "out.json"
-        if not (png.exists() and sidecar.exists()):
-            continue
-        try:
-            data = json.loads(sidecar.read_text())
-        except json.JSONDecodeError:
-            continue
-        out.append({
-            "job_id": sub.name,
-            "png_url": f"/outputs/infographic/{sub.name}/out.png",
-            "sidecar": data,
-        })
-    return out
-
-
-@app.post("/api/infographic/composite")
-async def infographic_composite(
-    file: UploadFile = File(...),
-    base_render_id: str = Form(""),
-):
-    """Save a flattened post-edit composite as a new entry that shows up in history."""
-    if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(400, f"Expected image/*, got {file.content_type!r}")
-    data = await file.read()
-    if not data:
-        raise HTTPException(400, "Empty upload")
-    new_id = "c-" + uuid.uuid4().hex[:8]
-    out_dir = Path("outputs/infographic") / new_id
-    out_dir.mkdir(parents=True, exist_ok=True)
-    png_path = out_dir / "out.png"
-    async with aiofiles.open(png_path, "wb") as f:
-        await f.write(data)
-    sidecar = out_dir / "out.json"
-    sidecar.write_text(json.dumps({
-        "composite_of": base_render_id,
-        "template_id": "composite",
-        "slots": {},
-        "tier": "composite",
-    }, indent=2))
-    return {
-        "job_id": new_id,
-        "png_url": f"/outputs/infographic/{new_id}/out.png",
-    }
 
 
 @app.get("/api/sensenova/precheck")
