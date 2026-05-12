@@ -59,7 +59,7 @@
     { href: '/studio/image-edit',  icon: '&#9986;', label: 'Image Edit', id: 'image-edit' },
     { href: '/studio/mesh-edit',   icon: '&#129683;', label: 'Mesh Edit', id: 'mesh-edit' },
     { href: '/studio/video-tools', icon: '&#127902;', label: 'Video Tools', id: 'video-tools' },
-    { href: '/studio/audio', icon: '&#127911;', label: 'Audio Tools', id: 'audio' },
+    { href: '/studio/audio', icon: '&#127911;', label: 'Audio & SFX', id: 'audio' },
     { href: '/studio/beats', icon: '&#127928;', label: 'Beat Builder', id: 'beats' },
     { href: '/studio/worldgen', icon: '&#127757;', label: 'Worldgen', id: 'worldgen' },
     { href: '/studio/infographic', icon: '&#128202;', label: 'Infographic', id: 'infographic' },

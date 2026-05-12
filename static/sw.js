@@ -1,6 +1,6 @@
 /* Wyltek Studio service worker.
    Bumping CACHE_VERSION invalidates the precache on next activate. */
-const CACHE_VERSION = 'wyltek-v4';
+const CACHE_VERSION = 'wyltek-v17';
 const PRECACHE_URLS = [
   '/',
   '/static/css/style.css',

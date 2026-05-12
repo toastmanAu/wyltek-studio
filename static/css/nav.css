@@ -47,13 +47,29 @@
 }
 .sidebar-nav.collapsed .brand-text { display: none; }
 
-/* Nav items */
+/* Nav items.
+   `min-height: 0` is what lets this flex child shrink below its
+   content height — without it, `overflow-y: auto` does nothing because
+   the children inflate the container. On mobile (sidebar is fixed
+   top:0/bottom:0) this is what makes the long studio list scrollable.
+   `overscroll-behavior: contain` stops the body from rubber-banding
+   when the user pulls past either end on iOS. */
 .sidebar-links {
   flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
   padding: 8px 6px;
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+/* iPhone home-indicator clearance so the last entry stays tappable. */
+@supports (padding: max(0px)) {
+  .sidebar-links {
+    padding-bottom: max(8px, env(safe-area-inset-bottom));
+  }
 }
 .nav-link {
   display: flex;
