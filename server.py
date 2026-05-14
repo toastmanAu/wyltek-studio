@@ -1336,6 +1336,18 @@ async def api_sprite_game_presets():
     return JSONResponse(PRESETS)
 
 
+@app.get("/api/sprite/pose-presets")
+async def api_sprite_pose_presets():
+    """List named pose-set presets from studio.sprite_sheet.
+
+    Each entry: {id, label, description, poses: [...]}.
+    Consumed by /studio/sprite to populate the "Pose set" dropdown that
+    swaps the chip selection in one click.
+    """
+    from studio.sprite_sheet import POSE_PRESETS
+    return JSONResponse(POSE_PRESETS)
+
+
 @app.post("/api/meme/generate")
 async def api_meme_generate(request: Request):
     """Generate a meme image using a template with optional IP-Adapter conditioning."""

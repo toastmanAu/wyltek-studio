@@ -162,6 +162,12 @@
   <!-- Poses -->
   <div class="panel">
     <h3>3. Poses</h3>
+    <div class="row" style="margin-bottom:12px">
+      <span class="row-label">Pose set</span>
+      <select id="pose-preset" style="flex:1" title="Pick a curated pose set; switching replaces the active chip selection. You can still add custom poses on top.">
+        <option value="">— loading…</option>
+      </select>
+    </div>
     <div class="chip-bag" id="pose-chips"></div>
     <div class="pose-add">
       <input type="text" id="pose-add-input" placeholder="add custom pose (e.g. crouch, cast_spell)">
@@ -219,12 +225,16 @@
 
 <script>
 // ── State ─────────────────────────────────────────────────────────────────
-const DEFAULT_POSES = ['idle', 'walk_1', 'walk_2', 'run', 'jump', 'attack', 'hurt', 'victory'];
+// basePoses = the chips shown from the current preset (mutable, swapped on
+// preset change). customPoses = freeform additions persisted across preset
+// switches. poses = the user's active selection.
+const FALLBACK_PRESET = ['idle', 'walk_1', 'walk_2', 'run', 'jump', 'attack', 'hurt', 'victory'];
 
 const state = {
   ref_b64: null,
   ref_filename: null,
-  poses: new Set(DEFAULT_POSES),
+  basePoses: FALLBACK_PRESET.slice(),
+  poses: new Set(FALLBACK_PRESET),
   customPoses: new Set(),
   preset: 'tight',
   jobId: null,
@@ -276,7 +286,12 @@ $('preset-grid').addEventListener('click', (e) => {
 function renderChips() {
   const bag = $('pose-chips');
   clearChildren(bag);
-  const all = [...DEFAULT_POSES, ...state.customPoses];
+  // De-dupe: a custom pose that already exists in basePoses shouldn't render twice.
+  const seen = new Set();
+  const all = [...state.basePoses, ...state.customPoses].filter((p) => {
+    if (seen.has(p)) return false;
+    seen.add(p); return true;
+  });
   all.forEach((pose) => {
     const chip = document.createElement('span');
     chip.className = 'chip' + (state.poses.has(pose) ? ' on' : '');
@@ -319,6 +334,51 @@ function addCustomPose() {
   input.value = '';
   renderChips();
 }
+
+// ── Pose-set presets ──────────────────────────────────────────────────────
+async function loadPosePresets() {
+  const sel = $('pose-preset');
+  try {
+    const r = await fetch('/api/sprite/pose-presets');
+    if (!r.ok) throw new Error('fetch failed');
+    const presets = await r.json();
+    if (!Array.isArray(presets) || !presets.length) throw new Error('empty');
+    clearChildren(sel);
+    presets.forEach((p, idx) => {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = p.label;
+      if (p.description) opt.title = p.description;
+      if (idx === 0) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    // Cache so the change handler can resolve poses without re-fetching.
+    window.__posePresetsCache = presets;
+    // Initialise chip list from the first preset.
+    applyPosePreset(presets[0]);
+  } catch (_) {
+    // Server unreachable / endpoint missing — keep the hard-coded fallback.
+    clearChildren(sel);
+    const opt = document.createElement('option');
+    opt.value = '__fallback';
+    opt.textContent = 'Platformer / Action (fallback)';
+    sel.appendChild(opt);
+  }
+  sel.addEventListener('change', () => {
+    const presets = window.__posePresetsCache || [];
+    const chosen = presets.find((p) => p.id === sel.value);
+    if (chosen) applyPosePreset(chosen);
+  });
+}
+
+function applyPosePreset(preset) {
+  state.basePoses = preset.poses.slice();
+  // Reset active selection to the preset's full list (custom poses kept).
+  state.poses = new Set([...state.basePoses, ...state.customPoses]);
+  renderChips();
+}
+
+loadPosePresets();
 
 // ── Game format presets ───────────────────────────────────────────────────
 async function loadGamePresets() {
@@ -402,6 +462,10 @@ $('run-btn').addEventListener('click', async () => {
     const { job_id } = await r.json();
     state.jobId = job_id;
     setStatus($('run-status'), `Job ${job_id} running…`);
+    // Belt-and-suspenders: poll job state every 15s as a fallback for
+    // missed WS messages (Tailscale drops, sleeping tabs, etc.). Stops
+    // automatically on terminal status.
+    startPollingFallback();
   } catch (exc) {
     setStatus($('run-status'), exc.message, 'err');
     $('run-btn').disabled = false;
@@ -409,7 +473,58 @@ $('run-btn').addEventListener('click', async () => {
   }
 });
 
-// ── WebSocket progress ────────────────────────────────────────────────────
+// ── WebSocket progress + REST fallback ────────────────────────────────────
+// The WS is the live channel, but it drops over Tailscale / sleeping tabs /
+// network burps. We also poll /api/job/<id> on a slow timer and on every
+// WS reconnect so a missed completion (or error) still surfaces.
+function applyJobState(state_obj) {
+  if (!state_obj || state_obj.job_id !== state.jobId) return;
+  const status = state_obj.status;
+  if (status === 'running') {
+    $('progress-fill').style.width = `${state_obj.progress || 0}%`;
+    setStatus($('run-status'), state_obj.message || `${state_obj.progress || 0}%`);
+  } else if (status === 'complete') {
+    $('progress-fill').style.width = '100%';
+    setStatus($('run-status'), 'Done.', 'ok');
+    $('run-btn').disabled = false;
+    state.jobUrls = {
+      sheet: state_obj.sheet_url || state_obj.output_url,
+      zip: state_obj.zip_url,
+      frames: state_obj.frame_urls || [],
+    };
+    showResult();
+    stopPollingFallback();
+  } else if (status === 'error') {
+    setStatus($('run-status'), `Error: ${state_obj.error}`, 'err');
+    $('run-btn').disabled = false;
+    $('progress-bar').classList.remove('active');
+    stopPollingFallback();
+  }
+}
+
+async function refetchJobState() {
+  if (!state.jobId) return;
+  try {
+    const r = await fetch(`/api/job/${state.jobId}`);
+    if (!r.ok) return;
+    const data = await r.json();
+    // /api/job/<id> returns the raw jobs[id] dict — add job_id for the
+    // applyJobState filter to match.
+    applyJobState({ job_id: state.jobId, ...data });
+  } catch (_) { /* ignore */ }
+}
+
+let pollTimer = null;
+function startPollingFallback() {
+  stopPollingFallback();
+  // 15s — slow enough not to hammer the server, fast enough that a
+  // missed terminal message surfaces within a reasonable window.
+  pollTimer = setInterval(refetchJobState, 15000);
+}
+function stopPollingFallback() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
+
 function openWS() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${proto}//${location.host}/ws`);
@@ -417,25 +532,11 @@ function openWS() {
     let msg;
     try { msg = JSON.parse(ev.data); } catch { return; }
     if (msg.type !== 'job_update') return;
-    if (msg.job_id !== state.jobId) return;
-    if (msg.status === 'running') {
-      $('progress-fill').style.width = `${msg.progress || 0}%`;
-      setStatus($('run-status'), msg.message || `${msg.progress || 0}%`);
-    } else if (msg.status === 'complete') {
-      $('progress-fill').style.width = '100%';
-      setStatus($('run-status'), 'Done.', 'ok');
-      $('run-btn').disabled = false;
-      state.jobUrls = {
-        sheet: msg.sheet_url || msg.output_url,
-        zip: msg.zip_url,
-        frames: msg.frame_urls || [],
-      };
-      showResult();
-    } else if (msg.status === 'error') {
-      setStatus($('run-status'), `Error: ${msg.error}`, 'err');
-      $('run-btn').disabled = false;
-      $('progress-bar').classList.remove('active');
-    }
+    applyJobState(msg);
+  };
+  ws.onopen = () => {
+    // Catch up on anything missed while disconnected.
+    refetchJobState();
   };
   ws.onclose = () => setTimeout(openWS, 2000);
 }

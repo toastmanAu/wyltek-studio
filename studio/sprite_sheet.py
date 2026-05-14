@@ -44,22 +44,91 @@ PRESETS: dict[str, dict[str, float]] = {
 }
 
 
-# --- Default pose set -------------------------------------------------------
+# --- Pose-set presets -------------------------------------------------------
 #
-# Eight poses fitting a 4×2 sheet — covers a standard side-scroller / RPG
-# action vocabulary. UI exposes these as toggleable chips; user can add
-# freeform poses too.
+# Each preset is a named list of pose IDs. The UI exposes them via a "Pose
+# set" dropdown; selecting one replaces the active chip list. Users can
+# still toggle individual chips off and add custom poses on top.
+#
+# Naming convention: pose IDs are snake_case, descriptive but short, and
+# match the verbs a prompt will key off (see `build_pose_prompt`). Adding
+# a "_N" suffix denotes a frame number inside an animation cycle.
 
-DEFAULT_POSES: list[str] = [
-    "idle",
-    "walk_1",
-    "walk_2",
-    "run",
-    "jump",
-    "attack",
-    "hurt",
-    "victory",
+POSE_PRESETS: list[dict] = [
+    {
+        "id": "platformer",
+        "label": "Platformer / Action (8)",
+        "description": "Side-scroller staple set — idle, walk cycle, run, jump, attack, hurt, victory.",
+        "poses": [
+            "idle", "walk_1", "walk_2", "run",
+            "jump", "attack", "hurt", "victory",
+        ],
+    },
+    {
+        "id": "jrpg-four-dir",
+        "label": "JRPG four-direction (8)",
+        "description": "Top-down 2-frame walk cycle in each of the four cardinal directions — Pokémon-style.",
+        "poses": [
+            "walk_down_1", "walk_down_2",
+            "walk_up_1", "walk_up_2",
+            "walk_left_1", "walk_left_2",
+            "walk_right_1", "walk_right_2",
+        ],
+    },
+    {
+        "id": "walk-cycle-8",
+        "label": "Smooth walk cycle (8)",
+        "description": "Eight-frame side-view walk — contact, recoil, passing, high-point × 2 sides.",
+        "poses": [
+            "walk_1", "walk_2", "walk_3", "walk_4",
+            "walk_5", "walk_6", "walk_7", "walk_8",
+        ],
+    },
+    {
+        "id": "fighter",
+        "label": "Fighter (8)",
+        "description": "Brawler / fighting-game move set — neutral stance through KO.",
+        "poses": [
+            "stance", "jab", "hook", "uppercut",
+            "kick_low", "kick_high", "block", "ko",
+        ],
+    },
+    {
+        "id": "combat-npc",
+        "label": "Combat NPC (8)",
+        "description": "Enemy / NPC behaviour cycle — idle, alert, attack variants, hurt, knockdown, dead.",
+        "poses": [
+            "idle", "alert", "attack_swing", "attack_thrust",
+            "block", "hurt", "knockdown", "dead",
+        ],
+    },
+    {
+        "id": "emotes",
+        "label": "Emotes / social (8)",
+        "description": "Non-combat character expressions — wave, point, sit, sleep, dance, etc.",
+        "poses": [
+            "wave", "point", "sit", "sleep",
+            "cheer", "dance", "laugh", "cry",
+        ],
+    },
+    {
+        "id": "facing-quad",
+        "label": "Facing quad (4)",
+        "description": "Minimum set for a static NPC sprite — same idle from four cardinal angles.",
+        "poses": [
+            "idle_front", "idle_left", "idle_right", "idle_back",
+        ],
+    },
 ]
+
+
+def get_pose_preset(preset_id: str) -> dict | None:
+    """Look up a pose-set preset by id. Returns None if unknown."""
+    return next((p for p in POSE_PRESETS if p["id"] == preset_id), None)
+
+
+# Back-compat alias — the original DEFAULT_POSES is the platformer preset.
+DEFAULT_POSES: list[str] = POSE_PRESETS[0]["poses"]
 
 
 # --- Per-frame prompt -------------------------------------------------------
