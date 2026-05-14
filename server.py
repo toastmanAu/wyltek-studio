@@ -310,6 +310,11 @@ async def mesh_edit_page():
     return FileResponse("static/studio/mesh-edit.html")
 
 
+@app.get("/studio/sprite")
+async def sprite_page():
+    return FileResponse("static/studio/sprite.html")
+
+
 @app.get("/api/worldgen/status")
 async def api_worldgen_status():
     """Report whether the WorldGen subprocess backend is ready to accept jobs."""
@@ -1309,6 +1314,28 @@ async def api_meme_templates():
     return JSONResponse([])
 
 
+@app.get("/api/sprites/models")
+async def api_sprite_models():
+    """List sprite-generation model IDs registered in the ComfyUI backend.
+
+    Consumed by /studio/meme and /studio/sprite. Returns a flat list of
+    keys; consumers tolerate both `[name, ...]` and `{models: [...]}`.
+    """
+    from backends.comfyui import SPRITE_MODELS
+    return JSONResponse(list(SPRITE_MODELS.keys()))
+
+
+@app.get("/api/sprite/game-presets")
+async def api_sprite_game_presets():
+    """List retro-game palette/dimension presets from studio.sprite_tools.
+
+    Each entry: {id, label, width, height, palette, max_colors, rom_extract?}.
+    Consumed by /studio/sprite for the "Game format" dropdown.
+    """
+    from studio.sprite_tools import PRESETS
+    return JSONResponse(PRESETS)
+
+
 @app.post("/api/meme/generate")
 async def api_meme_generate(request: Request):
     """Generate a meme image using a template with optional IP-Adapter conditioning."""
@@ -1400,6 +1427,307 @@ async def api_meme_generate(request: Request):
 
     job_queue.submit_background(_run_meme_gen(), lane="gpu", job_id=f"meme-{job_id}")
     return {"job_id": job_id}
+
+
+# --- Sprite sheet generation ------------------------------------------------
+#
+# Wraps comfyui.generate_sprites() in a per-pose loop, then composes the
+# individual frames into a sheet via studio.sprite_tools.compose_sheet().
+# The single-shot sprite path lives in /api/meme/generate (which reuses
+# generate_sprites for IP-Adapter-conditioned single images); this
+# endpoint is the multi-frame, sheet-output variant.
+
+@app.post("/api/sprite/sheet")
+async def api_sprite_sheet(request: Request):
+    """Generate a sprite sheet: N frames of one character in different poses.
+
+    Body:
+        reference_image_b64 (str, required): PNG/JPEG bytes of the character
+        poses (list[str], required): pose IDs (e.g. ["idle", "walk_1", "attack"])
+        preset (str): "tight" (identity-lock) or "loose" (variety). Default "tight".
+        model (str): SPRITE_MODELS key. Default "juggernautXL_v9".
+        style_hint (str, optional): freeform style modifier appended per frame
+        columns (int): grid columns. Default 4.
+        cell_size (int): frame side length in the composed sheet. Default 256.
+        seed (int, optional): -1 for random; same seed across frames helps consistency
+        steps (int, optional): override model default
+        cfg (float, optional): override preset cfg
+    """
+    from studio import sprite_sheet
+
+    data = await request.json()
+    ref_b64 = data.get("reference_image_b64", "")
+    poses_raw = data.get("poses") or sprite_sheet.DEFAULT_POSES
+    preset_id = data.get("preset", "tight")
+    model = data.get("model", "juggernautXL_v9")
+    style_hint = (data.get("style_hint") or "").strip()
+    columns = int(data.get("columns", 4))
+    cell_size = int(data.get("cell_size", 256))
+    seed_in = data.get("seed", -1)
+    steps_in = data.get("steps")
+    cfg_in = data.get("cfg")
+    # Game format: when set, each cleaned frame is run through
+    # sprite_tools.constrain_sprite (downscale + palette quantize) for
+    # actual game-ready output. None = keep cell_size RGBA frames.
+    game_preset_id = data.get("game_preset") or None
+
+    if not ref_b64:
+        return JSONResponse({"error": "reference_image_b64 is required"}, status_code=400)
+
+    if preset_id not in sprite_sheet.PRESETS:
+        return JSONResponse(
+            {"error": f"preset must be one of {list(sprite_sheet.PRESETS)}"},
+            status_code=400,
+        )
+
+    if game_preset_id is not None:
+        from studio.sprite_tools import get_preset as _get_game_preset
+        if _get_game_preset(game_preset_id) is None:
+            return JSONResponse(
+                {"error": f"unknown game_preset {game_preset_id!r}"},
+                status_code=400,
+            )
+
+    poses = sprite_sheet.normalise_poses(poses_raw)
+    if not poses:
+        return JSONResponse({"error": "at least one pose required"}, status_code=400)
+    if len(poses) > 32:
+        return JSONResponse({"error": "max 32 poses per sheet"}, status_code=400)
+
+    job_id = str(uuid.uuid4())[:8]
+    output_dir = Path("outputs/sprite") / job_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Persist the reference image so the ComfyUI backend can read it from
+    # a stable path. generate_sprites copies into ComfyUI/input itself, so
+    # absolute path is fine.
+    try:
+        ref_bytes = base64.b64decode(ref_b64)
+    except Exception:
+        return JSONResponse({"error": "reference_image_b64 is not valid base64"},
+                            status_code=400)
+    ref_path = output_dir / "reference.png"
+    ref_path.write_bytes(ref_bytes)
+
+    jobs[job_id] = {
+        "status": "queued", "progress": 0,
+        "params": {"type": "sprite_sheet", "poses": poses, "preset": preset_id,
+                   "model": model},
+    }
+
+    async def _run_sprite_sheet():
+        await _run_sprite_sheet_job(
+            job_id=job_id,
+            output_dir=output_dir,
+            ref_path=ref_path,
+            poses=poses,
+            preset_id=preset_id,
+            model=model,
+            style_hint=style_hint,
+            columns=columns,
+            cell_size=cell_size,
+            seed_in=int(seed_in) if seed_in is not None else -1,
+            steps_override=int(steps_in) if steps_in is not None else None,
+            cfg_override=float(cfg_in) if cfg_in is not None else None,
+            game_preset_id=game_preset_id,
+        )
+
+    job_queue.submit_background(_run_sprite_sheet(), lane="gpu",
+                                job_id=f"sprite-{job_id}")
+    return {"job_id": job_id}
+
+
+async def _run_sprite_sheet_job(
+    *,
+    job_id: str,
+    output_dir: Path,
+    ref_path: Path,
+    poses: list[str],
+    preset_id: str,
+    model: str,
+    style_hint: str,
+    columns: int,
+    cell_size: int,
+    seed_in: int,
+    steps_override: int | None,
+    cfg_override: float | None,
+    game_preset_id: str | None = None,
+) -> None:
+    """Loop generate_sprites() per pose, optionally palette-quantize each
+    frame to a retro game format, compose sheet, zip frames."""
+    from studio import sprite_sheet
+    from studio.sprite_tools import compose_sheet, get_preset as _get_game_preset, constrain_sprite
+
+    preset = sprite_sheet.PRESETS[preset_id]
+    game_preset = _get_game_preset(game_preset_id) if game_preset_id else None
+    layout = sprite_sheet.plan_layout(
+        len(poses), columns=columns,
+        cell_width=cell_size, cell_height=cell_size,
+    )
+    frames_dir = output_dir / "frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+
+    # Fix the seed across frames so character identity stays stable.
+    # IP-Adapter does most of the lifting but a shared seed reduces drift.
+    import random
+    seed = seed_in if seed_in != -1 else random.randint(0, 2**32 - 1)
+
+    jobs[job_id]["status"] = "running"
+    await broadcast({"type": "job_update", "job_id": job_id,
+                     "status": "running", "progress": 0})
+
+    try:
+        comfyui = registry.get_backend("comfyui")
+
+        sprites_for_sheet: list[dict] = []
+        total = len(poses)
+
+        for idx, pose in enumerate(poses):
+            base_pct = int(5 + (idx / total) * 85)
+
+            async def on_progress(pct, msg="", _base=base_pct, _idx=idx, _pose=pose):
+                # Map ComfyUI's 0-100 inner progress to our slice for this frame.
+                frame_share = 85 / total
+                overall = int(_base + (pct / 100) * frame_share)
+                jobs[job_id]["progress"] = overall
+                await broadcast({
+                    "type": "job_update", "job_id": job_id,
+                    "status": "running", "progress": overall,
+                    "message": f"frame {_idx + 1}/{total} ({_pose}) — {msg}",
+                })
+
+            prompt = sprite_sheet.build_pose_prompt(pose, style_hint=style_hint)
+
+            # Build params; omit `steps` entirely when no override so
+            # generate_sprites() falls back to the model's tuned default
+            # instead of trying to convert None to int (ComfyUI rejects).
+            # single_frame=True asks the backend to use the isolated-subject
+            # prompt grammar instead of the sheet-style one (the latter
+            # otherwise produces mini-sheets inside each frame).
+            gen_params: dict = {
+                "prompt": prompt,
+                "model": model,
+                "batch_size": 1,
+                "seed": seed,
+                "single_frame": True,
+                "cfg": cfg_override if cfg_override is not None else preset["cfg"],
+                "ip_adapter_strength": preset["ip_adapter_strength"],
+                "ip_adapter_weight_type": preset["ip_adapter_weight_type"],
+                "ip_adapter_start": preset["ip_adapter_start"],
+                "ip_adapter_end": preset["ip_adapter_end"],
+                "reference_images": [str(ref_path)],
+            }
+            if steps_override is not None:
+                gen_params["steps"] = steps_override
+
+            meta = await comfyui.generate_sprites(
+                gen_params, str(frames_dir / pose), on_progress)
+
+            # generate_sprites writes to {output_dir}/sprite_0.png etc.; for a
+            # batch-of-1 the file we want is sprite_0.png in the per-pose dir.
+            src_files = meta.get("files", [])
+            if not src_files:
+                raise RuntimeError(f"no output for pose {pose}")
+            raw = Path(src_files[0])
+
+            # Post-process: rembg + largest-blob crop + centre on transparent
+            # canvas. Solves the SDXL "row of mini-poses per frame" problem
+            # that prompt-engineering alone can't fix.
+            from studio import sprite_postprocess
+            dest = frames_dir / f"{idx:02d}_{pose}.png"
+            extract_meta = await sprite_postprocess.extract_subject(
+                raw, dest,
+                target_size=layout.cell_width,
+                rembg_bin=_REMBG_BIN,
+            )
+            raw.unlink(missing_ok=True)
+            # Clean up per-pose subdir (it's empty now apart from maybe debris).
+            try:
+                (frames_dir / pose).rmdir()
+            except OSError:
+                pass
+
+            # Optional: palette-quantize to a retro game format. Replaces
+            # the cleaned RGBA frame at `dest` with an indexed PNG at the
+            # preset's target dimensions (e.g. X-COM Unit = 32x40). The
+            # subsequent compose_sheet step's NEAREST resize will scale
+            # this up to cell_size for the visible sheet, preserving the
+            # pixel-art aesthetic.
+            if game_preset:
+                constrain_sprite(
+                    input_path=str(dest),
+                    output_path=str(dest),
+                    palette_name=game_preset["palette"],
+                    max_colors=game_preset["max_colors"],
+                    target_width=game_preset["width"],
+                    target_height=game_preset["height"],
+                )
+
+            sprites_for_sheet.append({
+                "path": str(dest), "slot": idx,
+                "blobs_found": extract_meta.blobs_found,
+                "chosen_pixels": extract_meta.chosen_pixels,
+            })
+
+        # Compose the sheet.
+        sheet_path = output_dir / "sheet.png"
+        sheet_meta = compose_sheet(
+            sprites=sprites_for_sheet,
+            cell_width=layout.cell_width,
+            cell_height=layout.cell_height,
+            columns=layout.columns,
+            output_path=str(sheet_path),
+        )
+
+        # Zip frames for one-click download.
+        import zipfile
+        zip_path = output_dir / "frames.zip"
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for sp in sprites_for_sheet:
+                zf.write(sp["path"], arcname=Path(sp["path"]).name)
+
+        # Sidecar.
+        (output_dir / "out.json").write_text(json.dumps({
+            "poses": poses,
+            "preset": preset_id,
+            "model": model,
+            "style_hint": style_hint,
+            "seed": seed,
+            "columns": layout.columns,
+            "rows": layout.rows,
+            "cell": [layout.cell_width, layout.cell_height],
+            "sheet": [layout.sheet_width, layout.sheet_height],
+            "game_preset": game_preset_id,
+            "game_format": (
+                {"id": game_preset["id"], "width": game_preset["width"],
+                 "height": game_preset["height"], "palette": game_preset["palette"],
+                 "max_colors": game_preset["max_colors"]}
+                if game_preset else None
+            ),
+            "frames": [Path(s["path"]).name for s in sprites_for_sheet],
+        }, indent=2))
+
+        sheet_url = f"/outputs/sprite/{job_id}/sheet.png"
+        zip_url = f"/outputs/sprite/{job_id}/frames.zip"
+        frame_urls = [
+            f"/outputs/sprite/{job_id}/frames/{Path(s['path']).name}"
+            for s in sprites_for_sheet
+        ]
+
+        update = {
+            "status": "complete", "progress": 100,
+            "output_url": sheet_url,
+            "sheet_url": sheet_url,
+            "zip_url": zip_url,
+            "frame_urls": frame_urls,
+            "sheet": sheet_meta,
+        }
+        jobs[job_id].update(update)
+        await broadcast({"type": "job_update", "job_id": job_id, **update})
+    except Exception as exc:
+        jobs[job_id].update({"status": "error", "error": str(exc)})
+        await broadcast({"type": "job_update", "job_id": job_id,
+                         "status": "error", "error": str(exc)})
 
 
 @app.get("/joyid-callback")

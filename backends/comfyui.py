@@ -1892,14 +1892,33 @@ class ComfyUIBackend(BaseBackend):
         workflow["3"]["inputs"]["steps"] = params.get("steps", model_cfg["steps"])
         workflow["3"]["inputs"]["cfg"] = params.get("cfg", model_cfg["cfg"])
 
-        # Prefix prompt with pixel art tokens
+        # Prefix prompt with pixel art tokens. Two grammars:
+        #   sheet-style  — biases output toward sprite-sheet aesthetic;
+        #                  fine for single-asset meme/concept renders
+        #   single-frame — for callers (sprite_sheet pipeline) that handle
+        #                  sheet composition themselves and need each gen
+        #                  to be an isolated character on plain background
         user_prompt = params.get("prompt", "")
-        workflow["6"]["inputs"]["text"] = (
-            f"pixel art sprite, {user_prompt}, game asset, clean lines, "
-            "transparent background, 16-bit style"
-        )
-        if params.get("negative_prompt"):
-            workflow["7"]["inputs"]["text"] = params["negative_prompt"]
+        if params.get("single_frame"):
+            workflow["6"]["inputs"]["text"] = (
+                f"pixel art character, {user_prompt}, one character, "
+                "single frame, isolated subject, plain background, "
+                "clean lines, 16-bit style"
+            )
+            # Strengthen the anti-sheet bias on the negative side too.
+            default_neg = ("sprite sheet, multiple poses, grid, "
+                           "multiple characters, collage, panel")
+            user_neg = params.get("negative_prompt", "")
+            workflow["7"]["inputs"]["text"] = (
+                f"{default_neg}, {user_neg}" if user_neg else default_neg
+            )
+        else:
+            workflow["6"]["inputs"]["text"] = (
+                f"pixel art sprite, {user_prompt}, game asset, clean lines, "
+                "transparent background, 16-bit style"
+            )
+            if params.get("negative_prompt"):
+                workflow["7"]["inputs"]["text"] = params["negative_prompt"]
 
         # LoRA strength
         lora_strength = float(params.get("lora_strength", 0.55))

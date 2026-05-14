@@ -54,6 +54,7 @@
     { href: '/studio/music', icon: '&#127925;', label: 'Music Studio', id: 'music' },
     { href: '/studio/video', icon: '&#127909;', label: 'Video Studio', id: 'video' },
     { href: '/studio/meme',    icon: '&#128514;', label: 'Meme Forge',   id: 'meme' },
+    { href: '/studio/sprite',  icon: '&#128126;', label: 'Sprite Sheet', id: 'sprite' },
     { href: '/studio/frames',  icon: '&#127916;', label: 'Frame Cutter', id: 'frames' },
     { href: '/studio/remix',       icon: '&#127912;', label: 'Style Remix',  id: 'remix' },
     { href: '/studio/image-edit',  icon: '&#9986;', label: 'Image Edit', id: 'image-edit' },
@@ -75,6 +76,7 @@
   const path = window.location.pathname;
   let activeId = 'generate';
   if (path.startsWith('/studio/remix')) activeId = 'remix';
+  else if (path.startsWith('/studio/sprite')) activeId = 'sprite';
   else if (path.startsWith('/studio/meme')) activeId = 'meme';
   else if (path.startsWith('/studio/frames')) activeId = 'frames';
   else if (path.startsWith('/studio/image-edit') || path.startsWith('/studio/image-tools')) activeId = 'image-edit';

@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Wyltek Studio — Sprite Sheet</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="stylesheet" href="/static/css/nav.css">
+  <script src="/static/js/nav.js"></script>
+  <style>
+    .studio-page { max-width: 1100px; margin: 0 auto; padding: 32px 24px; }
+    .studio-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; flex-wrap: wrap; gap: 8px; }
+    .studio-header h2 { margin: 0; }
+    .studio-header .subtitle { font-size: 13px; color: var(--text-dim); }
+
+    .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; margin-bottom: 16px; }
+    .panel h3 { margin: 0 0 12px 0; font-size: 13px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+    .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+    .row:last-child { margin-bottom: 0; }
+    .row-label { font-size: 12px; color: var(--text-dim); min-width: 90px; }
+
+    /* Reference image preview */
+    .ref-wrap { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    .ref-preview {
+      width: 96px; height: 96px; background: repeating-conic-gradient(var(--surface-2) 0% 25%, var(--surface-3) 0% 50%) 50% / 12px 12px;
+      border: 1px solid var(--border); border-radius: 8px; display: flex; align-items: center; justify-content: center; overflow: hidden;
+    }
+    .ref-preview img { max-width: 100%; max-height: 100%; display: block; }
+    .ref-empty { font-size: 11px; color: var(--text-dim); padding: 4px 6px; text-align: center; }
+    #sprite-file-input { display: none; }
+    .file-pick-btn { padding: 7px 14px; font-size: 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; color: var(--text); cursor: pointer; }
+    .file-pick-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* Preset cards (Tight / Loose) */
+    .preset-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .preset-card {
+      padding: 14px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
+      cursor: pointer; transition: all 0.15s;
+    }
+    .preset-card:hover { border-color: var(--accent); }
+    .preset-card.active { background: var(--accent-dim); border-color: var(--accent); }
+    .preset-card .name { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 4px; }
+    .preset-card .desc { font-size: 11px; color: var(--text-dim); line-height: 1.4; }
+    .preset-card.active .name { color: var(--accent); }
+
+    /* Pose chips */
+    .chip-bag { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chip {
+      padding: 5px 11px; font-size: 12px; border-radius: 14px;
+      background: var(--surface-2); border: 1px solid var(--border); color: var(--text-dim);
+      cursor: pointer; user-select: none;
+    }
+    .chip:hover { color: var(--text); border-color: var(--accent); }
+    .chip.on { background: var(--accent-dim); color: var(--accent); border-color: var(--accent); }
+    .chip-remove { color: var(--text-dim); margin-left: 6px; font-size: 14px; line-height: 1; }
+    .pose-add { display: flex; gap: 6px; margin-top: 8px; }
+    .pose-add input {
+      flex: 1; padding: 6px 10px; font-size: 12px;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text);
+    }
+    .pose-add button {
+      padding: 5px 12px; font-size: 12px; background: var(--surface-2); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text-dim); cursor: pointer;
+    }
+    .pose-add button:hover { color: var(--accent); border-color: var(--accent); }
+
+    /* Generic small input */
+    select, input[type=text], input[type=number] {
+      padding: 6px 10px; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text); font-size: 12px;
+    }
+    input[type=text].grow { flex: 1; min-width: 180px; }
+
+    .btn-primary { padding: 10px 24px; font-size: 13px; font-weight: 600; background: var(--accent); color: #fff; border: none; border-radius: 8px; cursor: pointer; }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-secondary { padding: 8px 16px; font-size: 12px; font-weight: 600; background: var(--surface-2); color: var(--accent); border: 1px solid var(--accent); border-radius: 6px; cursor: pointer; }
+    .btn-secondary:hover { background: var(--accent-dim); }
+    .btn-outline { padding: 7px 12px; font-size: 12px; background: transparent; color: var(--text-dim); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; }
+    .btn-outline:hover { color: var(--text); background: var(--surface-2); }
+
+    .progress-bar { height: 4px; background: var(--border); border-radius: 2px; margin-top: 12px; display: none; overflow: hidden; }
+    .progress-bar.active { display: block; }
+    .progress-fill { height: 100%; background: var(--accent); transition: width 0.4s; }
+    .status-msg { font-size: 12px; color: var(--text-dim); margin-top: 8px; min-height: 16px; }
+    .status-msg.ok { color: var(--success); }
+    .status-msg.err { color: var(--error); }
+
+    /* Result */
+    .result-panel { display: none; }
+    .result-panel.active { display: block; }
+    .sheet-wrap {
+      background: repeating-conic-gradient(var(--surface-2) 0% 25%, var(--surface-3) 0% 50%) 50% / 16px 16px;
+      border: 1px solid var(--border); border-radius: 8px; padding: 12px; text-align: center; margin-bottom: 12px;
+    }
+    .sheet-wrap img { max-width: 100%; display: block; margin: 0 auto; image-rendering: pixelated; }
+    .frame-strip { display: flex; gap: 6px; flex-wrap: wrap; }
+    .frame-tile {
+      width: 80px; height: 80px;
+      background: repeating-conic-gradient(var(--surface-2) 0% 25%, var(--surface-3) 0% 50%) 50% / 10px 10px;
+      border: 1px solid var(--border); border-radius: 6px; overflow: hidden; position: relative;
+    }
+    .frame-tile img { width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; display: block; }
+    .frame-tile .frame-label {
+      position: absolute; bottom: 0; left: 0; right: 0;
+      background: rgba(0,0,0,0.65); color: #fff; font-size: 9px; text-align: center;
+      padding: 1px 2px; font-family: monospace;
+    }
+    .dl-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  </style>
+</head>
+<body>
+<div class="studio-page">
+  <div class="studio-header">
+    <div>
+      <h2>Sprite Sheet</h2>
+      <div class="subtitle">Reference image + pose list → consistent character sprite sheet. ComfyUI + IP-Adapter.</div>
+    </div>
+  </div>
+
+  <!-- Reference image -->
+  <div class="panel">
+    <h3>1. Reference character</h3>
+    <div class="ref-wrap">
+      <div class="ref-preview" id="ref-preview">
+        <div class="ref-empty">no reference loaded</div>
+      </div>
+      <div>
+        <button class="file-pick-btn" onclick="document.getElementById('sprite-file-input').click()">Choose image</button>
+        <input type="file" id="sprite-file-input" accept="image/*">
+        <div class="status-msg" id="ref-status" style="margin-top:8px"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Preset + Model -->
+  <div class="panel">
+    <h3>2. Identity lock</h3>
+    <div class="preset-grid" id="preset-grid">
+      <div class="preset-card active" data-preset="tight">
+        <div class="name">Tight</div>
+        <div class="desc">Same character across all frames. Strong identity lock, less prompt variety.</div>
+      </div>
+      <div class="preset-card" data-preset="loose">
+        <div class="name">Loose</div>
+        <div class="desc">Inspired by reference. More variety, character may drift between frames.</div>
+      </div>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <span class="row-label">Model</span>
+      <select id="model-select" style="flex:1">
+        <option value="juggernautXL_v9">juggernautXL_v9 (default)</option>
+      </select>
+    </div>
+    <div class="row">
+      <span class="row-label">Style hint</span>
+      <input type="text" class="grow" id="style-hint"
+             placeholder="e.g. side-scroller, 16-bit, JRPG, comic">
+    </div>
+  </div>
+
+  <!-- Poses -->
+  <div class="panel">
+    <h3>3. Poses</h3>
+    <div class="chip-bag" id="pose-chips"></div>
+    <div class="pose-add">
+      <input type="text" id="pose-add-input" placeholder="add custom pose (e.g. crouch, cast_spell)">
+      <button id="pose-add-btn">Add</button>
+    </div>
+  </div>
+
+  <!-- Layout -->
+  <div class="panel">
+    <h3>4. Layout</h3>
+    <div class="row">
+      <span class="row-label">Columns</span>
+      <input type="number" id="layout-columns" min="1" max="12" value="4" style="width:70px">
+      <span class="row-label" style="margin-left:14px">Cell size</span>
+      <select id="layout-cell">
+        <option value="128">128 px</option>
+        <option value="256" selected>256 px</option>
+        <option value="384">384 px</option>
+        <option value="512">512 px</option>
+      </select>
+      <span class="row-label" style="margin-left:14px">Seed</span>
+      <input type="number" id="seed-input" value="-1" style="width:110px" title="-1 for random">
+    </div>
+    <div class="row">
+      <span class="row-label">Game format</span>
+      <select id="game-preset" style="flex:1" title="Palette quantize + downscale each frame to a retro game spec (X-COM, NES, SNES, GBA, Game Boy). 'None' keeps photorealistic RGBA.">
+        <option value="">None — keep photorealistic RGBA</option>
+      </select>
+    </div>
+  </div>
+
+  <!-- Run -->
+  <div class="panel">
+    <div class="row" style="justify-content:flex-end">
+      <button class="btn-primary" id="run-btn">Generate sheet</button>
+    </div>
+    <div class="progress-bar" id="progress-bar"><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
+    <div class="status-msg" id="run-status"></div>
+  </div>
+
+  <!-- Result -->
+  <div class="panel result-panel" id="result-panel">
+    <h3>Result</h3>
+    <div class="sheet-wrap">
+      <img id="sheet-img" alt="Sprite sheet">
+    </div>
+    <div class="frame-strip" id="frame-strip"></div>
+    <div class="dl-row">
+      <button class="btn-secondary" id="dl-sheet">Download sheet</button>
+      <button class="btn-secondary" id="dl-zip">Download frames (zip)</button>
+      <button class="btn-outline" id="copy-job">Copy job ID</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ─────────────────────────────────────────────────────────────────
+const DEFAULT_POSES = ['idle', 'walk_1', 'walk_2', 'run', 'jump', 'attack', 'hurt', 'victory'];
+
+const state = {
+  ref_b64: null,
+  ref_filename: null,
+  poses: new Set(DEFAULT_POSES),
+  customPoses: new Set(),
+  preset: 'tight',
+  jobId: null,
+  jobUrls: null,
+};
+
+// ── DOM helpers ───────────────────────────────────────────────────────────
+const $ = (id) => document.getElementById(id);
+
+function clearChildren(node) {
+  while (node.firstChild) node.removeChild(node.firstChild);
+}
+
+function setStatus(el, msg, kind = '') {
+  el.textContent = msg;
+  el.className = 'status-msg' + (kind ? ' ' + kind : '');
+}
+
+// ── Reference image upload ────────────────────────────────────────────────
+$('sprite-file-input').addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    const dataUrl = ev.target.result;
+    state.ref_b64 = dataUrl.split(',')[1];
+    state.ref_filename = file.name;
+    const preview = $('ref-preview');
+    clearChildren(preview);
+    const img = document.createElement('img');
+    img.src = dataUrl;
+    img.alt = file.name;
+    preview.appendChild(img);
+    setStatus($('ref-status'), file.name + ' loaded', 'ok');
+  };
+  reader.readAsDataURL(file);
+});
+
+// ── Preset toggle ─────────────────────────────────────────────────────────
+$('preset-grid').addEventListener('click', (e) => {
+  const card = e.target.closest('.preset-card');
+  if (!card) return;
+  document.querySelectorAll('.preset-card').forEach((c) => c.classList.remove('active'));
+  card.classList.add('active');
+  state.preset = card.dataset.preset;
+});
+
+// ── Pose chips ────────────────────────────────────────────────────────────
+function renderChips() {
+  const bag = $('pose-chips');
+  clearChildren(bag);
+  const all = [...DEFAULT_POSES, ...state.customPoses];
+  all.forEach((pose) => {
+    const chip = document.createElement('span');
+    chip.className = 'chip' + (state.poses.has(pose) ? ' on' : '');
+    chip.dataset.pose = pose;
+    chip.textContent = pose;
+    if (state.customPoses.has(pose)) {
+      const x = document.createElement('span');
+      x.className = 'chip-remove';
+      x.textContent = '×';
+      x.title = 'remove';
+      x.addEventListener('click', (e) => {
+        e.stopPropagation();
+        state.customPoses.delete(pose);
+        state.poses.delete(pose);
+        renderChips();
+      });
+      chip.appendChild(x);
+    }
+    chip.addEventListener('click', () => {
+      if (state.poses.has(pose)) state.poses.delete(pose);
+      else state.poses.add(pose);
+      chip.classList.toggle('on');
+    });
+    bag.appendChild(chip);
+  });
+}
+renderChips();
+
+$('pose-add-btn').addEventListener('click', addCustomPose);
+$('pose-add-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') addCustomPose();
+});
+
+function addCustomPose() {
+  const input = $('pose-add-input');
+  const raw = input.value.trim().toLowerCase().replace(/\s+/g, '_');
+  if (!raw) return;
+  state.customPoses.add(raw);
+  state.poses.add(raw);
+  input.value = '';
+  renderChips();
+}
+
+// ── Game format presets ───────────────────────────────────────────────────
+async function loadGamePresets() {
+  try {
+    const r = await fetch('/api/sprite/game-presets');
+    if (!r.ok) return;
+    const presets = await r.json();
+    if (!Array.isArray(presets) || !presets.length) return;
+    const sel = $('game-preset');
+    presets.forEach((p) => {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = `${p.label}  (${p.width}×${p.height}, ${p.max_colors} colours)`;
+      sel.appendChild(opt);
+    });
+  } catch (_) { /* dropdown stays with just "None" */ }
+}
+loadGamePresets();
+
+// ── Models ────────────────────────────────────────────────────────────────
+async function loadModels() {
+  try {
+    const r = await fetch('/api/sprites/models');
+    if (!r.ok) return;
+    const data = await r.json();
+    const models = Array.isArray(data) ? data : (data.models || []);
+    if (!models.length) return;
+    const sel = $('model-select');
+    clearChildren(sel);
+    models.forEach((m) => {
+      const opt = document.createElement('option');
+      opt.value = m;
+      opt.textContent = m;
+      if (m === 'juggernautXL_v9') opt.selected = true;
+      sel.appendChild(opt);
+    });
+  } catch (_) { /* keep default */ }
+}
+loadModels();
+
+// ── Generate ──────────────────────────────────────────────────────────────
+$('run-btn').addEventListener('click', async () => {
+  if (!state.ref_b64) {
+    setStatus($('run-status'), 'Load a reference image first', 'err');
+    return;
+  }
+  const poses = [...state.poses];
+  if (!poses.length) {
+    setStatus($('run-status'), 'Pick at least one pose', 'err');
+    return;
+  }
+
+  const body = {
+    reference_image_b64: state.ref_b64,
+    poses,
+    preset: state.preset,
+    model: $('model-select').value,
+    style_hint: $('style-hint').value.trim(),
+    columns: parseInt($('layout-columns').value, 10) || 4,
+    cell_size: parseInt($('layout-cell').value, 10) || 256,
+    seed: parseInt($('seed-input').value, 10),
+    game_preset: $('game-preset').value || null,
+  };
+
+  $('run-btn').disabled = true;
+  $('result-panel').classList.remove('active');
+  $('progress-bar').classList.add('active');
+  $('progress-fill').style.width = '0%';
+  setStatus($('run-status'), `Queueing ${poses.length}-frame sheet…`);
+
+  try {
+    const r = await fetch('/api/sprite/sheet', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({ error: r.statusText }));
+      throw new Error(err.error || `HTTP ${r.status}`);
+    }
+    const { job_id } = await r.json();
+    state.jobId = job_id;
+    setStatus($('run-status'), `Job ${job_id} running…`);
+  } catch (exc) {
+    setStatus($('run-status'), exc.message, 'err');
+    $('run-btn').disabled = false;
+    $('progress-bar').classList.remove('active');
+  }
+});
+
+// ── WebSocket progress ────────────────────────────────────────────────────
+function openWS() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const ws = new WebSocket(`${proto}//${location.host}/ws`);
+  ws.onmessage = (ev) => {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch { return; }
+    if (msg.type !== 'job_update') return;
+    if (msg.job_id !== state.jobId) return;
+    if (msg.status === 'running') {
+      $('progress-fill').style.width = `${msg.progress || 0}%`;
+      setStatus($('run-status'), msg.message || `${msg.progress || 0}%`);
+    } else if (msg.status === 'complete') {
+      $('progress-fill').style.width = '100%';
+      setStatus($('run-status'), 'Done.', 'ok');
+      $('run-btn').disabled = false;
+      state.jobUrls = {
+        sheet: msg.sheet_url || msg.output_url,
+        zip: msg.zip_url,
+        frames: msg.frame_urls || [],
+      };
+      showResult();
+    } else if (msg.status === 'error') {
+      setStatus($('run-status'), `Error: ${msg.error}`, 'err');
+      $('run-btn').disabled = false;
+      $('progress-bar').classList.remove('active');
+    }
+  };
+  ws.onclose = () => setTimeout(openWS, 2000);
+}
+openWS();
+
+// ── Result ────────────────────────────────────────────────────────────────
+function showResult() {
+  if (!state.jobUrls) return;
+  $('result-panel').classList.add('active');
+  $('sheet-img').src = state.jobUrls.sheet + '?ts=' + Date.now();
+  const strip = $('frame-strip');
+  clearChildren(strip);
+  state.jobUrls.frames.forEach((url) => {
+    const tile = document.createElement('div');
+    tile.className = 'frame-tile';
+    const img = document.createElement('img');
+    img.src = url + '?ts=' + Date.now();
+    tile.appendChild(img);
+    const label = document.createElement('div');
+    label.className = 'frame-label';
+    label.textContent = url.split('/').pop().replace(/\.png$/, '');
+    tile.appendChild(label);
+    strip.appendChild(tile);
+  });
+}
+
+$('dl-sheet').addEventListener('click', () => {
+  if (state.jobUrls?.sheet) window.open(state.jobUrls.sheet, '_blank');
+});
+$('dl-zip').addEventListener('click', () => {
+  if (state.jobUrls?.zip) window.open(state.jobUrls.zip, '_blank');
+});
+$('copy-job').addEventListener('click', () => {
+  if (state.jobId) navigator.clipboard.writeText(state.jobId).catch(() => {});
+});
+</script>
+</body>
+</html>
