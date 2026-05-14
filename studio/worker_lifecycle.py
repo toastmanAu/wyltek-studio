@@ -47,10 +47,12 @@ log = logging.getLogger(__name__)
 
 COMFYUI_SERVICE = "comfyui.service"
 SENSENOVA_SERVICE = "sensenova-worker.service"
+HIDREAM_SERVICE = "hidream-worker.service"
 
 COMFYUI_HOST = "127.0.0.1"
 COMFYUI_PORT = 8188
 SENSENOVA_WORKER_URL = "http://127.0.0.1:9091"
+HIDREAM_WORKER_URL = "http://127.0.0.1:9092"
 
 # systemctl actions should return in well under a second on healthy hosts;
 # allow a generous ceiling so a slow unit start doesn't surface as a UI error.
@@ -287,7 +289,212 @@ async def sensenova_restart() -> dict:
     return {"ok": rc == 0, "rc": rc, "error": err or None}
 
 
+# ---------------------------------------------------------------------------
+# Public: HiDream-O1-Image worker
+# ---------------------------------------------------------------------------
+
+async def hidream_status() -> WorkerStatus:
+    """Status for hidream-worker.service + :9092 HTTP probe.
+
+    Distinguishes ``starting`` (unit active, port silent - 8 BF16 shards still
+    loading) from ``running`` (unit active, /status responds with
+    ``loaded: true``). Cold load is ~25 s, warm cache ~4 s.
+    """
+    unit_active, sub = await _unit_active(HIDREAM_SERVICE)
+    status_json = await _http_get_json(
+        f"{HIDREAM_WORKER_URL}/status", _HTTP_PROBE_TIMEOUT_S)
+    listening = status_json is not None
+
+    state = _classify(unit_active, sub, listening)
+    detail: dict = {"service": HIDREAM_SERVICE, "url": HIDREAM_WORKER_URL}
+    if status_json:
+        detail.update({
+            "loaded": status_json.get("loaded"),
+            "vram_gb": status_json.get("vram_gb"),
+            "vram_max_gb": status_json.get("vram_max_gb"),
+        })
+        if state == "running" and status_json.get("loaded") is False:
+            state = "starting"
+    return WorkerStatus(
+        name="hidream-worker",
+        state=state,
+        unit_active=unit_active,
+        unit_substate=sub,
+        listening=listening,
+        detail=detail,
+    )
+
+
+async def hidream_start() -> dict:
+    rc, _, err = await _run_systemctl("start", HIDREAM_SERVICE)
+    return {"ok": rc == 0, "rc": rc, "error": err or None}
+
+
+async def hidream_stop() -> dict:
+    """Stop the HiDream worker.
+
+    Hits ``/shutdown`` first so the worker can release GPU caches cleanly,
+    then issues ``systemctl stop`` to guarantee the unit is inactive even if
+    the HTTP path is wedged. Unit is set ``Restart=on-failure`` so a clean
+    exit via ``/shutdown`` doesn't bounce it.
+    """
+    try:
+        timeout = aiohttp.ClientTimeout(total=_HTTP_PROBE_TIMEOUT_S)
+        async with aiohttp.ClientSession(timeout=timeout) as s:
+            await s.post(f"{HIDREAM_WORKER_URL}/shutdown")
+    except Exception:
+        pass
+
+    rc, _, err = await _run_systemctl("stop", HIDREAM_SERVICE)
+    return {"ok": rc == 0, "rc": rc, "error": err or None}
+
+
+async def hidream_restart() -> dict:
+    rc, _, err = await _run_systemctl("restart", HIDREAM_SERVICE)
+    return {"ok": rc == 0, "rc": rc, "error": err or None}
+
+
 async def all_statuses() -> dict:
-    """Convenience: both workers concurrently for the UI status pill."""
-    comfy, sense = await asyncio.gather(comfyui_status(), sensenova_status())
-    return {"comfyui": comfy.to_dict(), "sensenova": sense.to_dict()}
+    """Convenience: all workers concurrently for the UI status pill."""
+    comfy, sense, hidream = await asyncio.gather(
+        comfyui_status(), sensenova_status(), hidream_status()
+    )
+    return {
+        "comfyui": comfy.to_dict(),
+        "sensenova": sense.to_dict(),
+        "hidream": hidream.to_dict(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Orchestration: auto-switch between conflicting workers
+# ---------------------------------------------------------------------------
+
+# Time to let the kernel + ROCm driver release VRAM after a worker shutdown
+# before we start the next one. PyTorch's allocator releases on process exit,
+# but the actual cudaMemGetInfo-visible free can lag a few seconds. Without
+# this settle, the new worker can OOM at load while the dying worker's
+# arenas are still resident.
+_VRAM_SETTLE_S = 6.0
+
+# Polling cadence for waiting on a worker to finish loading. Status probes
+# are cheap localhost HTTPs but we don't want to hammer.
+_LOAD_POLL_INTERVAL_S = 2.0
+
+# Default ceiling for ``ensure_loaded`` — covers cold load (~25 s) + a stop/
+# start cycle (~10 s) + headroom for slow CDNs / disk. Caller can override.
+_ENSURE_TIMEOUT_S = 120.0
+
+
+# Worker name → (status_fn, start_fn, stop_fn). Add new workers here when
+# they join the arbitration.
+_WORKER_TABLE: dict[str, tuple] = {
+    "sensenova": (sensenova_status, sensenova_start, sensenova_stop),
+    "hidream":   (hidream_status,   hidream_start,   hidream_stop),
+    "comfyui":   (comfyui_status,   comfyui_start,   comfyui_stop),
+}
+
+# Default conflict graph: which workers contend for the same VRAM. ComfyUI
+# is intentionally omitted from sensenova/hidream conflicts because it
+# usually idles with no model resident — only an active ComfyUI render
+# truly conflicts, and that's surfaced by the render attempt OOMing rather
+# than worth auto-stopping (ComfyUI loses state when killed).
+_DEFAULT_CONFLICTS: dict[str, list[str]] = {
+    "sensenova": ["hidream"],
+    "hidream":   ["sensenova"],
+    "comfyui":   [],
+}
+
+
+class WorkerArbitrationError(RuntimeError):
+    """ensure_loaded couldn't reach a ready state for the target worker."""
+
+
+async def ensure_loaded(
+    target: str,
+    *,
+    conflicts: list[str] | None = None,
+    timeout_s: float = _ENSURE_TIMEOUT_S,
+    on_status: callable | None = None,
+) -> None:
+    """Make sure ``target`` worker is running and ``loaded: true``.
+
+    If the target is already loaded, returns immediately. Otherwise stops
+    any conflicting workers first (default conflict graph from
+    ``_DEFAULT_CONFLICTS``), waits for VRAM to settle, starts the target,
+    and polls until either ``loaded: true`` or the timeout elapses.
+
+    ``on_status(msg)`` is an optional async callback for surfacing progress
+    to the UI — the orchestrator emits "stopping sensenova", "starting
+    hidream", "waiting for model load" etc.
+
+    Raises ``WorkerArbitrationError`` on timeout, crash, or unknown target.
+    """
+    if target not in _WORKER_TABLE:
+        raise WorkerArbitrationError(
+            f"unknown worker {target!r}; known: {sorted(_WORKER_TABLE)}")
+
+    if conflicts is None:
+        conflicts = _DEFAULT_CONFLICTS.get(target, [])
+
+    async def _notify(msg: str) -> None:
+        if on_status is not None:
+            try:
+                await on_status(msg)
+            except Exception:  # noqa: BLE001
+                pass  # progress is best-effort
+
+    target_status_fn, target_start_fn, _ = _WORKER_TABLE[target]
+
+    # Fast path: target already loaded.
+    s = await target_status_fn()
+    if s.state == "running" and s.detail.get("loaded") is True:
+        await _notify(f"{target} already loaded")
+        return
+
+    # Stop conflicts (in parallel; they're independent).
+    stop_tasks = []
+    stopped_any = False
+    for c in conflicts:
+        if c not in _WORKER_TABLE:
+            continue
+        c_status_fn, _, c_stop_fn = _WORKER_TABLE[c]
+        cs = await c_status_fn()
+        if cs.unit_active or cs.listening:
+            log.info(f"ensure_loaded({target}): stopping conflict {c}")
+            await _notify(f"stopping {c} (it's holding the GPU)")
+            stop_tasks.append(c_stop_fn())
+            stopped_any = True
+    if stop_tasks:
+        await asyncio.gather(*stop_tasks)
+        await _notify(f"{target}: waiting {_VRAM_SETTLE_S:.0f}s for VRAM to settle")
+        await asyncio.sleep(_VRAM_SETTLE_S)
+
+    # Start the target (idempotent if already starting — systemd handles it).
+    log.info(f"ensure_loaded({target}): starting worker")
+    await _notify(f"starting {target} worker")
+    await target_start_fn()
+
+    # Poll until loaded or timeout.
+    await _notify(f"{target}: loading model (cold ~25s, warm ~5s)")
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout_s
+    while loop.time() < deadline:
+        s = await target_status_fn()
+        if s.state == "running" and s.detail.get("loaded") is True:
+            elapsed = timeout_s - (deadline - loop.time())
+            log.info(
+                f"ensure_loaded({target}): ready in {elapsed:.1f}s "
+                f"(vram_gb={s.detail.get('vram_gb')})"
+            )
+            await _notify(f"{target} loaded ({s.detail.get('vram_gb','?')} GB VRAM)")
+            return
+        if s.state == "crashed":
+            raise WorkerArbitrationError(
+                f"{target}-worker crashed during startup. "
+                f"Check `journalctl --user -u {target}-worker.service`.")
+        await asyncio.sleep(_LOAD_POLL_INTERVAL_S)
+
+    raise WorkerArbitrationError(
+        f"{target}-worker didn't become ready within {timeout_s:.0f}s. "
+        f"Last state: {s.state}, loaded={s.detail.get('loaded')}.")

@@ -243,11 +243,17 @@
             spellcheck="false"
             placeholder="Edit the prompt…"></textarea>
           <div class="controls">
+            <label>Backend
+              <select id="backend-input">
+                <option value="sensenova" selected>SenseNova U1 (default)</option>
+                <option value="hidream">HiDream-O1 (better text)</option>
+              </select>
+            </label>
             <label>Width
-              <input type="number" id="width-input" min="512" max="2592" step="32" />
+              <input type="number" id="width-input" min="512" max="2720" step="32" />
             </label>
             <label>Height
-              <input type="number" id="height-input" min="512" max="2592" step="32" />
+              <input type="number" id="height-input" min="512" max="2720" step="32" />
             </label>
             <label>Seed
               <input type="number" id="seed-input" min="0" value="42" />
@@ -256,7 +262,20 @@
               <select id="steps-input">
                 <option value="20">20 (preview)</option>
                 <option value="50" selected>50 (final)</option>
+                <option value="75">75 (extra)</option>
+                <option value="100">100 (max)</option>
               </select>
+            </label>
+            <label class="checkbox-label" title="HiDream only — rewrites your prompt via Gemma-4 with the SCALIST framework before rendering. Sharpens small text, fonts, and layout. ~5-8s overhead.">
+              <input type="checkbox" id="use-agent-input" checked />
+              <span>SCALIST rewriter (HiDream)</span>
+            </label>
+            <label class="checkbox-label" title="Ask the model to paint N solid-magenta placeholder rectangles where logos/images can be dropped in afterwards. Opens a manual-fill page when the render completes.">
+              <input type="checkbox" id="reserve-slots-input" />
+              <span>Reserve N logo slots</span>
+            </label>
+            <label id="slot-count-wrap" hidden>Slots
+              <input type="number" id="slot-count-input" min="2" max="10" value="4" />
             </label>
           </div>
           <div class="actions">
@@ -268,6 +287,7 @@
           <img id="output-preview" hidden alt="output" />
           <div id="output-actions" hidden>
             <a id="download-link" class="small-btn" download>Download PNG</a>
+            <a id="fill-link" class="small-btn" hidden>Place logos →</a>
           </div>
         </div>
       </div>

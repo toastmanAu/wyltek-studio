@@ -67,6 +67,10 @@ DEFAULT_SYSTEM_MESSAGE = (
 _MODEL = None
 _TOKENIZER = None
 _GPU_LOCK: asyncio.Lock | None = None
+# Prefetch count drives the layer-offload context: 0 = full GPU resident,
+# 1 = synchronous per-layer swap (low RAM), >=2 = async prefetch (balanced).
+# Set in load_model via vram_mode_to_prefetch_count.
+_PREFETCH_COUNT: int = 0
 
 
 def _to_pil(batch: torch.Tensor) -> Image.Image:
@@ -95,42 +99,69 @@ def _seed_all(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def load_model(model_path: str, dtype=torch.bfloat16):
-    """Load model + tokenizer with the offload config for 24 GB VRAM."""
-    log.info(f"Loading model from {model_path} (dtype={dtype})")
+def load_model(model_path: str, vram_mode: str = "full", dtype=torch.bfloat16):
+    """Load model + tokenizer with the right offload config for ``vram_mode``.
+
+    ``vram_mode`` options (from sensenova_u1.utils.offload):
+
+    * ``full`` — all weights GPU-resident, no offload. Fits dense U1-8B-MoT
+      via accelerate's ``device_map="auto"`` + 20 GiB cap on the 7900 XTX.
+    * ``low`` — synchronous per-layer swap. Required for U1-A3B (MoE, ~73 GB
+      BF16 total) on a 24 GB card; peak resident weights ≈ active experts.
+    * ``balanced`` — async prefetch. Trades a bit more VRAM for ~30% faster
+      inference than ``low``.
+
+    Returns (model, tokenizer, prefetch_count). The prefetch_count is stashed
+    module-level so the inference handlers can build the offload context.
+    """
+    log.info(f"Loading model from {model_path} (dtype={dtype}, vram_mode={vram_mode})")
     t0 = time.monotonic()
 
     # Side-effect: registers the model class with transformers.
     import sensenova_u1  # noqa: F401
     from sensenova_u1 import check_checkpoint_compatibility
+    from sensenova_u1.utils import (
+        load_model_and_tokenizer,
+        vram_mode_to_prefetch_count,
+    )
+
+    prefetch_count = vram_mode_to_prefetch_count(vram_mode)
 
     config = AutoConfig.from_pretrained(model_path)
     check_checkpoint_compatibility(config)
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
 
-    # ROCm/24GB-GPU patch via BF16 + accelerate offload: 32 GB BF16
-    # weights don't fit on a 7900 XTX, so device_map="auto" splits
-    # layers between GPU + CPU. max_memory caps GPU resident weights
-    # at 20 GiB to leave activation headroom (T2I needs ~3 GiB).
-    # INT8 was tried; weights fit cleanly but output is visibly grainier
-    # (quantization noise) and the model's flow-matching head has dtype-
-    # introspection patterns that crash on int8 unless skipped. Since
-    # the infographic builder is text-only (T2I path, never lm_head),
-    # the OOM at lm_head pre_forward that originally forced INT8 doesn't
-    # apply, and BF16 gives the cleaner output.
-    model = AutoModel.from_pretrained(
-        model_path,
-        config=config,
-        torch_dtype=dtype,
-        device_map="auto",
-        max_memory={0: "20GiB", "cpu": "60GiB"},
-        low_cpu_mem_usage=True,
-    ).eval()
+    # ``load_model_and_tokenizer`` handles both the legacy device_map='auto'
+    # path (vram_mode='full') and the new layer-offload path (vram_mode in
+    # {'low','balanced'}). For ``full`` we keep the same 20GiB/60GiB cap as
+    # the prior pinned-on-GPU version to preserve activation headroom.
+    # For layer-offload modes the model stays CPU-resident and individual
+    # layers are streamed to GPU per forward step.
+    if prefetch_count == 0:
+        model, tokenizer = load_model_and_tokenizer(
+            model_path,
+            dtype=dtype,
+            device="cuda",
+            for_offload=False,
+            device_map="auto",
+            max_memory={0: "20GiB", "cpu": "40GiB"},
+        )
+    else:
+        model, tokenizer = load_model_and_tokenizer(
+            model_path,
+            dtype=dtype,
+            device="cuda",
+            for_offload=True,
+        )
+
+    model.train(False)
 
     elapsed = time.monotonic() - t0
     vram = torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0
-    log.info(f"Model loaded in {elapsed:.1f}s; VRAM resident: {vram:.2f} GB")
-    return model, tokenizer
+    log.info(
+        f"Model loaded in {elapsed:.1f}s; VRAM resident: {vram:.2f} GB; "
+        f"prefetch_count={prefetch_count}"
+    )
+    return model, tokenizer, prefetch_count
 
 
 # -----------------------------------------------------------------------------
@@ -223,7 +254,8 @@ def _run_t2i_sync(body: dict) -> dict:
     t0 = time.monotonic()
     _seed_all(seed)
 
-    with torch.inference_mode():
+    from sensenova_u1.utils import make_offload_ctx
+    with torch.inference_mode(), make_offload_ctx(_MODEL, _PREFETCH_COUNT, "cuda"):
         out = _MODEL.t2i_generate(
             _TOKENIZER, prompt,
             # NEO-Unify expects (W, H), not (H, W) — modeling_neo_chat reads
@@ -279,7 +311,8 @@ def _run_interleave_sync(body: dict) -> dict:
             _save_log(output_dir, log_lines)
             raise
 
-    with torch.inference_mode():
+    from sensenova_u1.utils import make_offload_ctx
+    with torch.inference_mode(), make_offload_ctx(_MODEL, _PREFETCH_COUNT, "cuda"):
         text, image_tensors = _MODEL.interleave_gen(
             _TOKENIZER, prompt,
             images=input_images,
@@ -325,9 +358,9 @@ def _run_interleave_sync(body: dict) -> dict:
 # App init
 # -----------------------------------------------------------------------------
 
-def init_app(model_path: str) -> web.Application:
-    global _MODEL, _TOKENIZER, _GPU_LOCK
-    _MODEL, _TOKENIZER = load_model(model_path)
+def init_app(model_path: str, vram_mode: str = "full") -> web.Application:
+    global _MODEL, _TOKENIZER, _GPU_LOCK, _PREFETCH_COUNT
+    _MODEL, _TOKENIZER, _PREFETCH_COUNT = load_model(model_path, vram_mode=vram_mode)
     _GPU_LOCK = asyncio.Lock()
 
     app = web.Application()
@@ -344,9 +377,16 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--model_path", default="/data/sensenova-u1-weights",
                         help="HF Hub id or local path. 50-step final model.")
+    parser.add_argument(
+        "--vram_mode", default="full", choices=("full", "low", "balanced"),
+        help="GPU memory mode. 'full' = all on GPU (dense U1-8B-MoT). 'low' "
+             "= per-layer swap (required for U1-A3B MoE @ ~73GB BF16 on "
+             "24GB cards). 'balanced' = async prefetch (some extra VRAM for "
+             "~30% faster inference than 'low').",
+    )
     args = parser.parse_args()
 
-    app = init_app(args.model_path)
+    app = init_app(args.model_path, vram_mode=args.vram_mode)
     log.info(f"Listening on http://{args.host}:{args.port}")
     web.run_app(app, host=args.host, port=args.port,
                 print=None, access_log=log)

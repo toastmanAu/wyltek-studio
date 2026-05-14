@@ -5,6 +5,7 @@ import asyncio
 import base64
 import json
 import os
+import re
 import socket
 import tempfile
 import time
@@ -3844,7 +3845,7 @@ async def _run_job(job_id: str, params: dict):
 
 
 def _backend_type(name: str) -> str:
-    local = {"comfyui", "fooocus", "a1111"}
+    local = {"comfyui", "fooocus", "a1111", "hidream", "sensenova"}
     free = {"pollinations", "huggingface"}
     if name in local:
         return "local"
@@ -4023,16 +4024,40 @@ async def _cancel_in_flight(job_id: str) -> None:
 
 class _SenseNovaRenderBody(BaseModel):
     prompt: str = Field(min_length=1)
-    width: int = Field(ge=512, le=2592)
-    height: int = Field(ge=512, le=2592)
+    width: int = Field(ge=512, le=2720)
+    height: int = Field(ge=512, le=2720)
     seed: int = Field(default=42, ge=0)
     cfg_scale: float = Field(default=4.0, ge=0.5, le=10.0)
     num_steps: int = Field(default=50, ge=4, le=100)
+    # 2026-05-13: infographic flow can now route to HiDream-O1 instead of
+    # SenseNova-U1 for text-accuracy-sensitive jobs. HiDream's pixel-DiT
+    # design preserves glyphs through generation (no VAE blur), making it
+    # markedly better for infographics, posters, and any image where the
+    # rendered text must match the prompt exactly. Default stays sensenova
+    # to preserve existing behaviour.
+    backend: str = Field(default="sensenova", pattern="^(sensenova|hidream)$")
+    # SCALIST prompt-rewriter — only consulted when backend == "hidream".
+    # HiDream's leaderboard text-rendering scores assume the prompt has
+    # been pre-processed by this rewriter (the model was trained on
+    # SCALIST-shaped prompts that spell out exact glyphs, fonts, materials,
+    # and positions). Default ON for HiDream renders; toggle off for A/B.
+    use_prompt_agent: bool = Field(default=True)
+    # Reserve N solid-magenta placeholder rectangles in the render so a
+    # downstream UI can composite logos/images into them. 0 = off, keeps
+    # the existing flow bit-identical. >0 appends a sentinel instruction
+    # to the prompt and runs the detector after the PNG lands, writing
+    # out.slots.json next to out.png.
+    reserve_logo_slots: int = Field(default=0, ge=0, le=10)
 
 
 @app.post("/api/sensenova/render", status_code=202)
 async def sensenova_render(body: _SenseNovaRenderBody):
-    """Freeform-prompt SenseNova render. Returns job_id; PNG arrives over WS."""
+    """Freeform-prompt render. Returns job_id; PNG arrives over WS.
+
+    Dispatches to the selected backend (sensenova-worker on port 9091 or
+    hidream-worker on port 9092). Endpoint kept under ``/api/sensenova/``
+    for backward compatibility with existing infographic UI bindings.
+    """
     job_id = uuid.uuid4().hex[:12]
     params = {
         "prompt": body.prompt,
@@ -4041,16 +4066,24 @@ async def sensenova_render(body: _SenseNovaRenderBody):
         "seed": body.seed,
         "cfg_scale": body.cfg_scale,
         "num_steps": body.num_steps,
-        "backend": "sensenova",  # tells the cancel hook to restart the worker
+        "backend": body.backend,  # consumed by the cancel hook
+        "use_prompt_agent": body.use_prompt_agent,
+        "reserve_logo_slots": body.reserve_logo_slots,
     }
     jobs[job_id] = {"status": "queued", "params": params, "progress": 0}
+    runner = (
+        _run_hidream_render_job
+        if body.backend == "hidream"
+        else _run_sensenova_render_job
+    )
     job_queue.submit_background(
-        _run_sensenova_render_job(job_id, params),
+        runner(job_id, params),
         lane="gpu",
         job_id=job_id,
         # 30 min — SenseNova at 2048+ can take 5–7 min; the JobQueue's
         # default 300 s gpu-lane timeout was clipping renders mid-flight,
         # leaving the worker to finish into an orphan PNG and the UI stuck.
+        # HiDream is faster (~45 s at 2048×2048) but inherits the cap.
         timeout=1800,
     )
     return {"job_id": job_id}
@@ -4061,6 +4094,7 @@ async def _run_sensenova_render_job(job_id: str, params: dict) -> None:
     from backends import sensenova_client
     from backends.sensenova_client import SenseNovaWorkerError
     from progress_smooth import SmoothProgress
+    from studio.worker_lifecycle import ensure_loaded, WorkerArbitrationError
 
     jobs[job_id]["status"] = "running"
     await broadcast({
@@ -4078,11 +4112,32 @@ async def _run_sensenova_render_job(job_id: str, params: dict) -> None:
             "status": "running", "progress": pct, "message": msg,
         })
 
+    async def on_arbitration(msg: str) -> None:
+        # Surface worker-swap progress at a low pct so the SmoothProgress
+        # creep (which starts at 10) keeps moving forward when the render
+        # itself begins.
+        await on_progress(3, msg)
+
     try:
+        # Auto-orchestrate: stop hidream-worker if it's holding the GPU,
+        # start sensenova-worker, wait for "loaded: true". Skips the
+        # stop/start when sensenova is already loaded (the common case).
+        try:
+            await ensure_loaded("sensenova", on_status=on_arbitration)
+        except WorkerArbitrationError as exc:
+            raise SenseNovaWorkerError(f"worker arbitration: {exc}") from exc
+
+        # When the caller requested logo slots, splice the sentinel
+        # instruction onto the prompt so the model paints magenta
+        # placeholders we can detect after the render.
+        from studio.logo_slot_detector import build_sentinel_prompt, detect_and_save
+        slot_count = int(params.get("reserve_logo_slots") or 0)
+        effective_prompt = build_sentinel_prompt(params["prompt"], n=slot_count)
+
         async with SmoothProgress(on_progress, tick_seconds=2.0, max_creep=85) as sp:
             await sp.set(10, "rendering")
             png = await sensenova_client.render_t2i(
-                prompt=params["prompt"],
+                prompt=effective_prompt,
                 output_dir=output_dir,
                 width=params["width"],
                 height=params["height"],
@@ -4102,6 +4157,14 @@ async def _run_sensenova_render_job(job_id: str, params: dict) -> None:
             except OSError:
                 pass
 
+        slots_summary: dict | None = None
+        if slot_count > 0:
+            try:
+                slots_summary = detect_and_save(png, requested=slot_count)
+            except Exception as exc:  # detector failure must not kill render
+                slots_summary = {"error": str(exc), "requested": slot_count,
+                                 "detected": 0}
+
         # Sidecar with the full params (for future history/re-render features).
         try:
             (output_dir / "out.json").write_text(json.dumps({
@@ -4111,6 +4174,7 @@ async def _run_sensenova_render_job(job_id: str, params: dict) -> None:
                 "seed": params["seed"],
                 "cfg_scale": params["cfg_scale"],
                 "num_steps": params["num_steps"],
+                "reserve_logo_slots": slot_count,
             }, indent=2))
         except Exception:
             pass
@@ -4121,13 +4185,17 @@ async def _run_sensenova_render_job(job_id: str, params: dict) -> None:
         except ValueError:
             output_url = str(png)
 
-        jobs[job_id].update({
-            "status": "complete", "progress": 100, "output_url": output_url,
-        })
-        await broadcast({
+        update = {"status": "complete", "progress": 100, "output_url": output_url}
+        if slots_summary is not None:
+            update["slots"] = slots_summary
+        jobs[job_id].update(update)
+        broadcast_payload = {
             "type": "job_update", "job_id": job_id,
             "status": "complete", "progress": 100, "output_url": output_url,
-        })
+        }
+        if slots_summary is not None:
+            broadcast_payload["slots"] = slots_summary
+        await broadcast(broadcast_payload)
     except SenseNovaWorkerError as exc:
         jobs[job_id].update({"status": "error", "error": str(exc)})
         await broadcast({
@@ -4153,6 +4221,516 @@ async def _run_sensenova_render_job(job_id: str, params: dict) -> None:
             "type": "job_update", "job_id": job_id,
             "status": "error", "error": str(e),
         })
+
+
+async def _run_hidream_render_job(job_id: str, params: dict) -> None:
+    """HiDream-O1 background runner — sibling of _run_sensenova_render_job.
+
+    Routed when ``params["backend"] == "hidream"``. HiDream's worker writes
+    its output into ``output_dir/out.png`` (same convention as SenseNova),
+    so the surrounding canonicalisation + WS broadcast logic is identical.
+
+    Caveats:
+
+    * HiDream snaps sub-2048 resolutions up internally — the ``width``/
+      ``height`` from the UI may be reshaped. The worker returns the actual
+      rendered dimensions in ``actual_width`` / ``actual_height``; we don't
+      currently surface them to the UI, the WS message just carries the URL.
+    * ``num_steps`` from the UI is ignored — HiDream's "full" model is fixed
+      at 50 steps. The form value still validates server-side (4..100) but
+      doesn't reach the worker.
+    * ``cfg_scale`` maps to HiDream's ``guidance_scale`` (Full mode default 5.0).
+    * The worker must be running. Caller responsibility — start it via
+      ``POST /api/hidream/worker/start`` before submitting. A clear
+      HiDreamWorkerError propagates if it's stopped.
+    """
+    from backends import hidream_client
+    from backends.hidream_client import HiDreamWorkerError
+    from progress_smooth import SmoothProgress
+    from studio.worker_lifecycle import ensure_loaded, WorkerArbitrationError
+
+    jobs[job_id]["status"] = "running"
+    await broadcast({
+        "type": "job_update", "job_id": job_id,
+        "status": "running", "progress": 0,
+    })
+
+    # Absolute path: the hidream-worker daemon runs with WorkingDirectory=
+    # /home/phill/hidream-o1-image, so a relative path here would land
+    # there instead of in Wyltek's outputs/. The sensenova_client path
+    # works around this by being on the same WorkingDirectory; HiDream
+    # needs an explicit absolute path.
+    output_dir = (Path.cwd() / "outputs/sensenova-render" / job_id).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    async def on_progress(pct: int, msg: str = ""):
+        jobs[job_id]["progress"] = pct
+        await broadcast({
+            "type": "job_update", "job_id": job_id,
+            "status": "running", "progress": pct, "message": msg,
+        })
+
+    async def on_arbitration(msg: str) -> None:
+        # Worker-swap progress at a low pct; SmoothProgress takes over from 10.
+        await on_progress(3, msg)
+
+    try:
+        # When the caller requested logo slots, splice the sentinel
+        # instruction onto the prompt so the model paints magenta
+        # placeholders we can detect after the render.
+        from studio.logo_slot_detector import build_sentinel_prompt, detect_and_save
+        slot_count = int(params.get("reserve_logo_slots") or 0)
+        sentinel_prompt = build_sentinel_prompt(params["prompt"], n=slot_count)
+
+        # SCALIST prompt rewrite runs FIRST, before worker arbitration.
+        # Ollama loads gemma4:26b into VRAM to do the rewrite; if hidream
+        # is already resident (~17 GB), the two collide on a 24 GB card.
+        # By running SCALIST first with keep_alive:0, gemma4 loads,
+        # runs, and unloads BEFORE ensure_loaded brings hidream up.
+        # Sequential VRAM use, no contention.
+        render_prompt = sentinel_prompt
+        rewrite_info: dict | None = None
+        layout_bboxes: list | None = None
+        if params.get("use_prompt_agent", True):
+            from studio.hidream_prompt_agent import rewrite_prompt as _rewrite
+            await on_progress(2, "rewriting prompt with SCALIST agent")
+            # Feed the sentinel-augmented prompt to SCALIST so the rewrite
+            # preserves the magenta-rectangle instruction. SCALIST keeps
+            # the sentinel block verbatim in practice (it's already
+            # specific and well-formed), so detection still works.
+            rewrite_info = await _rewrite(sentinel_prompt)
+            render_prompt = rewrite_info.get("prompt", sentinel_prompt)
+            # SCALIST now also produces bbox coordinates per text element;
+            # HiDream's generate_image takes these as hard layout constraints,
+            # freeing the autoregressive attention budget from layout-choice
+            # work. Empty list (no bboxes) is a no-op — renderer falls back
+            # to its own layout inference.
+            bboxes = rewrite_info.get("layout_bboxes") or []
+            if bboxes:
+                layout_bboxes = bboxes
+            # Diagnostic trail lives in out.json (scalist_rewrite field).
+            # Don't reach for a module logger — server.py doesn't configure
+            # one, and an accidental `log.info(...)` here would NameError
+            # inside the runner and surface as the user-facing render error.
+
+        # Auto-orchestrate: stop sensenova-worker if it's holding the GPU,
+        # start hidream-worker, wait for "loaded: true". Skips the
+        # stop/start when hidream is already loaded (warm case).
+        try:
+            await ensure_loaded("hidream", on_status=on_arbitration)
+        except WorkerArbitrationError as exc:
+            raise HiDreamWorkerError(f"worker arbitration: {exc}") from exc
+
+        async with SmoothProgress(on_progress, tick_seconds=2.0, max_creep=85) as sp:
+            msg = "rendering (HiDream-O1)"
+            if layout_bboxes:
+                msg += f" with {len(layout_bboxes)} bboxes"
+            await sp.set(10, msg)
+            result = await hidream_client.render_t2i(
+                prompt=render_prompt,
+                output_dir=output_dir,
+                width=params["width"],
+                height=params["height"],
+                seed=params["seed"],
+                model_type="full",
+                guidance_scale=float(params.get("cfg_scale", 5.0)),
+                layout_bboxes=layout_bboxes,
+                timeout_s=1800.0,
+            )
+            await sp.set(95, "saving")
+
+        png = Path(result["png_path"])
+        canonical = output_dir / "out.png"
+        if png != canonical:
+            try:
+                png.rename(canonical)
+                png = canonical
+            except OSError:
+                pass
+
+        slots_summary: dict | None = None
+        if slot_count > 0:
+            try:
+                slots_summary = detect_and_save(png, requested=slot_count)
+            except Exception as exc:
+                slots_summary = {"error": str(exc), "requested": slot_count,
+                                 "detected": 0}
+
+        try:
+            (output_dir / "out.json").write_text(json.dumps({
+                "backend": "hidream",
+                "prompt": params["prompt"],
+                "rewritten_prompt": render_prompt if rewrite_info else None,
+                "scalist_rewrite": rewrite_info,
+                "layout_bboxes_used": layout_bboxes,
+                "width": params["width"],
+                "height": params["height"],
+                "seed": params["seed"],
+                "cfg_scale": params["cfg_scale"],
+                "num_steps": params["num_steps"],
+                "reserve_logo_slots": slot_count,
+                "actual_width": result.get("actual_width"),
+                "actual_height": result.get("actual_height"),
+                "elapsed_s": result.get("elapsed_s"),
+            }, indent=2, ensure_ascii=False))
+        except Exception:
+            pass
+
+        # output_dir is absolute here (see comment above), so png is absolute
+        # too. The sensenova flow uses Path("outputs") which works only when
+        # CWD is the project root and png is a relative path. Resolve both
+        # to absolute first so relative_to() actually finds the prefix.
+        try:
+            abs_outputs = (Path.cwd() / "outputs").resolve()
+            rel = png.relative_to(abs_outputs)
+            output_url = f"/outputs/{rel.as_posix()}"
+        except ValueError:
+            output_url = str(png)
+
+        update = {"status": "complete", "progress": 100, "output_url": output_url}
+        if slots_summary is not None:
+            update["slots"] = slots_summary
+        jobs[job_id].update(update)
+        broadcast_payload = {
+            "type": "job_update", "job_id": job_id,
+            "status": "complete", "progress": 100, "output_url": output_url,
+        }
+        if slots_summary is not None:
+            broadcast_payload["slots"] = slots_summary
+        await broadcast(broadcast_payload)
+    except HiDreamWorkerError as exc:
+        jobs[job_id].update({"status": "error", "error": str(exc)})
+        await broadcast({
+            "type": "job_update", "job_id": job_id,
+            "status": "error", "error": str(exc),
+        })
+    except asyncio.CancelledError:
+        jobs[job_id].update({"status": "cancelled"})
+        try:
+            await broadcast({
+                "type": "job_update", "job_id": job_id,
+                "status": "cancelled",
+            })
+        except Exception:
+            pass
+        raise
+    except Exception as e:
+        jobs[job_id].update({"status": "error", "error": str(e)})
+        await broadcast({
+            "type": "job_update", "job_id": job_id,
+            "status": "error", "error": str(e),
+        })
+
+
+# -----------------------------------------------------------------------------
+# Logo gallery — backs the manual-fill page (/studio/infographic-fill).
+#
+# Lives at static/assets/logos/ so existing /static StaticFiles mount serves
+# the images directly. The /api/logos/* endpoints are the *manifest* layer:
+# they list the folder and accept new uploads (drop-from-phone workflow).
+# -----------------------------------------------------------------------------
+
+LOGO_GALLERY_DIR = Path("static/assets/logos")
+LOGO_ALLOWED_EXT = {".png", ".jpg", ".jpeg", ".webp"}
+LOGO_MAX_BYTES = 8 * 1024 * 1024  # 8 MB ceiling — plenty for any logo
+
+
+def _safe_logo_name(raw: str) -> str:
+    """Strip path components and clamp to a filesystem-safe basename.
+
+    Allows letters, digits, dash, underscore, dot. Everything else collapses
+    to underscores. Reserves an extension whitelist (raised to the caller if
+    the extension is wrong).
+    """
+    base = Path(raw).name  # strips any directory traversal
+    if not base:
+        raise HTTPException(400, "filename required")
+    ext = Path(base).suffix.lower()
+    if ext not in LOGO_ALLOWED_EXT:
+        raise HTTPException(
+            400,
+            f"unsupported extension {ext!r}; allowed: {sorted(LOGO_ALLOWED_EXT)}",
+        )
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(base).stem).strip("_.-")
+    if not stem:
+        stem = "logo"
+    return f"{stem}{ext}"
+
+
+def _list_logo_entries() -> list[dict]:
+    """Return the gallery contents as JSON-ready dicts, alpha-sorted."""
+    LOGO_GALLERY_DIR.mkdir(parents=True, exist_ok=True)
+    entries: list[dict] = []
+    for p in sorted(LOGO_GALLERY_DIR.iterdir(), key=lambda p: p.name.lower()):
+        if not p.is_file() or p.name.startswith("."):
+            continue
+        if p.suffix.lower() not in LOGO_ALLOWED_EXT:
+            continue
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        entries.append({
+            "filename": p.name,
+            "url": f"/static/assets/logos/{p.name}",
+            "size_bytes": st.st_size,
+            "mtime": st.st_mtime,
+        })
+    return entries
+
+
+@app.get("/api/logos/list")
+async def api_logos_list():
+    """Return the current gallery contents.
+
+    Used by the fill page to populate the sidebar and to refresh after an
+    upload. No caching beyond what the browser does for /static; entries
+    carry mtime so the client can bust thumbnail caches if needed.
+    """
+    return {"entries": _list_logo_entries()}
+
+
+@app.post("/api/logos/upload", status_code=201)
+async def api_logos_upload(file: UploadFile = File(...)):
+    """Save an uploaded image into the gallery folder.
+
+    Filename collision policy: append ``_2``, ``_3``... before the extension
+    so phone uploads named ``IMG_0123.png`` never clobber a prior file.
+    Returns the updated gallery so the client can re-render without a
+    second roundtrip.
+    """
+    LOGO_GALLERY_DIR.mkdir(parents=True, exist_ok=True)
+    raw_name = file.filename or "logo.png"
+    name = _safe_logo_name(raw_name)
+
+    contents = await file.read()
+    if len(contents) == 0:
+        raise HTTPException(400, "empty file")
+    if len(contents) > LOGO_MAX_BYTES:
+        raise HTTPException(
+            413,
+            f"file too large ({len(contents)} bytes > {LOGO_MAX_BYTES})",
+        )
+
+    # PIL verify — rejects corrupt / mislabelled bytes before we land them
+    # on disk where the gallery would surface a broken thumbnail.
+    try:
+        from PIL import Image, UnidentifiedImageError
+        from io import BytesIO
+        with Image.open(BytesIO(contents)) as im:
+            im.verify()
+    except (UnidentifiedImageError, Exception) as exc:
+        raise HTTPException(400, f"not a valid image: {exc}") from exc
+
+    target = LOGO_GALLERY_DIR / name
+    if target.exists():
+        stem, ext = Path(name).stem, Path(name).suffix
+        n = 2
+        while (alt := LOGO_GALLERY_DIR / f"{stem}_{n}{ext}").exists():
+            n += 1
+        target = alt
+    target.write_bytes(contents)
+
+    return {
+        "saved": {
+            "filename": target.name,
+            "url": f"/static/assets/logos/{target.name}",
+            "size_bytes": len(contents),
+        },
+        "entries": _list_logo_entries(),
+    }
+
+
+# -----------------------------------------------------------------------------
+# Infographic fill — composite uploaded/gallery logos into the magenta slots
+# that the sentinel detector found at render time. The fill page (a separate
+# /studio/infographic-fill HTML route, served below) reads out.slots.json,
+# lets the user drag logos onto slots, then POSTs the assignments here.
+# -----------------------------------------------------------------------------
+
+
+class _SlotAssignment(BaseModel):
+    slot_id: int = Field(ge=1)
+    logo_filename: str = Field(min_length=1)
+
+
+class _FillCompositeBody(BaseModel):
+    job_id: str = Field(pattern=r"^[A-Za-z0-9_-]{6,64}$")
+    assignments: list[_SlotAssignment] = Field(min_length=1)
+
+
+@app.get("/studio/infographic-fill")
+async def studio_infographic_fill() -> FileResponse:
+    """HTML shell for the manual logo-placement page."""
+    return FileResponse("static/studio/infographic-fill.html")
+
+
+@app.get("/api/infographic-fill/job/{job_id}")
+async def api_infographic_fill_job(job_id: str):
+    """Return everything the fill page needs to render: image URL + slot list.
+
+    The fill page calls this once on load instead of fetching the PNG and
+    sidecar separately — keeps the client simpler and surfaces missing /
+    detection-failed jobs with a clean error rather than a broken image.
+    """
+    if not re.fullmatch(r"[A-Za-z0-9_-]{6,64}", job_id):
+        raise HTTPException(400, "invalid job_id")
+    job_dir = Path("outputs/sensenova-render") / job_id
+    png = job_dir / "out.png"
+    sidecar = job_dir / "out.slots.json"
+    if not png.is_file():
+        raise HTTPException(404, "render output not found")
+    if not sidecar.is_file():
+        raise HTTPException(404, "no slot sidecar — was reserve_logo_slots > 0?")
+
+    slots_data = json.loads(sidecar.read_text())
+    filled = job_dir / "out.filled.png"
+    audit = job_dir / "out.filled.json"
+    prior: dict | None = None
+    if audit.is_file():
+        try:
+            prior = json.loads(audit.read_text())
+        except Exception:
+            prior = None
+    return {
+        "job_id": job_id,
+        "image_url": f"/outputs/sensenova-render/{job_id}/out.png",
+        "filled_url": (
+            f"/outputs/sensenova-render/{job_id}/out.filled.png"
+            if filled.is_file() else None
+        ),
+        "slots": slots_data,
+        "prior_assignments": prior,
+    }
+
+
+@app.post("/api/infographic-fill/composite")
+async def api_infographic_fill_composite(body: _FillCompositeBody):
+    """Composite each (slot, logo) assignment into out.png → out.filled.png.
+
+    Fit-inside semantics: the logo is scaled so neither dimension exceeds
+    the slot's bbox, preserving aspect ratio, then alpha-pasted centred
+    inside the slot. The original out.png is untouched — re-saving with
+    different assignments simply rewrites out.filled.png.
+    """
+    job_dir = Path("outputs/sensenova-render") / body.job_id
+    png_path = job_dir / "out.png"
+    sidecar = job_dir / "out.slots.json"
+    if not png_path.is_file() or not sidecar.is_file():
+        raise HTTPException(404, "render output or slot sidecar missing")
+
+    slots_data = json.loads(sidecar.read_text())
+    slots_by_id = {s["id"]: s for s in slots_data.get("slots", [])}
+
+    import numpy as np
+    from PIL import Image, ImageDraw
+    base = Image.open(png_path).convert("RGBA")
+    overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    base_rgb = np.asarray(base.convert("RGB"))  # for background sampling
+
+    # Halo erase tuning. The detector's bbox covers only the *core* solid
+    # magenta region; the model's soft-edge bleed extends another 10-20%
+    # past it. We paint a slightly enlarged area with the sampled
+    # surrounding colour before pasting the logo, so the final composite
+    # looks like the logo was placed directly on the card background
+    # rather than on top of a magenta block with a glow.
+    HALO_EXPAND_PCT = 0.18      # how far past the bbox we erase
+    SAMPLE_OFFSET_PCT = 0.30    # how far past the bbox we sample for colour
+    SAMPLE_STRIP_PX = 16        # thickness of the sampling strip
+
+    def _sample_card_background(bbox: tuple[int, int, int, int]) -> tuple[int, int, int]:
+        """Median RGB sampled from four strips just outside the halo.
+
+        Falls back to white when the slot is so close to the canvas edge
+        that no usable strips exist (rare — would only happen for slots
+        produced at <5% inset from the border).
+        """
+        x, y, w, h = bbox
+        H, W = base_rgb.shape[:2]
+        ox = max(8, int(w * SAMPLE_OFFSET_PCT))
+        oy = max(8, int(h * SAMPLE_OFFSET_PCT))
+        strips: list[np.ndarray] = []
+        # above
+        if y - oy - SAMPLE_STRIP_PX >= 0:
+            strips.append(base_rgb[y - oy - SAMPLE_STRIP_PX:y - oy, x:x + w])
+        # below
+        if y + h + oy + SAMPLE_STRIP_PX <= H:
+            strips.append(base_rgb[y + h + oy:y + h + oy + SAMPLE_STRIP_PX, x:x + w])
+        # left
+        if x - ox - SAMPLE_STRIP_PX >= 0:
+            strips.append(base_rgb[y:y + h, x - ox - SAMPLE_STRIP_PX:x - ox])
+        # right
+        if x + w + ox + SAMPLE_STRIP_PX <= W:
+            strips.append(base_rgb[y:y + h, x + w + ox:x + w + ox + SAMPLE_STRIP_PX])
+        if not strips:
+            return (255, 255, 255)
+        pixels = np.concatenate([s.reshape(-1, 3) for s in strips], axis=0)
+        # Median is robust to text glyphs or decoration lines that happen
+        # to land in a sample strip — a mean would skew toward those.
+        med = np.median(pixels, axis=0)
+        return tuple(int(c) for c in med)
+
+    draw_base = ImageDraw.Draw(base)
+
+    applied: list[dict] = []
+    for assign in body.assignments:
+        slot = slots_by_id.get(assign.slot_id)
+        if slot is None:
+            raise HTTPException(
+                400,
+                f"slot {assign.slot_id} not present in sidecar "
+                f"(detected slots: {sorted(slots_by_id)})",
+            )
+        logo_name = _safe_logo_name(assign.logo_filename)
+        logo_path = LOGO_GALLERY_DIR / logo_name
+        if not logo_path.is_file():
+            raise HTTPException(404, f"logo not found: {logo_name}")
+
+        x, y, w, h = slot["bbox"]
+
+        # Step 1 — erase the magenta + halo with a card-coloured fill.
+        bg_rgb = _sample_card_background((x, y, w, h))
+        hx = max(4, int(w * HALO_EXPAND_PCT))
+        hy = max(4, int(h * HALO_EXPAND_PCT))
+        fx0 = max(0, x - hx)
+        fy0 = max(0, y - hy)
+        fx1 = min(base.width, x + w + hx)
+        fy1 = min(base.height, y + h + hy)
+        draw_base.rectangle((fx0, fy0, fx1, fy1), fill=(*bg_rgb, 255))
+
+        # Step 2 — paste the logo, fit-inside with 8% inner padding so it
+        # doesn't kiss the freshly-painted card edges.
+        logo = Image.open(logo_path).convert("RGBA")
+        pad = max(4, int(min(w, h) * 0.08))
+        inner_w, inner_h = max(1, w - 2 * pad), max(1, h - 2 * pad)
+        # thumbnail mutates in-place and preserves aspect; LANCZOS gives
+        # the cleanest downsample for line-art logos / wordmarks.
+        logo.thumbnail((inner_w, inner_h), Image.Resampling.LANCZOS)
+        paste_x = x + (w - logo.width) // 2
+        paste_y = y + (h - logo.height) // 2
+        overlay.paste(logo, (paste_x, paste_y), logo)
+        applied.append({
+            "slot_id": assign.slot_id,
+            "logo": logo_name,
+            "background_rgb": list(bg_rgb),
+            "placed_at": [paste_x, paste_y, logo.width, logo.height],
+        })
+
+    composited = Image.alpha_composite(base, overlay).convert("RGB")
+    out_path = job_dir / "out.filled.png"
+    composited.save(out_path, optimize=True)
+
+    audit = {
+        "job_id": body.job_id,
+        "saved_at": datetime.utcnow().isoformat() + "Z",
+        "assignments": applied,
+    }
+    (job_dir / "out.filled.json").write_text(json.dumps(audit, indent=2))
+
+    return {
+        "output_url": f"/outputs/sensenova-render/{body.job_id}/out.filled.png",
+        "audit": audit,
+    }
 
 
 def _comfyui_running(host: str = "127.0.0.1", port: int = 8188, timeout: float = 0.5) -> bool:
@@ -4374,6 +4952,27 @@ async def sensenova_worker_stop():
 @app.post("/api/sensenova/worker/restart")
 async def sensenova_worker_restart():
     return await _wl.sensenova_restart()
+
+
+@app.get("/api/hidream/worker/status")
+async def hidream_worker_status():
+    s = await _wl.hidream_status()
+    return s.to_dict()
+
+
+@app.post("/api/hidream/worker/start")
+async def hidream_worker_start():
+    return await _wl.hidream_start()
+
+
+@app.post("/api/hidream/worker/stop")
+async def hidream_worker_stop():
+    return await _wl.hidream_stop()
+
+
+@app.post("/api/hidream/worker/restart")
+async def hidream_worker_restart():
+    return await _wl.hidream_restart()
 
 
 @app.get("/api/comfyui/status")

@@ -60,6 +60,9 @@ def _create_backend(name: str, cfg: dict):
     elif name == "huggingface":
         from backends.huggingface import HuggingFaceBackend
         return HuggingFaceBackend(cfg)
+    elif name == "hidream":
+        from backends.hidream import HiDreamBackend
+        return HiDreamBackend(cfg)
     return None
 
 

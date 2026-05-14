@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Infographic — Place logos</title>
+  <link rel="manifest" href="/static/manifest.json" />
+  <link rel="stylesheet" href="/static/css/studio.css" />
+  <style>
+    /* ── Page-specific styles ─────────────────────────────────────────── */
+    .fill-layout {
+      display: grid;
+      gap: 16px;
+      padding: 16px;
+      grid-template-columns: 1fr;
+    }
+    @media (min-width: 880px) {
+      .fill-layout { grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr); }
+    }
+
+    .canvas-pane {
+      position: relative;
+      background: rgba(255,255,255,0.04);
+      border-radius: 12px;
+      overflow: hidden;
+      align-self: start;
+    }
+    .canvas-pane.is-loading::before {
+      content: 'loading…';
+      position: absolute; inset: 0;
+      display: grid; place-items: center;
+      color: rgba(255,255,255,0.6);
+    }
+    .canvas-stage {
+      position: relative;
+      width: 100%;
+      line-height: 0;
+    }
+    .canvas-stage img {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+    /* Each slot is positioned with percentage offsets relative to the
+       image's natural dimensions, so it tracks the responsive img scale. */
+    .slot {
+      position: absolute;
+      box-sizing: border-box;
+      border: 2px dashed rgba(255, 255, 255, 0.85);
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.18);
+      cursor: pointer;
+      transition: background 120ms, border-color 120ms;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+    .slot:hover { background: rgba(0, 0, 0, 0.28); }
+    .slot.is-focused {
+      border-color: #00e0ff;
+      box-shadow: 0 0 0 3px rgba(0, 224, 255, 0.25);
+    }
+    .slot.is-filled { border-style: solid; border-color: rgba(0, 224, 255, 0.7); }
+    .slot__badge {
+      position: absolute; top: 6px; left: 6px;
+      background: rgba(0,0,0,0.65);
+      color: #fff;
+      font: 600 12px system-ui, sans-serif;
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+    .slot__preview {
+      max-width: 84%;
+      max-height: 84%;
+      object-fit: contain;
+      pointer-events: none;
+    }
+
+    /* ── Gallery sidebar ───────────────────────────────────────────────── */
+    .gallery-pane {
+      background: rgba(255,255,255,0.04);
+      border-radius: 12px;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      min-height: 280px;
+    }
+    .gallery-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .gallery-header h2 {
+      margin: 0;
+      font-size: 16px;
+      letter-spacing: 0.02em;
+    }
+    .upload-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 12px;
+      border-radius: 8px;
+      background: #00e0ff;
+      color: #001520;
+      font: 600 13px system-ui, sans-serif;
+      cursor: pointer;
+      border: none;
+    }
+    .upload-btn:hover { filter: brightness(1.08); }
+    .upload-btn input { display: none; }
+    .upload-hint {
+      font-size: 12px;
+      color: rgba(255,255,255,0.6);
+    }
+    .gallery {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+      gap: 10px;
+      max-height: 60vh;
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+    .logo-tile {
+      position: relative;
+      aspect-ratio: 1;
+      border-radius: 8px;
+      background: rgba(255,255,255,0.85);
+      padding: 10px;
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      border: 2px solid transparent;
+      transition: border-color 120ms;
+    }
+    .logo-tile:hover { border-color: rgba(0, 224, 255, 0.45); }
+    .logo-tile.is-active { border-color: #00e0ff; }
+    .logo-tile img {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+    }
+    .logo-tile__name {
+      position: absolute;
+      bottom: -16px; left: 0; right: 0;
+      font-size: 10px;
+      text-align: center;
+      color: rgba(255,255,255,0.7);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* ── Action bar ────────────────────────────────────────────────────── */
+    .actions-bar {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+      padding: 12px 16px 4px;
+    }
+    .status {
+      font-size: 13px;
+      color: rgba(255,255,255,0.7);
+    }
+    .primary-btn {
+      padding: 9px 18px;
+      border-radius: 8px;
+      background: #00e0ff;
+      color: #001520;
+      font-weight: 700;
+      border: none;
+      cursor: pointer;
+    }
+    .primary-btn[disabled] { opacity: 0.5; cursor: not-allowed; }
+    .ghost-btn {
+      padding: 9px 14px;
+      border-radius: 8px;
+      background: transparent;
+      color: rgba(255,255,255,0.85);
+      border: 1px solid rgba(255,255,255,0.25);
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body class="studio-body">
+  <header class="studio-header">
+    <a class="back-link" href="/studio/infographic">← Back to editor</a>
+    <h1 class="studio-title">Place logos</h1>
+    <span id="job-id-readout" class="upload-hint"></span>
+  </header>
+
+  <div class="actions-bar">
+    <span id="status-line" class="status">Loading…</span>
+    <span style="flex:1"></span>
+    <button id="clear-btn" class="ghost-btn" type="button">Clear all</button>
+    <button id="save-btn" class="primary-btn" type="button" disabled>Save composite</button>
+  </div>
+
+  <div class="fill-layout">
+    <div class="canvas-pane is-loading">
+      <div class="canvas-stage" id="canvas-stage">
+        <img id="output-img" alt="rendered infographic" />
+      </div>
+    </div>
+    <aside class="gallery-pane">
+      <div class="gallery-header">
+        <h2>Logo gallery</h2>
+        <label class="upload-btn">
+          Add image
+          <input id="upload-input" type="file" accept="image/*" />
+        </label>
+      </div>
+      <p class="upload-hint">Tap a slot, then tap a logo. Files land in <code>static/assets/logos/</code>.</p>
+      <div id="gallery" class="gallery"></div>
+    </aside>
+  </div>
+
+  <script type="module" src="/static/studio/js/infographic-fill.js"></script>
+</body>
+</html>

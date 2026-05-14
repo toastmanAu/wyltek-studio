@@ -17,6 +17,16 @@ let currentJobId = null;
 let activeFilter = 'all';
 let ws = null;
 
+// WS-fallback polling. The server broadcasts job_update over WS, but if the
+// connection drops mid-render or a `complete` message is missed, the UI can
+// get stuck at "saving (95%)" forever. The poll fires every POLL_INTERVAL_MS
+// while a job is active; if a WS update arrived within the last
+// WS_STALENESS_MS, the poll skips (no extra load when WS is healthy).
+let lastWsAt = 0;
+let pollTimer = null;
+const POLL_INTERVAL_MS = 3000;
+const WS_STALENESS_MS = 8000;
+
 // ── DOM ─────────────────────────────────────────────────────────────────────
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -33,6 +43,11 @@ const els = {
   heightInput: $('height-input'),
   seedInput: $('seed-input'),
   stepsInput: $('steps-input'),
+  backendInput: $('backend-input'),
+  useAgentInput: $('use-agent-input'),
+  reserveSlotsInput: $('reserve-slots-input'),
+  slotCountWrap: $('slot-count-wrap'),
+  slotCountInput: $('slot-count-input'),
   renderBtn: $('render-btn'),
   cancelBtn: $('cancel-btn'),
   renderStatus: $('render-status'),
@@ -40,6 +55,7 @@ const els = {
   outputPreview: $('output-preview'),
   outputActions: $('output-actions'),
   downloadLink: $('download-link'),
+  fillLink: $('fill-link'),
   // Worker bar
   sensePill: $('sense-pill'),
   senseStart: $('sense-start'),
@@ -144,12 +160,18 @@ els.backLink.addEventListener('click', backToGallery);
 
 // ── Render submission ───────────────────────────────────────────────────────
 async function startRender() {
+  const reserveSlots = els.reserveSlotsInput?.checked
+    ? Math.max(2, Math.min(10, parseInt(els.slotCountInput.value, 10) || 0))
+    : 0;
   const body = {
     prompt: els.promptArea.value.trim(),
     width: parseInt(els.widthInput.value, 10),
     height: parseInt(els.heightInput.value, 10),
     seed: parseInt(els.seedInput.value, 10),
     num_steps: parseInt(els.stepsInput.value, 10),
+    backend: els.backendInput.value,
+    use_prompt_agent: els.useAgentInput.checked,
+    reserve_logo_slots: reserveSlots,
   };
   if (!body.prompt) {
     els.renderStatus.textContent = 'Prompt is empty.';
@@ -160,6 +182,7 @@ async function startRender() {
   els.cancelBtn.hidden = false;
   els.outputPreview.hidden = true;
   els.outputActions.hidden = true;
+  if (els.fillLink) els.fillLink.hidden = true;
   els.progressFill.style.width = '0%';
   els.renderStatus.textContent = 'queued…';
 
@@ -175,6 +198,8 @@ async function startRender() {
     }
     const { job_id } = await r.json();
     currentJobId = job_id;
+    lastWsAt = Date.now();  // assume WS is healthy at submit; first poll skips
+    startPolling();
     els.renderStatus.textContent = `running (job ${job_id})…`;
   } catch (e) {
     els.renderStatus.textContent = `error: ${e.message}`;
@@ -199,7 +224,70 @@ async function cancelRender() {
 els.renderBtn.addEventListener('click', startRender);
 els.cancelBtn.addEventListener('click', cancelRender);
 
-// ── WS — progress + completion ──────────────────────────────────────────────
+if (els.reserveSlotsInput) {
+  const syncSlotCount = () => {
+    els.slotCountWrap.hidden = !els.reserveSlotsInput.checked;
+  };
+  els.reserveSlotsInput.addEventListener('change', syncSlotCount);
+  syncSlotCount();
+}
+
+// ── Job update — applied from BOTH WS and the fallback poller ───────────────
+// Both code paths produce/consume the same shape so the UI stays in sync
+// regardless of channel. Idempotent: the `currentJobId` guard makes a late
+// WS message after a poll-driven completion a harmless no-op.
+function applyJobUpdate(msg) {
+  if (msg.type !== 'job_update') return;
+  if (msg.job_id !== currentJobId) return;
+
+  if (msg.status === 'running') {
+    const pct = msg.progress || 0;
+    els.progressFill.style.width = `${pct}%`;
+    els.renderStatus.textContent = msg.message ? `${msg.message} (${pct}%)` : `rendering ${pct}%…`;
+  } else if (msg.status === 'complete') {
+    els.progressFill.style.width = '100%';
+    els.outputPreview.src = `${msg.output_url}?t=${Date.now()}`;
+    els.outputPreview.hidden = false;
+    els.outputActions.hidden = false;
+    els.downloadLink.href = msg.output_url;
+    // Sentinel-slot results: the server attaches a `slots` summary when
+    // reserve_logo_slots was > 0. Surface the manual-fill link only when
+    // detection actually found slots so a count-mismatch (model produced
+    // fewer rectangles than requested) is visible in the status line.
+    const slotInfo = msg.slots;
+    if (slotInfo && (slotInfo.detected ?? 0) > 0) {
+      const jobId = msg.job_id;
+      els.fillLink.href = `/studio/infographic-fill?job=${encodeURIComponent(jobId)}`;
+      els.fillLink.hidden = false;
+      const mismatch = (slotInfo.requested ?? 0) !== slotInfo.detected
+        ? ` (model produced ${slotInfo.detected}/${slotInfo.requested})`
+        : '';
+      els.renderStatus.textContent = `done — ${slotInfo.detected} logo slot${slotInfo.detected === 1 ? '' : 's'} ready${mismatch}`;
+    } else if (slotInfo) {
+      els.renderStatus.textContent = `done — no slots detected (requested ${slotInfo.requested}); try a different seed`;
+    } else {
+      els.renderStatus.textContent = 'done';
+    }
+    els.renderBtn.disabled = false;
+    els.cancelBtn.hidden = true;
+    currentJobId = null;
+    stopPolling();
+  } else if (msg.status === 'error') {
+    els.renderStatus.textContent = `error: ${msg.error || 'unknown'}`;
+    els.renderBtn.disabled = false;
+    els.cancelBtn.hidden = true;
+    currentJobId = null;
+    stopPolling();
+  } else if (msg.status === 'cancelled') {
+    els.renderStatus.textContent = 'cancelled';
+    els.renderBtn.disabled = false;
+    els.cancelBtn.hidden = true;
+    currentJobId = null;
+    stopPolling();
+  }
+}
+
+// ── WS — primary progress channel ───────────────────────────────────────────
 function connectWS() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   ws = new WebSocket(`${proto}://${location.host}/ws`);
@@ -208,29 +296,47 @@ function connectWS() {
     try { msg = JSON.parse(ev.data); } catch { return; }
     if (msg.type !== 'job_update') return;
     if (msg.job_id !== currentJobId) return;
-
-    if (msg.status === 'running') {
-      const pct = msg.progress || 0;
-      els.progressFill.style.width = `${pct}%`;
-      els.renderStatus.textContent = msg.message ? `${msg.message} (${pct}%)` : `rendering ${pct}%…`;
-    } else if (msg.status === 'complete') {
-      els.progressFill.style.width = '100%';
-      els.renderStatus.textContent = 'done';
-      els.outputPreview.src = `${msg.output_url}?t=${Date.now()}`;
-      els.outputPreview.hidden = false;
-      els.outputActions.hidden = false;
-      els.downloadLink.href = msg.output_url;
-      els.renderBtn.disabled = false;
-      els.cancelBtn.hidden = true;
-      currentJobId = null;
-    } else if (msg.status === 'error') {
-      els.renderStatus.textContent = `error: ${msg.error || 'unknown'}`;
-      els.renderBtn.disabled = false;
-      els.cancelBtn.hidden = true;
-      currentJobId = null;
-    }
+    lastWsAt = Date.now();
+    applyJobUpdate(msg);
   });
   ws.addEventListener('close', () => setTimeout(connectWS, 2000));
+}
+
+// ── Fallback poll — covers WS drops + missed completion messages ────────────
+// Fires every POLL_INTERVAL_MS while a job is active. Skips if a WS update
+// arrived in the last WS_STALENESS_MS so a healthy WS connection means
+// effectively zero extra requests. Synthesises a job_update-shaped object
+// and routes it through applyJobUpdate for single-source-of-truth handling.
+function startPolling() {
+  stopPolling();
+  pollTimer = setInterval(async () => {
+    if (!currentJobId) { stopPolling(); return; }
+    if (Date.now() - lastWsAt < WS_STALENESS_MS) return;
+    try {
+      const r = await fetch(`/api/job/${currentJobId}`);
+      if (!r.ok) return;
+      const j = await r.json();
+      applyJobUpdate({
+        type: 'job_update',
+        job_id: currentJobId,
+        status: j.status,
+        progress: j.progress,
+        message: j.message,
+        output_url: j.output_url,
+        error: j.error,
+      });
+    } catch {
+      // Silent — next tick retries. A persistent failure is visible via the
+      // WS reconnect path (and the user can always cancel from the UI).
+    }
+  }, POLL_INTERVAL_MS);
+}
+
+function stopPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
 }
 
 // ── Worker lifecycle — minimal subset of v1 (start/stop/restart + VRAM) ─────
