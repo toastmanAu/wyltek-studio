@@ -299,6 +299,14 @@ def list_unsorted(limit: int = 50) -> list[dict]:
             if not subdir.exists():
                 continue
             for f in sorted(subdir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+                # Defense in depth: directories sometimes leak into the
+                # asset dirs (historic HiDream worker debris, partial-write
+                # tmpdirs from other engines). If we surface them here, the
+                # gallery builds a /storage/<dirname> URL and FileResponse
+                # 500s when it can't serve a directory as a file. Filter
+                # to regular files only.
+                if not f.is_file():
+                    continue
                 if f.suffix == ".json":
                     continue
                 # Skip cache sidecars: e.g. `<basename>.texture.png` written

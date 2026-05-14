@@ -12,6 +12,7 @@ same loaded weights; only the sampler schedule differs.
 """
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 from backends import hidream_client
@@ -82,11 +83,47 @@ class HiDreamBackend(BaseBackend):
         ref_image_path = params.get("ref_image_path") or None
         keep_original_aspect = bool(params.get("keep_original_aspect", True))
 
-        # Output_dir for the worker = parent of the requested output_path. The
-        # worker writes to ``output_dir/out.png``; we move/copy to output_path
-        # afterwards so Wyltek's job queue sees the file at its expected path.
+        # The worker writes its render to ``<worker_output_dir>/out.png`` and
+        # leaves a ``stdout.log`` sidecar for debugging. We then copy the PNG
+        # to the Wyltek-side ``output_path`` (gallery location) and delete
+        # the worker dir.
+        #
+        # Two non-obvious constraints drive the path choice:
+        # 1. **Absolute path** — the hidream-worker daemon runs with
+        #    ``WorkingDirectory=/home/phill/hidream-o1-image`` per its
+        #    systemd unit, but Path.mkdir() on a *relative* string lands
+        #    wherever the worker happens to be cwd'd. Past sessions show
+        #    inconsistent placement (empty dirs at one path, real outputs
+        #    at another) because the cwd state isn't predictable across
+        #    restarts. ``.resolve()`` forces an absolute path.
+        # 2. **Outside ``storage/``** — placing the worker dir inside the
+        #    gallery scan path (e.g. ``storage/unsorted/<date>/images/``)
+        #    causes ``storage.list_unsorted`` to surface the directory as
+        #    a gallery asset; the UI then hits 500 trying to fetch
+        #    ``/storage/<dirname>`` as a file. Using ``outputs/hidream-
+        #    render/`` keeps the debris out of the gallery's view.
         out = Path(output_path)
-        worker_output_dir = out.parent / f"hidream_{out.stem}"
+        worker_output_dir = (
+            Path.cwd() / "outputs" / "hidream-render" / out.stem
+        ).resolve()
+        worker_output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Auto-orchestrate the worker. The 7900 XTX can only hold one
+        # large model at a time, so ensure_loaded() will stop sensenova-
+        # worker / comfyui (if they're holding VRAM) and start hidream-
+        # worker before we issue the render. Skipped when hidream is
+        # already loaded — same warm-path the infographic flow uses.
+        from studio.worker_lifecycle import ensure_loaded, WorkerArbitrationError
+
+        async def _on_arbitration(msg: str) -> None:
+            # Surface worker-swap progress at a low percentage; the main
+            # progress jump to 10% below takes over once the model is up.
+            await on_progress(3, msg)
+
+        try:
+            await ensure_loaded("hidream", on_status=_on_arbitration)
+        except WorkerArbitrationError as exc:
+            raise HiDreamError(f"worker arbitration: {exc}") from exc
 
         await on_progress(10, f"rendering ({model_type}, {width}x{height})")
 
@@ -119,13 +156,34 @@ class HiDreamBackend(BaseBackend):
         await on_progress(90, "saving")
 
         # Worker wrote to worker_output_dir/out.png; copy to the path Wyltek
-        # expects. Copy (not move) preserves the worker-side log file for
-        # debugging when something looks off.
-        worker_png = Path(result["png_path"])
+        # expects. We resolve the worker's reported path against
+        # ``worker_output_dir`` because the worker may echo back the relative
+        # path it received — anchoring on our absolute dir guarantees a
+        # working ``exists()`` check regardless of the worker's cwd.
+        reported = Path(result["png_path"])
+        worker_png = (
+            reported if reported.is_absolute() else worker_output_dir / reported.name
+        )
         if not worker_png.exists():
-            raise HiDreamError(
-                f"worker reported png_path={worker_png} but file missing")
+            # Fall back to the canonical filename inside our dir before
+            # giving up — the worker's contract is to always write
+            # ``out.png`` there.
+            fallback = worker_output_dir / "out.png"
+            if fallback.exists():
+                worker_png = fallback
+            else:
+                raise HiDreamError(
+                    f"worker reported png_path={reported!s} but no PNG found "
+                    f"at {worker_png!s} or {fallback!s}")
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(worker_png.read_bytes())
+
+        # Clean up the worker dir once the gallery PNG has landed. Best-
+        # effort — if the rmtree fails the next render will reuse the same
+        # dir via ``exist_ok=True`` and overwrite ``out.png`` cleanly.
+        try:
+            shutil.rmtree(worker_output_dir)
+        except OSError:
+            pass
 
         await on_progress(100, "done")

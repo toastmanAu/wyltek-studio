@@ -294,9 +294,15 @@ async function loadBackends() {
     const resp = await fetch('/api/backends');
     state.backends = await resp.json();
     renderBackendChips();
-    // Auto-select first backend
+    // Auto-select default backend. We prefer ComfyUI explicitly because the
+    // 25+ local checkpoints live there; falling back to whichever backend
+    // happens to be first in config.yaml (the previous behaviour) silently
+    // breaks the model dropdown if anyone reorders the YAML — the user
+    // sees "all my models disappeared" because the picker just rendered
+    // a different backend's tiny list.
     const names = Object.keys(state.backends);
-    if (names.length > 0) selectBackend(names[0]);
+    const preferred = names.includes('comfyui') ? 'comfyui' : names[0];
+    if (preferred) selectBackend(preferred);
   } catch (e) {
     toast('Failed to load backends', 'error');
   }
@@ -1233,10 +1239,7 @@ function saveImage() {
   const url = showingMesh ? mv.dataset.url : img.dataset.url;
   if (!url) return;
   const ext = (url.match(/\.[a-z0-9]+(?:\?|$)/i) || ['.png'])[0].replace(/\?.*$/, '');
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `wyltek-${Date.now()}${ext}`;
-  a.click();
+  saveFile(url, `wyltek-${Date.now()}${ext}`);
 }
 
 function copyImageUrl() {
