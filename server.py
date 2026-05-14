@@ -1532,8 +1532,14 @@ async def api_sprite_sheet(request: Request):
             game_preset_id=game_preset_id,
         )
 
+    # Lane default is 300s — way too short for sprite jobs. Cold start
+    # (model load + IPAdapter + CLIP-Vision) eats ~180s on its own; each
+    # warm frame is ~80-120s including rembg. Budget 240s cold start +
+    # 180s per pose. 4 poses → 16 min cap, 32 poses → 100 min cap.
+    sprite_timeout = 240 + len(poses) * 180
     job_queue.submit_background(_run_sprite_sheet(), lane="gpu",
-                                job_id=f"sprite-{job_id}")
+                                job_id=f"sprite-{job_id}",
+                                timeout=sprite_timeout)
     return {"job_id": job_id}
 
 
@@ -1724,6 +1730,20 @@ async def _run_sprite_sheet_job(
         }
         jobs[job_id].update(update)
         await broadcast({"type": "job_update", "job_id": job_id, **update})
+    except asyncio.CancelledError:
+        # Job lane timed out (or someone called /api/cancel). CancelledError
+        # is a BaseException so the broad `except Exception` below would miss
+        # it, leaving the UI frozen at the last progress %. Broadcast a
+        # clean error and re-raise so the cancellation still propagates.
+        jobs[job_id].update({
+            "status": "error",
+            "error": "job timed out (try fewer poses or wait — ComfyUI cold-start "
+                     "model load can eat 3 min before frame 1 even starts)",
+        })
+        await broadcast({"type": "job_update", "job_id": job_id,
+                         "status": "error",
+                         "error": jobs[job_id]["error"]})
+        raise
     except Exception as exc:
         jobs[job_id].update({"status": "error", "error": str(exc)})
         await broadcast({"type": "job_update", "job_id": job_id,
