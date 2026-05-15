@@ -12,8 +12,11 @@ Local-first AI creative studio by [Wyltek Industries](https://github.com/toastma
 | **Frame Cutter** | Load any video file, scrub frame-by-frame, grab a frame as a PNG. No upload — reads from your filesystem directly. |
 | **Image Tools** | Remove backgrounds (rembg), select objects to remove/replace by brush, rectangle, lasso, or SAM click-to-segment. |
 | **TTS Studio** | Text-to-speech with Piper (7 voices, 40× realtime), Kokoro (11 voices), XTTS v2 (voice cloning), and Bark (expressive emotions). |
-| **Music Studio** | MusicGen text-to-music, single/continuation/loop modes up to 180s. |
+| **Music Studio** | MusicGen text-to-music, single/continuation/loop modes up to 180s. Plus AudioGen for SFX. |
 | **Video Studio** | AnimateDiff text-to-video via ComfyUI. 8fps, 2–6 second clips. |
+| **Worldgen** | Text or image → explorable 3D scene. FLUX.1-dev + DA-2 depth + WorldGen LoRA. Exports as `.glb`. |
+| **Mesh Editor** | Re-texture an existing 3D mesh without regenerating geometry. Edit the baseColor atlas in any 2D tool, apply back to the mesh. |
+| **Sprite Sheets** | Pose-loop sprite sheets via SDXL + IP-Adapter. Tight/Loose identity presets, configurable pose presets, auto-composed sheet output. |
 | **Meme Forge** | Meme generator with templates, text overlays, and optional IP-Adapter conditioning. |
 | **Infographic Builder** | Eight template-driven infographic types (hub-and-spoke, comparison, timeline, stats, quadrant, list, geographic, hierarchical) powered by SenseNova-U1-8B-MoT, with optional numbered image references and inline post-edit canvas. |
 | **Projects** | Timeline compositor — drag clips, Ken Burns, xfade transitions, text overlays, narration + music mixing. |
@@ -168,6 +171,23 @@ Runs on CPU (GPU optionally via CUDA_VISIBLE_DEVICES).
 ## Video Studio
 
 Text-to-video via [AnimateDiff-Evolved](https://github.com/Kosinkadink/ComfyUI-AnimateDiff-Evolved) in ComfyUI. Uses SD 1.5 + motion module, 8fps, 2–6 second clips. Requires ComfyUI running with the AnimateDiff custom node and motion models installed.
+
+---
+
+## Prompt → 3D Mesh Pipeline
+
+Wyltek Studio turns a short text prompt into a finished 3D mesh in four stages — each handled by a dedicated studio page:
+
+![Prompt to 3D mesh pipeline](docs/screenshots/wyltek-studio-mesh-pipeline.png)
+
+| Stage | Studio | What happens |
+|-------|--------|--------------|
+| 1. Basic prompt | Image Generator | You write a short subject description. |
+| 2. OP my prompt | Image Generator (Ollama) | A local LLM expands your prompt with composition, lighting and a clean-background instruction tuned for mesh generation. |
+| 3. Background remove | Image Tools | `rembg` strips the background so the subject becomes a clean alpha-channel cutout — the input shape Worldgen needs. |
+| 4. Mesh generation | Worldgen | The cutout is reconstructed as a textured 3D mesh and exported as `.glb`, ready for the Mesh Editor, Blender, Three.js, model-viewer or any standard pipeline. |
+
+This infographic was itself generated inside Wyltek Studio's Infographic Builder using the SenseNova-U1-8B-MoT backend — it doubles as a pipeline diagram and an example of what the studio produces.
 
 ---
 
