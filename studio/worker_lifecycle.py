@@ -48,11 +48,13 @@ log = logging.getLogger(__name__)
 COMFYUI_SERVICE = "comfyui.service"
 SENSENOVA_SERVICE = "sensenova-worker.service"
 HIDREAM_SERVICE = "hidream-worker.service"
+MINICPM_SERVICE = "minicpm-worker.service"
 
 COMFYUI_HOST = "127.0.0.1"
 COMFYUI_PORT = 8188
 SENSENOVA_WORKER_URL = "http://127.0.0.1:9091"
 HIDREAM_WORKER_URL = "http://127.0.0.1:9092"
+MINICPM_WORKER_URL = "http://127.0.0.1:9093"
 
 # systemctl actions should return in well under a second on healthy hosts;
 # allow a generous ceiling so a slow unit start doesn't surface as a UI error.
@@ -354,15 +356,86 @@ async def hidream_restart() -> dict:
     return {"ok": rc == 0, "rc": rc, "error": err or None}
 
 
+# ---------------------------------------------------------------------------
+# Public: MiniCPM-V-4.6 worker (idle CPU-offload)
+# ---------------------------------------------------------------------------
+
+async def minicpm_status() -> WorkerStatus:
+    """Status for minicpm-worker.service + :9093 HTTP probe.
+
+    The MiniCPM worker is unusual: it can be ``running`` even when no VRAM
+    is allocated (idle offloaded to CPU). The ``device`` field in the JSON
+    payload — "cuda" or "cpu" — is the real residency signal, surfaced
+    here in ``detail.device`` so the UI can show "loaded (idle on CPU)"
+    distinctly from "loaded (active on GPU)".
+    """
+    unit_active, sub = await _unit_active(MINICPM_SERVICE)
+    status_json = await _http_get_json(
+        f"{MINICPM_WORKER_URL}/status", _HTTP_PROBE_TIMEOUT_S)
+    listening = status_json is not None
+
+    state = _classify(unit_active, sub, listening)
+    detail: dict = {"service": MINICPM_SERVICE, "url": MINICPM_WORKER_URL}
+    if status_json:
+        detail.update({
+            "loaded": status_json.get("loaded"),
+            "device": status_json.get("device"),
+            "idle_s": status_json.get("idle_s"),
+            "vram_gb": status_json.get("vram_gb"),
+            "vram_max_gb": status_json.get("vram_max_gb"),
+        })
+        # Unlike sensenova/hidream, MiniCPM reports loaded:true the moment
+        # weights are read from disk (still on CPU). We treat that as
+        # "running" — the worker is ready to serve; first request will
+        # incur a CPU->GPU move cost, surfaced in elapsed_s on /describe.
+        if state == "running" and status_json.get("loaded") is False:
+            state = "starting"
+    return WorkerStatus(
+        name="minicpm-worker",
+        state=state,
+        unit_active=unit_active,
+        unit_substate=sub,
+        listening=listening,
+        detail=detail,
+    )
+
+
+async def minicpm_start() -> dict:
+    rc, _, err = await _run_systemctl("start", MINICPM_SERVICE)
+    return {"ok": rc == 0, "rc": rc, "error": err or None}
+
+
+async def minicpm_stop() -> dict:
+    """Stop the MiniCPM worker. Hits /shutdown first for a clean GPU
+    flush; the unit is ``Restart=on-failure`` so a clean /shutdown exit
+    doesn't bounce it."""
+    try:
+        timeout = aiohttp.ClientTimeout(total=_HTTP_PROBE_TIMEOUT_S)
+        async with aiohttp.ClientSession(timeout=timeout) as s:
+            await s.post(f"{MINICPM_WORKER_URL}/shutdown")
+    except Exception:
+        pass
+
+    rc, _, err = await _run_systemctl("stop", MINICPM_SERVICE)
+    return {"ok": rc == 0, "rc": rc, "error": err or None}
+
+
+async def minicpm_restart() -> dict:
+    rc, _, err = await _run_systemctl("restart", MINICPM_SERVICE)
+    return {"ok": rc == 0, "rc": rc, "error": err or None}
+
+
 async def all_statuses() -> dict:
     """Convenience: all workers concurrently for the UI status pill."""
-    comfy, sense, hidream = await asyncio.gather(
-        comfyui_status(), sensenova_status(), hidream_status()
+    comfy, sense, hidream, minicpm = await asyncio.gather(
+        comfyui_status(), sensenova_status(),
+        hidream_status(), minicpm_status(),
     )
     return {
         "comfyui": comfy.to_dict(),
         "sensenova": sense.to_dict(),
         "hidream": hidream.to_dict(),
+        "minicpm": minicpm.to_dict(),
     }
 
 
@@ -392,6 +465,7 @@ _WORKER_TABLE: dict[str, tuple] = {
     "sensenova": (sensenova_status, sensenova_start, sensenova_stop),
     "hidream":   (hidream_status,   hidream_start,   hidream_stop),
     "comfyui":   (comfyui_status,   comfyui_start,   comfyui_stop),
+    "minicpm":   (minicpm_status,   minicpm_start,   minicpm_stop),
 }
 
 # Default conflict graph: which workers contend for the same VRAM. ComfyUI
@@ -399,10 +473,17 @@ _WORKER_TABLE: dict[str, tuple] = {
 # usually idles with no model resident — only an active ComfyUI render
 # truly conflicts, and that's surfaced by the render attempt OOMing rather
 # than worth auto-stopping (ComfyUI loses state when killed).
+#
+# MiniCPM is intentionally NOT a conflict with anyone: it can idle on CPU
+# (releasing its 2.5 GB of VRAM voluntarily), and even when active it only
+# needs ~3-4 GB peak — comfortably co-resident with HiDream's ~16 GB
+# without an OOM. The lifecycle in studio.minicpm_worker handles the
+# residency dance internally.
 _DEFAULT_CONFLICTS: dict[str, list[str]] = {
     "sensenova": ["hidream"],
     "hidream":   ["sensenova"],
     "comfyui":   [],
+    "minicpm":   [],
 }
 
 

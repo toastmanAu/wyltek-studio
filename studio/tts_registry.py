@@ -76,3 +76,12 @@ def init_engines(tts_config: dict):
             register(bark_engine)
     except Exception:
         pass
+
+    # Supertonic 3 — multilingual ONNX (31 langs, 10 voices), CPU-only.
+    try:
+        from studio.tts_supertonic import SupertonicEngine
+        supertonic = SupertonicEngine(tts_config.get("supertonic", {}))
+        if supertonic.available():
+            register(supertonic)
+    except Exception:
+        pass
