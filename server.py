@@ -5411,7 +5411,11 @@ async def infographic_render(body: _InfographicRenderBody):
     if not cat.is_known_style(body.style):
         raise HTTPException(status_code=400, detail=f"unknown_style: {body.style!r}")
 
-    expansion = expand(body.user_prompt, body.layout, body.style, catalog=cat)
+    loop = asyncio.get_event_loop()
+    expansion: ExpansionResult = await loop.run_in_executor(
+        None,
+        lambda: expand(body.user_prompt, body.layout, body.style, catalog=cat),
+    )
 
     job_id = uuid.uuid4().hex[:12]
     params = {

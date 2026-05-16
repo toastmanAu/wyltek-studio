@@ -210,6 +210,7 @@ def test_post_render_expansion_inline_then_enqueues(client, monkeypatch):
     assert data["expansion"]["fallback_used"] is False
     assert data["expansion"]["model"] == "gpt-oss:20b"
     assert captured["lane"] == "gpu"
+    assert captured["timeout"] == 1800
     assert captured["job_id"] == data["job_id"]
 
 
@@ -244,3 +245,4 @@ def test_post_render_unknown_style_returns_400(client):
         "layout": "bento", "style": "no-such-style",
     })
     assert r.status_code == 400
+    assert "style" in r.json()["detail"]
