@@ -94,6 +94,7 @@ function setBadge(el, kind) {
 }
 
 async function fetchFirstParagraph(kind, name) {
+  if (!/^[\w-]+$/.test(name)) return '';
   const key = `${kind}/${name}`;
   if (mdParagraphCache.has(key)) return mdParagraphCache.get(key);
   try {
@@ -144,11 +145,16 @@ function transitionTo(next) {
 }
 
 function updateReadyState() {
+  if (state.state === STATE.RENDERING) return;
   if (state.dataType && state.tone) {
-    transitionTo(state.state === STATE.PICKED ? STATE.PICKED : STATE.READY_TO_PICK);
+    transitionTo(preservableState() ? state.state : STATE.READY_TO_PICK);
   } else {
     transitionTo(STATE.EMPTY);
   }
+}
+
+function preservableState() {
+  return state.state === STATE.PICKED || state.state === STATE.RENDERED;
 }
 
 async function loadCatalog() {
