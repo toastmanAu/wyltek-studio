@@ -378,6 +378,8 @@ tier toggle, and an inline post-edit canvas that lets you drop, resize,
 and paste PNG layers over the rendered output, then save the composite
 as a new entry in your render history.
 
+- `/studio/infographic` — catalog-driven flow (87 layouts × 66 styles) or freeform gallery. **Setup:** `ollama pull gpt-oss:20b` for prompt expansion (falls back to a template if Ollama is unavailable; alternatives: `qwen3:14b`, `gemma4:31b`, `mistral-small3.2:24b` — settable via `INFOGRAPHIC_EXPANDER_MODEL`).
+
 ### Setup
 
 ```bash
