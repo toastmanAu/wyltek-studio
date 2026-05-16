@@ -322,12 +322,12 @@
   <div class="v2-wrap">
 
     <div class="tab-strip" role="tablist" aria-label="Infographic mode">
-      <button type="button" role="tab" id="tab-catalog"  aria-selected="true"  class="tab-btn active">Catalog</button>
-      <button type="button" role="tab" id="tab-freeform" aria-selected="false" class="tab-btn">Freeform</button>
+      <button type="button" role="tab" id="tab-catalog"  aria-selected="false" class="tab-btn">Catalog</button>
+      <button type="button" role="tab" id="tab-freeform" aria-selected="true"  class="tab-btn active">Freeform</button>
     </div>
 
     <!-- ── Catalog tab ─────────────────────────────────────────────────── -->
-    <div id="panel-catalog" role="tabpanel" aria-labelledby="tab-catalog">
+    <div id="panel-catalog" role="tabpanel" aria-labelledby="tab-catalog" hidden>
       <div class="catalog-card">
         <label class="catalog-prompt-label">
           What's this about?
@@ -421,7 +421,7 @@
     </div>
 
     <!-- ── Freeform tab (existing flow, unchanged) ─────────────────────── -->
-    <div id="panel-freeform" role="tabpanel" aria-labelledby="tab-freeform" hidden>
+    <div id="panel-freeform" role="tabpanel" aria-labelledby="tab-freeform">
       <!-- Worker lifecycle controls (reused from v1) -->
       <div class="worker-bar" id="worker-bar">
         <span class="worker-pill state-unknown" id="sense-pill">

@@ -1,16 +1,19 @@
-// Infographic page entry — thin dispatcher between Catalog (default) and
-// Freeform tabs. Each tab is a module under ./infographic/ that owns its
+// Infographic page entry — thin dispatcher between Freeform (default) and
+// Catalog tabs. Each tab is a module under ./infographic/ that owns its
 // own DOM panel inside the page.
 
 import { initFreeformMode } from './infographic/freeform-mode.js';
 import { initCatalogMode } from './infographic/catalog-mode.js';
 
-const STORAGE_KEY = 'infographic.activeTab';
+// v2 bump: original key auto-stored 'catalog' on every page load, so a
+// pure default-swap wouldn't shift anyone. New key forces a clean default
+// for all existing visitors; they can re-pin Catalog by clicking it.
+const STORAGE_KEY = 'infographic.activeTab.v2';
 const VALID_TABS = ['catalog', 'freeform'];
 
 function getInitialTab() {
   const stored = localStorage.getItem(STORAGE_KEY);
-  return VALID_TABS.includes(stored) ? stored : 'catalog';
+  return VALID_TABS.includes(stored) ? stored : 'freeform';
 }
 
 function setActiveTab(name) {
