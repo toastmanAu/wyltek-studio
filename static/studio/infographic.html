@@ -461,10 +461,30 @@
                   <option value="hidream">HiDream-O1 (better text)</option>
                 </select>
               </label>
-              <label>Width
+              <label>Aspect
+                <select id="aspect-input">
+                  <option value="square">Square 1:1</option>
+                  <option value="landscape-16-9">Landscape 16:9</option>
+                  <option value="portrait-9-16">Portrait 9:16</option>
+                  <option value="landscape-4-3">Landscape 4:3</option>
+                  <option value="portrait-3-4">Portrait 3:4</option>
+                  <option value="wide-2-1">Wide 2:1</option>
+                  <option value="tall-1-2">Tall 1:2</option>
+                  <option value="custom">Custom W×H…</option>
+                </select>
+              </label>
+              <label id="size-wrap">Size
+                <select id="size-input">
+                  <option value="1024">1K</option>
+                  <option value="1536">1.5K</option>
+                  <option value="2048" selected>2K</option>
+                  <option value="2720">Max</option>
+                </select>
+              </label>
+              <label id="width-wrap" hidden>Width
                 <input type="number" id="width-input" min="512" max="2720" step="32" />
               </label>
-              <label>Height
+              <label id="height-wrap" hidden>Height
                 <input type="number" id="height-input" min="512" max="2720" step="32" />
               </label>
               <label>Seed

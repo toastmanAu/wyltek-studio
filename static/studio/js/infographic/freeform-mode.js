@@ -39,6 +39,11 @@ const els = {
   refImg: $('reference-img'),
   refCaption: $('reference-caption'),
   promptArea: $('prompt-area'),
+  aspectInput: $('aspect-input'),
+  sizeInput: $('size-input'),
+  sizeWrap: $('size-wrap'),
+  widthWrap: $('width-wrap'),
+  heightWrap: $('height-wrap'),
   widthInput: $('width-input'),
   heightInput: $('height-input'),
   seedInput: $('seed-input'),
@@ -63,6 +68,102 @@ const els = {
   senseRestart: $('sense-restart'),
   vramReadout: $('vram-readout'),
 };
+
+// ── Dim presets ─────────────────────────────────────────────────────────────
+// SenseNova-U1 patchify requires width AND height to be /32-aligned. Rather
+// than letting users free-type into W/H boxes (and risk picking an aspect
+// the model wasn't trained on), the picker exposes ~7 training-distribution
+// aspects × 4 size tiers = 28 valid combinations. Custom mode keeps the
+// power-user escape hatch. See server.py:_align_to_patch — server also
+// snaps as belt-and-suspenders.
+const ALIGN = 32;
+const ASPECTS = [
+  { id: 'square',           ratio: 1,       label: 'Square 1:1' },
+  { id: 'landscape-16-9',   ratio: 16 / 9,  label: 'Landscape 16:9' },
+  { id: 'portrait-9-16',    ratio:  9 / 16, label: 'Portrait 9:16' },
+  { id: 'landscape-4-3',    ratio:  4 / 3,  label: 'Landscape 4:3' },
+  { id: 'portrait-3-4',     ratio:  3 / 4,  label: 'Portrait 3:4' },
+  { id: 'wide-2-1',         ratio: 2,       label: 'Wide 2:1' },
+  { id: 'tall-1-2',         ratio: 0.5,     label: 'Tall 1:2' },
+];
+const SIZES = [1024, 1536, 2048, 2720];  // long-edge tiers — match HTML <option> values
+const PREFS_KEY = 'infographic.freeform.dims';
+
+function snapFloor(v) { return Math.max(ALIGN, Math.floor(v / ALIGN) * ALIGN); }
+function snapNearest(v) { return Math.max(ALIGN, Math.round(v / ALIGN) * ALIGN); }
+
+// Derive concrete W×H from an aspect preset + a long-edge size tier.
+// The long edge is set exactly; the short edge is the ratio-derived value
+// snapped to the nearest /32 (so 16:9 at 2720 becomes 2720×1536 rather than
+// the unrendable 2720×1530).
+function presetDims(aspectId, sizeLong) {
+  const a = ASPECTS.find(x => x.id === aspectId);
+  if (!a) return null;
+  if (a.ratio === 1) return { width: sizeLong, height: sizeLong };
+  if (a.ratio > 1) {
+    return { width: sizeLong, height: snapNearest(sizeLong / a.ratio) };
+  }
+  return { width: snapNearest(sizeLong * a.ratio), height: sizeLong };
+}
+
+// Round arbitrary W×H to the closest aspect+size preset. Both metrics use
+// log distance so percentage differences are what's compared (not absolute
+// pixels) — matches human perception. Without log on size, a 1280-wide
+// entry is an exact pixel tie between 1024 and 1536; in log space 1280 is
+// clearly closer to 1536, which avoids surprise downscaling on prefill.
+function presetForDims(w, h) {
+  const longEdge = Math.max(w, h);
+  const ratio = w / h;
+  let bestAspect = ASPECTS[0];
+  let bestDist = Math.abs(Math.log(ratio) - Math.log(bestAspect.ratio));
+  for (const a of ASPECTS.slice(1)) {
+    const d = Math.abs(Math.log(ratio) - Math.log(a.ratio));
+    if (d < bestDist) { bestAspect = a; bestDist = d; }
+  }
+  let bestSize = SIZES[0];
+  let bestSizeDist = Math.abs(Math.log(longEdge) - Math.log(bestSize));
+  for (const s of SIZES.slice(1)) {
+    const d = Math.abs(Math.log(longEdge) - Math.log(s));
+    if (d < bestSizeDist) { bestSize = s; bestSizeDist = d; }
+  }
+  return { aspect: bestAspect.id, size: bestSize };
+}
+
+function loadDimPrefs() {
+  try {
+    const raw = localStorage.getItem(PREFS_KEY);
+    if (!raw) return null;
+    const p = JSON.parse(raw);
+    if (!p || typeof p !== 'object') return null;
+    return p;
+  } catch { return null; }
+}
+
+function saveDimPrefs(prefs) {
+  try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch {}
+}
+
+// Apply aspect+size (or custom W×H) to the DOM. Pure UI — the
+// width-input / height-input remain the source of truth that startRender()
+// submits, regardless of which mode produced them.
+function applyDimsToUI(prefs) {
+  els.aspectInput.value = prefs.aspect;
+  if (prefs.aspect === 'custom') {
+    els.sizeWrap.hidden = true;
+    els.widthWrap.hidden = false;
+    els.heightWrap.hidden = false;
+    els.widthInput.value = prefs.width;
+    els.heightInput.value = prefs.height;
+  } else {
+    els.sizeWrap.hidden = false;
+    els.widthWrap.hidden = true;
+    els.heightWrap.hidden = true;
+    els.sizeInput.value = String(prefs.size);
+    const { width, height } = presetDims(prefs.aspect, prefs.size);
+    els.widthInput.value = width;
+    els.heightInput.value = height;
+  }
+}
 
 // ── Small DOM helpers (createElement + textContent only) ────────────────────
 function el(tag, opts = {}, children = []) {
@@ -137,8 +238,15 @@ function openEditor(entry) {
   els.refImg.alt = entry.title;
   els.refCaption.textContent = `Reference: ${entry.title} • ${entry.source}`;
   els.promptArea.value = entry.prompt;
-  els.widthInput.value = entry.width;
-  els.heightInput.value = entry.height;
+
+  // Round the entry's source dims to the closest aspect+size preset, then
+  // persist so the next render keeps this state. The user can still flip
+  // to Custom afterwards — and that custom value also persists.
+  const matched = presetForDims(entry.width, entry.height);
+  const prefs = { aspect: matched.aspect, size: matched.size };
+  saveDimPrefs(prefs);
+  applyDimsToUI(prefs);
+
   els.seedInput.value = 42;
   els.stepsInput.value = '50';
   els.renderStatus.textContent = '';
@@ -149,6 +257,56 @@ function openEditor(entry) {
   els.editorWrap.hidden = false;
   window.scrollTo(0, 0);
 }
+
+// ── Picker change handlers ──────────────────────────────────────────────────
+function onAspectChange() {
+  const aspect = els.aspectInput.value;
+  if (aspect === 'custom') {
+    // Seed Custom mode with the current preset's resolved W×H so the user
+    // starts from valid numbers rather than empty boxes.
+    const current = loadDimPrefs() || { aspect: 'square', size: 2048 };
+    const seed = current.aspect === 'custom'
+      ? { width: current.width || 2048, height: current.height || 2048 }
+      : presetDims(current.aspect, current.size);
+    const prefs = { aspect: 'custom', width: seed.width, height: seed.height };
+    saveDimPrefs(prefs);
+    applyDimsToUI(prefs);
+  } else {
+    const size = parseInt(els.sizeInput.value, 10) || 2048;
+    const prefs = { aspect, size };
+    saveDimPrefs(prefs);
+    applyDimsToUI(prefs);
+  }
+}
+
+function onSizeChange() {
+  if (els.aspectInput.value === 'custom') return;
+  const prefs = { aspect: els.aspectInput.value, size: parseInt(els.sizeInput.value, 10) };
+  saveDimPrefs(prefs);
+  applyDimsToUI(prefs);
+}
+
+function onCustomDimBlur() {
+  // Snap user-typed values to /32 (server snaps too, but on-blur snap gives
+  // immediate UI feedback and keeps the persisted custom value valid).
+  const w = parseInt(els.widthInput.value, 10);
+  const h = parseInt(els.heightInput.value, 10);
+  if (!Number.isFinite(w) || !Number.isFinite(h)) return;
+  const width = snapFloor(w);
+  const height = snapFloor(h);
+  els.widthInput.value = width;
+  els.heightInput.value = height;
+  saveDimPrefs({ aspect: 'custom', width, height });
+}
+
+els.aspectInput.addEventListener('change', onAspectChange);
+els.sizeInput.addEventListener('change', onSizeChange);
+els.widthInput.addEventListener('blur', onCustomDimBlur);
+els.heightInput.addEventListener('blur', onCustomDimBlur);
+
+// Boot picker with persisted prefs (or sane default) BEFORE the user picks
+// a gallery entry — so a direct render without entry click is still valid.
+applyDimsToUI(loadDimPrefs() || { aspect: 'square', size: 2048 });
 
 function backToGallery() {
   els.editorWrap.hidden = true;
