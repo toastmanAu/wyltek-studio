@@ -49,10 +49,12 @@ def expand(
     the user message. Returns ExpansionResult either way — callers should
     surface fallback_used so the UI can chip "Ollama unavailable".
     """
-    model = model or os.environ.get("INFOGRAPHIC_EXPANDER_MODEL", DEFAULT_MODEL)
-    ollama_url = ollama_url or os.environ.get("OLLAMA_BASE_URL", DEFAULT_OLLAMA_URL)
-    timeout_s = timeout_s or float(os.environ.get("INFOGRAPHIC_EXPANDER_TIMEOUT_S",
-                                                   DEFAULT_TIMEOUT_S))
+    if model is None:
+        model = os.environ.get("INFOGRAPHIC_EXPANDER_MODEL", DEFAULT_MODEL)
+    if ollama_url is None:
+        ollama_url = os.environ.get("OLLAMA_BASE_URL", DEFAULT_OLLAMA_URL)
+    if timeout_s is None:
+        timeout_s = float(os.environ.get("INFOGRAPHIC_EXPANDER_TIMEOUT_S", DEFAULT_TIMEOUT_S))
 
     layout_md = catalog.read_markdown("layouts", layout)
     style_md = catalog.read_markdown("styles", style)

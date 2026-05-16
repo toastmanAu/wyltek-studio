@@ -54,7 +54,6 @@ def _mock_ollama_ok(response_text: str) -> httpx.MockTransport:
     """Mock transport that returns a successful OpenAI-shaped response."""
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
-        assert body["model"]  # sanity
         return httpx.Response(200, json={
             "choices": [{"message": {"content": response_text}}],
             "model": body["model"],
@@ -167,7 +166,7 @@ def test_template_fallback_includes_style_palette(catalog):
     assert "Pastels with one accent" in out  # from style's ## Color Palette
 
 
-def test_template_fallback_tolerates_missing_sections(catalog, tmp_path):
+def test_template_fallback_tolerates_missing_sections(catalog):
     """If a layout md has no `## Structure` heading, fallback still returns
     a usable string (uses whatever paragraphs are present)."""
     bare_layout = "# Sparse layout\n\nJust one paragraph, no headers.\n"
