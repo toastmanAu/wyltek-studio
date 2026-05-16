@@ -203,95 +203,309 @@
       border: 1px solid var(--border, #333); border-radius: 6px;
       cursor: pointer; text-decoration: none;
     }
+
+    /* Tab strip */
+    .tab-strip {
+      display: flex; gap: 4px; margin-bottom: 12px;
+      border-bottom: 1px solid var(--border, #333);
+    }
+    .tab-btn {
+      padding: 8px 16px; font-size: 13px;
+      background: transparent; color: var(--text-dim, #888);
+      border: 1px solid transparent; border-bottom: none;
+      border-radius: 6px 6px 0 0; cursor: pointer;
+    }
+    .tab-btn.active {
+      color: var(--text, #eee);
+      background: var(--card-bg, #1a1a1a);
+      border-color: var(--border, #333);
+    }
+    .tab-btn:focus { outline: 2px solid var(--accent, #4a90e2); }
+    [hidden] { display: none !important; }
+
+    /* Catalog card */
+    .catalog-card {
+      background: var(--card-bg, #1a1a1a);
+      border: 1px solid var(--border, #333);
+      border-radius: 12px; padding: 16px;
+      max-width: 760px; margin: 0 auto;
+    }
+    .catalog-prompt-label {
+      display: block; font-size: 12px;
+      color: var(--text-dim, #888); margin-bottom: 12px;
+    }
+    .catalog-prompt-label textarea {
+      width: 100%; padding: 10px; margin-top: 4px;
+      font: 14px/1.4 ui-sans-serif, system-ui, sans-serif;
+      background: var(--input-bg, #0d0d0d); color: var(--text, #eee);
+      border: 1px solid var(--border, #333); border-radius: 8px;
+      box-sizing: border-box; resize: vertical;
+    }
+    .catalog-pickers { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+    .catalog-pickers label, .catalog-controls label {
+      display: flex; flex-direction: column; gap: 4px;
+      font-size: 11px; color: var(--text-dim, #888);
+    }
+    .catalog-pickers select, .catalog-controls input, .catalog-controls select {
+      padding: 6px 8px; font-size: 13px;
+      background: var(--input-bg, #0d0d0d); color: var(--text, #eee);
+      border: 1px solid var(--border, #333); border-radius: 6px;
+    }
+    .catalog-controls { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 12px; }
+
+    /* Pick strip */
+    .pick-strip {
+      margin: 12px 0; padding: 10px;
+      border: 1px solid var(--border, #333); border-radius: 8px;
+      background: rgba(255,255,255,0.02);
+    }
+    .pick-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+    .pick-label { width: 60px; font-size: 12px; color: var(--text-dim, #888); }
+    .pick-value { font-family: ui-monospace, monospace; font-size: 13px; color: var(--text, #eee); }
+    .pick-badge { font-size: 10px; padding: 2px 8px; border-radius: 999px; }
+    .pick-badge.primary     { background: rgba(74, 222, 128, 0.15); color: #4ade80; }
+    .pick-badge.alternative { background: rgba(74, 144, 226, 0.15); color: #4a90e2; }
+    .pick-badge.outsider    { background: rgba(251, 191, 36, 0.15); color: #fbbf24; }
+    .pick-badge.fallback    { background: rgba(239, 68, 68, 0.15);  color: #ef4444; }
+    .reroll-btn {
+      margin-left: auto; padding: 4px 10px; font-size: 14px;
+      background: transparent; color: var(--text, #eee);
+      border: 1px solid var(--border, #333); border-radius: 6px; cursor: pointer;
+    }
+    .reroll-btn:hover { border-color: var(--accent, #4a90e2); }
+    .reroll-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .selection-details { margin-top: 8px; font-size: 12px; }
+    .selection-details summary { cursor: pointer; color: var(--text-dim, #888); }
+    .detail-body { padding-top: 8px; }
+    .detail-section { margin-bottom: 6px; }
+    .detail-section h4 { font-size: 11px; margin: 0 0 2px; color: var(--text-dim, #888); }
+    .detail-section p  { font-size: 12px; margin: 0; color: var(--text, #eee); line-height: 1.4; }
+
+    /* Catalog actions */
+    .catalog-actions { display: flex; gap: 8px; margin-top: 14px; }
+    .catalog-actions button {
+      flex: 1; padding: 10px; border-radius: 8px;
+      font-weight: 600; cursor: pointer; border: none;
+      background: var(--accent, #4a90e2); color: #fff;
+    }
+    .catalog-actions button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .fallback-chip {
+      margin-top: 10px; padding: 6px 10px; font-size: 12px;
+      background: rgba(251, 191, 36, 0.15); color: #fbbf24;
+      border: 1px solid rgba(251, 191, 36, 0.3); border-radius: 6px;
+    }
+    .expanded-prompt-details { margin-top: 10px; font-size: 12px; }
+    .expanded-prompt-details summary { cursor: pointer; color: var(--text-dim, #888); }
+    .expanded-prompt-details pre {
+      margin-top: 6px; padding: 10px;
+      background: var(--input-bg, #0d0d0d); color: var(--text, #eee);
+      border: 1px solid var(--border, #333); border-radius: 6px;
+      white-space: pre-wrap; font: 12px/1.4 ui-monospace, monospace;
+      max-height: 240px; overflow-y: auto;
+    }
+    #cat-render-status {
+      margin-top: 10px; font-size: 12px; color: var(--text-dim, #888);
+      min-height: 18px;
+    }
+    #cat-output-preview {
+      margin-top: 12px; width: 100%; border-radius: 8px;
+      background: #0a0a0a; max-height: 60vh; object-fit: contain;
+    }
+    #cat-output-preview[hidden] { display: none; }
+    #cat-output-actions { margin-top: 8px; display: flex; gap: 8px; }
+    #cat-output-actions[hidden] { display: none; }
   </style>
 </head>
 <body>
   <nav id="site-nav"></nav>
 
   <div class="v2-wrap">
-    <!-- Worker lifecycle controls (reused from v1) -->
-    <div class="worker-bar" id="worker-bar">
-      <span class="worker-pill state-unknown" id="sense-pill">
-        <span class="dot"></span><span class="label">SenseNova: …</span>
-      </span>
-      <button type="button" class="worker-btn" id="sense-start">Start worker</button>
-      <button type="button" class="worker-btn" id="sense-restart">Restart</button>
-      <button type="button" class="worker-btn danger" id="sense-stop">Stop</button>
-      <span class="spacer"></span>
-      <span class="vram" id="vram-readout"></span>
+
+    <div class="tab-strip" role="tablist" aria-label="Infographic mode">
+      <button type="button" role="tab" id="tab-catalog"  aria-selected="true"  class="tab-btn active">Catalog</button>
+      <button type="button" role="tab" id="tab-freeform" aria-selected="false" class="tab-btn">Freeform</button>
     </div>
 
-    <!-- Gallery view (default) -->
-    <div class="gallery-wrap" id="gallery-wrap">
-      <div class="filter-row" id="filter-row">
-        <!-- chips injected -->
-        <span class="corpus-hint" id="corpus-hint"></span>
+    <!-- ── Catalog tab ─────────────────────────────────────────────────── -->
+    <div id="panel-catalog" role="tabpanel" aria-labelledby="tab-catalog">
+      <div class="catalog-card">
+        <label class="catalog-prompt-label">
+          What's this about?
+          <textarea id="cat-user-prompt"
+            placeholder="e.g. Q4 capability matrix for the platform team"
+            rows="3" spellcheck="false"></textarea>
+        </label>
+
+        <div class="catalog-pickers">
+          <label>Data type
+            <select id="cat-data-type" disabled><option>Loading…</option></select>
+          </label>
+          <label>Tone / Context
+            <select id="cat-tone" disabled><option>Loading…</option></select>
+          </label>
+        </div>
+
+        <div class="pick-strip" id="cat-pick-strip" aria-live="polite" hidden>
+          <div class="pick-row">
+            <span class="pick-label">Layout</span>
+            <span class="pick-value" id="cat-layout-name">—</span>
+            <span class="pick-badge" id="cat-layout-badge"></span>
+            <button type="button" id="cat-reroll-layout"
+                    class="reroll-btn" aria-label="Re-roll layout"
+                    title="Re-roll layout">🎲</button>
+          </div>
+          <div class="pick-row">
+            <span class="pick-label">Style</span>
+            <span class="pick-value" id="cat-style-name">—</span>
+            <span class="pick-badge" id="cat-style-badge"></span>
+            <button type="button" id="cat-reroll-style"
+                    class="reroll-btn" aria-label="Re-roll style"
+                    title="Re-roll style">🎲</button>
+          </div>
+          <details class="selection-details">
+            <summary>Show selection details</summary>
+            <div class="detail-body">
+              <div class="detail-section">
+                <h4 id="cat-layout-detail-title">Layout</h4>
+                <p id="cat-layout-detail">—</p>
+              </div>
+              <div class="detail-section">
+                <h4 id="cat-style-detail-title">Style</h4>
+                <p id="cat-style-detail">—</p>
+              </div>
+            </div>
+          </details>
+        </div>
+
+        <div class="catalog-controls">
+          <label>Backend
+            <select id="cat-backend">
+              <option value="sensenova" selected>SenseNova U1</option>
+              <option value="hidream">HiDream-O1 (better text)</option>
+            </select>
+          </label>
+          <label>Steps
+            <select id="cat-steps">
+              <option value="20">20 (preview)</option>
+              <option value="50" selected>50 (final)</option>
+              <option value="75">75 (extra)</option>
+            </select>
+          </label>
+          <label>Width
+            <input type="number" id="cat-width" min="512" max="2720" step="32" value="1024" />
+          </label>
+          <label>Height
+            <input type="number" id="cat-height" min="512" max="2720" step="32" value="1820" />
+          </label>
+        </div>
+
+        <div class="catalog-actions">
+          <button type="button" id="cat-pick-btn" disabled>Pick layout &amp; style</button>
+          <button type="button" id="cat-render-btn" disabled>Render</button>
+        </div>
+
+        <div id="cat-fallback-chip" class="fallback-chip" hidden>
+          Ollama unavailable — template prompt used
+        </div>
+        <details class="expanded-prompt-details" id="cat-expanded-wrap" hidden>
+          <summary>Show expanded prompt</summary>
+          <pre id="cat-expanded"></pre>
+        </details>
+        <div id="cat-render-status"></div>
+        <div class="progress-track"><div class="progress-fill" id="cat-progress-fill"></div></div>
+        <img id="cat-output-preview" hidden alt="output" />
+        <div id="cat-output-actions" hidden>
+          <a id="cat-download-link" class="small-btn" download>Download PNG</a>
+        </div>
       </div>
-      <div class="gallery" id="gallery"></div>
     </div>
 
-    <!-- Editor view (shown after clicking a card) -->
-    <div class="editor-wrap" id="editor-wrap" hidden>
-      <button class="back-link" id="back-link" type="button">← Back to gallery</button>
-      <div class="editor">
-        <div class="pane">
-          <img class="reference-img" id="reference-img" alt="reference" />
-          <div class="reference-caption" id="reference-caption"></div>
+    <!-- ── Freeform tab (existing flow, unchanged) ─────────────────────── -->
+    <div id="panel-freeform" role="tabpanel" aria-labelledby="tab-freeform" hidden>
+      <!-- Worker lifecycle controls (reused from v1) -->
+      <div class="worker-bar" id="worker-bar">
+        <span class="worker-pill state-unknown" id="sense-pill">
+          <span class="dot"></span><span class="label">SenseNova: …</span>
+        </span>
+        <button type="button" class="worker-btn" id="sense-start">Start worker</button>
+        <button type="button" class="worker-btn" id="sense-restart">Restart</button>
+        <button type="button" class="worker-btn danger" id="sense-stop">Stop</button>
+        <span class="spacer"></span>
+        <span class="vram" id="vram-readout"></span>
+      </div>
+
+      <!-- Gallery view (default) -->
+      <div class="gallery-wrap" id="gallery-wrap">
+        <div class="filter-row" id="filter-row">
+          <span class="corpus-hint" id="corpus-hint"></span>
         </div>
-        <div class="pane">
-          <textarea class="prompt-area" id="prompt-area"
-            spellcheck="false"
-            placeholder="Edit the prompt…"></textarea>
-          <div class="controls">
-            <label>Backend
-              <select id="backend-input">
-                <option value="sensenova" selected>SenseNova U1 (default)</option>
-                <option value="hidream">HiDream-O1 (better text)</option>
-              </select>
-            </label>
-            <label>Width
-              <input type="number" id="width-input" min="512" max="2720" step="32" />
-            </label>
-            <label>Height
-              <input type="number" id="height-input" min="512" max="2720" step="32" />
-            </label>
-            <label>Seed
-              <input type="number" id="seed-input" min="0" value="42" />
-            </label>
-            <label>Steps
-              <select id="steps-input">
-                <option value="20">20 (preview)</option>
-                <option value="50" selected>50 (final)</option>
-                <option value="75">75 (extra)</option>
-                <option value="100">100 (max)</option>
-              </select>
-            </label>
-            <label class="checkbox-label" title="HiDream only — rewrites your prompt via Gemma-4 with the SCALIST framework before rendering. Sharpens small text, fonts, and layout. ~5-8s overhead.">
-              <input type="checkbox" id="use-agent-input" checked />
-              <span>SCALIST rewriter (HiDream)</span>
-            </label>
-            <label class="checkbox-label" title="Ask the model to paint N solid-magenta placeholder rectangles where logos/images can be dropped in afterwards. Opens a manual-fill page when the render completes.">
-              <input type="checkbox" id="reserve-slots-input" />
-              <span>Reserve N logo slots</span>
-            </label>
-            <label id="slot-count-wrap" hidden>Slots
-              <input type="number" id="slot-count-input" min="2" max="10" value="4" />
-            </label>
+        <div class="gallery" id="gallery"></div>
+      </div>
+
+      <!-- Editor view (shown after clicking a card) -->
+      <div class="editor-wrap" id="editor-wrap" hidden>
+        <button class="back-link" id="back-link" type="button">← Back to gallery</button>
+        <div class="editor">
+          <div class="pane">
+            <img class="reference-img" id="reference-img" alt="reference" />
+            <div class="reference-caption" id="reference-caption"></div>
           </div>
-          <div class="actions">
-            <button type="button" id="render-btn">Render</button>
-            <button type="button" id="cancel-btn" hidden>Cancel</button>
-          </div>
-          <div id="render-status"></div>
-          <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
-          <img id="output-preview" hidden alt="output" />
-          <div id="output-actions" hidden>
-            <a id="download-link" class="small-btn" download>Download PNG</a>
-            <a id="fill-link" class="small-btn" hidden>Place logos →</a>
+          <div class="pane">
+            <textarea class="prompt-area" id="prompt-area"
+              spellcheck="false"
+              placeholder="Edit the prompt…"></textarea>
+            <div class="controls">
+              <label>Backend
+                <select id="backend-input">
+                  <option value="sensenova" selected>SenseNova U1 (default)</option>
+                  <option value="hidream">HiDream-O1 (better text)</option>
+                </select>
+              </label>
+              <label>Width
+                <input type="number" id="width-input" min="512" max="2720" step="32" />
+              </label>
+              <label>Height
+                <input type="number" id="height-input" min="512" max="2720" step="32" />
+              </label>
+              <label>Seed
+                <input type="number" id="seed-input" min="0" value="42" />
+              </label>
+              <label>Steps
+                <select id="steps-input">
+                  <option value="20">20 (preview)</option>
+                  <option value="50" selected>50 (final)</option>
+                  <option value="75">75 (extra)</option>
+                  <option value="100">100 (max)</option>
+                </select>
+              </label>
+              <label class="checkbox-label">
+                <input type="checkbox" id="use-agent-input" checked />
+                <span>SCALIST rewriter (HiDream)</span>
+              </label>
+              <label class="checkbox-label">
+                <input type="checkbox" id="reserve-slots-input" />
+                <span>Reserve N logo slots</span>
+              </label>
+              <label id="slot-count-wrap" hidden>Slots
+                <input type="number" id="slot-count-input" min="2" max="10" value="4" />
+              </label>
+            </div>
+            <div class="actions">
+              <button type="button" id="render-btn">Render</button>
+              <button type="button" id="cancel-btn" hidden>Cancel</button>
+            </div>
+            <div id="render-status"></div>
+            <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+            <img id="output-preview" hidden alt="output" />
+            <div id="output-actions" hidden>
+              <a id="download-link" class="small-btn" download>Download PNG</a>
+              <a id="fill-link" class="small-btn" hidden>Place logos →</a>
+            </div>
           </div>
         </div>
       </div>
     </div>
+
   </div>
 
   <script type="module" src="/static/studio/js/infographic.js"></script>
