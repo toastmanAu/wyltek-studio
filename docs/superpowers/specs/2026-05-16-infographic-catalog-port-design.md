@@ -203,6 +203,8 @@ Errors:
 - `400 unknown_data_type` / `400 unknown_tone` — body includes valid list
 - `400 invalid_lock` — `lock` set but `current` missing or names not in catalog
 
+> **Implementation note (2026-05-16):** unknown `data_type` and unknown `tone` now return 200 with `from_pool: "fallback"` rather than 400. This keeps the UI responsive when the dropdown list drifts; the frontend can refresh `/catalog` on next interaction. The 400 path is reserved for malformed `lock`/`current` payloads (e.g. `lock` set without `current`, or `current.layout` not in the catalog).
+
 Latency target: **<100ms p99**.
 
 ### `POST /api/infographic/render`

@@ -27,7 +27,9 @@ from backends import sensenova as _sensenova
 from backends.sensenova import ASPECT_BUCKETS as _SENSENOVA_ASPECTS
 from job_queue import JobQueue
 from pydantic import BaseModel, Field
+from typing import Literal, Optional
 from studio import worker_lifecycle as _wl
+from studio.infographic_expander import expand, ExpansionResult
 
 # Global state
 config = {}
@@ -36,6 +38,33 @@ ws_clients: list[WebSocket] = []
 job_queue = JobQueue()
 _gallery_cache: dict = {"items": None, "ts": 0.0}
 GALLERY_TTL = 10  # seconds — also invalidated on job completion
+
+# Infographic catalog — vendored from sn-infographic; built by
+# scripts/build_infographic_catalog.py. Lazy-loaded on first access to
+# keep import-time fast and so the Freeform tab keeps working on a fresh
+# clone where the catalog hasn't been built yet.
+_INFOGRAPHIC_CATALOG = None
+_INFOGRAPHIC_CATALOG_DIR = os.environ.get(
+    "INFOGRAPHIC_CATALOG_DIR", "static/studio/catalogs"
+)
+
+
+def _get_infographic_catalog():
+    """Lazy singleton accessor. Returns None if the catalog isn't built —
+    callers must handle that path (Catalog tab disabled, Freeform still works)."""
+    global _INFOGRAPHIC_CATALOG
+    if _INFOGRAPHIC_CATALOG is not None:
+        return _INFOGRAPHIC_CATALOG
+    try:
+        from studio.infographic_catalog import InfographicCatalog
+        _INFOGRAPHIC_CATALOG = InfographicCatalog(Path(_INFOGRAPHIC_CATALOG_DIR))
+        print(f"[infographic_catalog] loaded from {_INFOGRAPHIC_CATALOG_DIR}: "
+              f"{_INFOGRAPHIC_CATALOG.counts()}")
+        return _INFOGRAPHIC_CATALOG
+    except FileNotFoundError as e:
+        print(f"[infographic_catalog] not built — run "
+              f"`python -m scripts.build_infographic_catalog` ({e})")
+        return None
 
 
 def load_config():
@@ -5277,6 +5306,152 @@ async def sensenova_precheck():
         "installed": installed,
         "blockers": blockers,
         "details": details,
+    }
+
+
+# -----------------------------------------------------------------------------
+# /api/infographic/* — catalog-driven flow (Move #1 of the SenseNova-Skills port).
+#
+# /catalog → dropdown content (data_types, contexts, counts).
+# /pick    → weighted-random layout+style sample with optional lock.
+# /render  → expand prompt via Ollama, then dispatch to /api/sensenova/render's
+#            internals. Defined further below in Task 5.
+# -----------------------------------------------------------------------------
+
+
+@app.get("/api/infographic/catalog")
+async def infographic_catalog():
+    cat = _get_infographic_catalog()
+    if cat is None:
+        raise HTTPException(status_code=503,
+                            detail="catalog_not_built — run scripts/build_infographic_catalog")
+    return {
+        "version": cat.version(),
+        "data_types": cat.list_data_types(),
+        "contexts": cat.list_contexts(),
+        "counts": cat.counts(),
+    }
+
+
+class _CurrentSelection(BaseModel):
+    layout: str = Field(min_length=1)
+    style: str = Field(min_length=1)
+
+
+class _InfographicPickBody(BaseModel):
+    data_type: str = Field(min_length=1)
+    tone: str = Field(min_length=1)
+    lock: Optional[Literal["layout", "style"]] = None
+    current: Optional[_CurrentSelection] = None
+    seed: Optional[int] = None
+
+
+@app.post("/api/infographic/pick")
+async def infographic_pick(body: _InfographicPickBody):
+    cat = _get_infographic_catalog()
+    if cat is None:
+        raise HTTPException(status_code=503, detail="catalog_not_built")
+
+    current_tuple: Optional[tuple[str, str]] = None
+    if body.lock is not None:
+        if body.current is None:
+            raise HTTPException(
+                status_code=400,
+                detail="invalid_lock — lock requires current.layout and current.style",
+            )
+        layout_name = body.current.layout
+        style_name = body.current.style
+        if not cat.is_known_layout(layout_name):
+            raise HTTPException(status_code=400,
+                                detail=f"invalid_lock — unknown current.layout {layout_name!r}")
+        if not cat.is_known_style(style_name):
+            raise HTTPException(status_code=400,
+                                detail=f"invalid_lock — unknown current.style {style_name!r}")
+        current_tuple = (layout_name, style_name)
+
+    (layout, style), from_pool = cat.sample_with_label(
+        body.data_type, body.tone,
+        seed=body.seed, lock=body.lock, current=current_tuple,
+    )
+    print(f"[infographic_pick] data_type={body.data_type!r} tone={body.tone!r} "
+          f"layout={layout} style={style} lock={body.lock} from_pool={from_pool}")
+    return {"layout": layout, "style": style, "from_pool": from_pool}
+
+
+class _InfographicRenderBody(BaseModel):
+    user_prompt: str = Field(min_length=1)
+    data_type: str = Field(min_length=1)
+    tone: str = Field(min_length=1)
+    layout: str = Field(min_length=1)
+    style: str = Field(min_length=1)
+    # Render params — same defaults as /api/sensenova/render's body.
+    backend: str = Field(default="sensenova", pattern="^(sensenova|hidream)$")
+    width: int = Field(default=1024, ge=512, le=2720)
+    height: int = Field(default=1820, ge=512, le=2720)
+    seed: int = Field(default=42, ge=0)
+    cfg_scale: float = Field(default=4.0, ge=0.5, le=10.0)
+    num_steps: int = Field(default=50, ge=4, le=100)
+    use_prompt_agent: bool = Field(default=True)
+    reserve_logo_slots: int = Field(default=0, ge=0, le=10)
+
+
+@app.post("/api/infographic/render", status_code=202)
+async def infographic_render(body: _InfographicRenderBody):
+    """Two-stage: inline expand() (~2s) → JobQueue render (~80s).
+
+    Returns the job_id immediately along with the expanded prompt and the
+    expansion metadata so the UI can show what was sent to the renderer
+    and chip "fallback used" when Ollama wasn't reachable.
+    """
+    cat = _get_infographic_catalog()
+    if cat is None:
+        raise HTTPException(status_code=503, detail="catalog_not_built")
+    if not cat.is_known_layout(body.layout):
+        raise HTTPException(status_code=400, detail=f"unknown_layout: {body.layout!r}")
+    if not cat.is_known_style(body.style):
+        raise HTTPException(status_code=400, detail=f"unknown_style: {body.style!r}")
+
+    loop = asyncio.get_event_loop()
+    expansion: ExpansionResult = await loop.run_in_executor(
+        None,
+        lambda: expand(body.user_prompt, body.layout, body.style, catalog=cat),
+    )
+
+    job_id = uuid.uuid4().hex[:12]
+    params = {
+        "prompt": expansion.prompt,
+        "width": body.width,
+        "height": body.height,
+        "seed": body.seed,
+        "cfg_scale": body.cfg_scale,
+        "num_steps": body.num_steps,
+        "backend": body.backend,
+        "use_prompt_agent": body.use_prompt_agent,
+        "reserve_logo_slots": body.reserve_logo_slots,
+    }
+    jobs[job_id] = {"status": "queued", "params": params, "progress": 0}
+    runner = (
+        _run_hidream_render_job
+        if body.backend == "hidream"
+        else _run_sensenova_render_job
+    )
+    job_queue.submit_background(
+        runner(job_id, params),
+        lane="gpu",
+        job_id=job_id,
+        timeout=1800,
+    )
+    print(f"[infographic_render] job_id={job_id} backend={body.backend} "
+          f"layout={body.layout} style={body.style} "
+          f"fallback={expansion.fallback_used} model={expansion.model}")
+    return {
+        "job_id": job_id,
+        "expanded_prompt": expansion.prompt,
+        "expansion": {
+            "elapsed_s": expansion.elapsed_s,
+            "model": expansion.model,
+            "fallback_used": expansion.fallback_used,
+        },
     }
 
 
