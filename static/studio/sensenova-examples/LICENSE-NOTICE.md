@@ -11,4 +11,13 @@ Source paths in the upstream repo:
 - `examples/t2i/data/samples_infographic.jsonl`
 - `examples/t2i/data/samples_reasoning.jsonl`
 
+Images under `skills-infographic/` and their associated prompts are
+redistributed from the
+[OpenSenseNova/SenseNova-Skills](https://github.com/OpenSenseNova/SenseNova-Skills)
+repository, under the Apache License 2.0.
+
+Source paths in the upstream repo:
+- `docs/images/infographics/`
+- `docs/sn-infographic-examples.md`
+
 Images under `local/` are produced by this Studio.

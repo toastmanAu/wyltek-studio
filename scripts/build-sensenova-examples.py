@@ -18,12 +18,16 @@ same output JSON ordering and the same titles.
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import re
 import shutil
 from pathlib import Path
 
+from PIL import Image
+
 REPO_DEFAULT = Path.home() / "SenseNova-U1"
+SKILLS_REPO_DEFAULT = Path.home() / "SenseNova-Skills"
 HERE = Path(__file__).resolve().parent.parent
 STATIC_DIR = HERE / "static" / "studio" / "sensenova-examples"
 CORPUS_JSON = HERE / "static" / "studio" / "sensenova-examples.json"
@@ -33,24 +37,56 @@ def derive_title(prompt: str, max_len: int = 60) -> str:
     """Pull a short, human-readable title out of a long prompt.
 
     Strategy (highest priority first):
-      1. Text inside the first pair of double quotes — these are usually
-         the literal poster/title text the model is asked to render.
-      2. First clause before the first comma or period.
+      1. Text inside the first pair of double quotes (ASCII or Chinese
+         smart quotes “…”) — these are usually the literal poster/title
+         text the model is asked to render.
+      2. First clause before the first ASCII or full-width punctuation mark.
       3. First max_len chars, trimmed at the last word boundary.
     """
-    m = re.search(r'"([^"]{3,80})"', prompt)
+    m = re.search(r'[“"]([^“”"]{3,80})[”"]', prompt)
     if m:
         return m.group(1).strip()
 
-    head = re.split(r"[.,;:]", prompt, maxsplit=1)[0].strip()
+    # Split on ASCII (.,;:) and full-width Chinese punctuation (。，；：).
+    head = re.split(r"[.,;:。，；：]", prompt, maxsplit=1)[0].strip()
     if 3 <= len(head) <= max_len:
         return head
 
     if len(prompt) <= max_len:
         return prompt.strip()
 
-    cut = prompt[:max_len].rsplit(" ", 1)[0]
-    return cut.strip() + "…"
+    # Chinese has no whitespace so rsplit(" ") would no-op; fall back to a
+    # hard truncate when no space exists in the window.
+    window = prompt[:max_len]
+    if " " in window:
+        return window.rsplit(" ", 1)[0].strip() + "…"
+    return window.strip() + "…"
+
+
+_BR_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
+
+
+def clean_prompt_html(raw: str) -> str:
+    """Normalise an HTML-embedded prompt to plain text with real newlines.
+
+    The Skills doc stores prompts inside <details> blocks with <br><br>
+    used for paragraph breaks. The freeform editor expects clean text in
+    its textarea — same format as a chatbot paste-target.
+    """
+    text = _BR_RE.sub("\n", raw)
+    text = html.unescape(text)
+    # Collapse runs of 3+ newlines to a paragraph break; strip per-line whitespace.
+    lines = [ln.strip() for ln in text.splitlines()]
+    out: list[str] = []
+    blank = False
+    for ln in lines:
+        if ln:
+            out.append(ln)
+            blank = False
+        elif not blank:
+            out.append("")
+            blank = True
+    return "\n".join(out).strip()
 
 
 def load_jsonl(path: Path) -> list[dict]:
@@ -85,6 +121,72 @@ def build_infographic(repo: Path) -> list[dict]:
             "height": p["height"],
             "thumbnail": f"/static/studio/sensenova-examples/infographic/{i:04d}.webp",
             "source": "sensenova-u1-repo",
+        })
+    return entries
+
+
+_SKILLS_EXAMPLE_RE = re.compile(
+    r"<b>(\d+)\.\s*([^<]+?)</b>"
+    r".*?<img\s+src=\"(images/infographics/info_\d+\.webp)\""
+    r".*?title=\"Click to select all\"[^>]*>(.+?)</div></details>",
+    re.DOTALL,
+)
+
+
+def build_skills_examples(skills_repo: Path) -> list[dict]:
+    """Parse SenseNova-Skills/docs/sn-infographic-examples.md for ~96 entries.
+
+    The upstream doc is a single HTML-in-Markdown table with one cell per
+    example: title in <b>, thumbnail under images/infographics/info_NNN.webp,
+    and the long expanded prompt nested inside a <details><summary>...
+    block. Width/height come from the actual webp on disk (PIL).
+    """
+    md = skills_repo / "docs" / "sn-infographic-examples.md"
+    img_root = skills_repo / "docs"
+
+    if not md.exists():
+        print(f"  [skills] skip — no sn-infographic-examples.md at {md}")
+        return []
+
+    text = md.read_text()
+    matches = _SKILLS_EXAMPLE_RE.findall(text)
+    if not matches:
+        print("  [skills] skip — regex matched 0 examples (doc format changed?)")
+        return []
+
+    dest = STATIC_DIR / "skills-infographic"
+    dest.mkdir(parents=True, exist_ok=True)
+
+    entries = []
+    for idx_str, raw_title, img_rel, raw_prompt in matches:
+        src_img = img_root / img_rel
+        if not src_img.exists():
+            print(f"  [skills] skip #{idx_str} — image not found: {src_img}")
+            continue
+
+        idx = int(idx_str)
+        target_name = Path(img_rel).name  # info_NNN.webp
+        target = dest / target_name
+        shutil.copy2(src_img, target)
+
+        with Image.open(target) as im:
+            w, h = im.size
+
+        prompt = clean_prompt_html(raw_prompt)
+        # Title derived from the prompt (same pipeline as U1 entries).
+        # derive_title() now handles Chinese smart quotes + punctuation, so
+        # it finds the quoted poster-title inside each Chinese prompt.
+        title = derive_title(prompt)
+
+        entries.append({
+            "id": f"skills-infographic-{idx:03d}",
+            "category": "skills-infographic",
+            "title": title,
+            "prompt": prompt,
+            "width": w,
+            "height": h,
+            "thumbnail": f"/static/studio/sensenova-examples/skills-infographic/{target_name}",
+            "source": "sensenova-skills-repo",
         })
     return entries
 
@@ -188,6 +290,8 @@ def build_local() -> list[dict]:
 CATEGORIES = [
     {"id": "infographic", "label": "Infographics",
      "description": "Dense structured visuals — diagrams, posters, hub-and-spoke layouts. SenseNova-U1's strongest area."},
+    {"id": "skills-infographic", "label": "Skills gallery",
+     "description": "Long-form prompts ported from OpenSenseNova/SenseNova-Skills. Chinese source prompts, English titles derived; paste into a chatbot to translate or remix before rendering."},
     {"id": "reasoning", "label": "Reasoning",
      "description": "Short prompts that produce stepped, physically- or logically-reasoned visuals."},
     {"id": "local", "label": "Studio examples",
@@ -207,6 +311,13 @@ def write_license_notice() -> None:
         "- `docs/assets/showcases/t2i_reasoning/`\n"
         "- `examples/t2i/data/samples_infographic.jsonl`\n"
         "- `examples/t2i/data/samples_reasoning.jsonl`\n\n"
+        "Images under `skills-infographic/` and their associated prompts are\n"
+        "redistributed from the\n"
+        "[OpenSenseNova/SenseNova-Skills](https://github.com/OpenSenseNova/SenseNova-Skills)\n"
+        "repository, under the Apache License 2.0.\n\n"
+        "Source paths in the upstream repo:\n"
+        "- `docs/images/infographics/`\n"
+        "- `docs/sn-infographic-examples.md`\n\n"
         "Images under `local/` are produced by this Studio.\n"
     )
 
@@ -215,6 +326,8 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", type=Path, default=REPO_DEFAULT,
                     help="Path to a local clone of sensenova/SenseNova-U1")
+    ap.add_argument("--skills-repo", type=Path, default=SKILLS_REPO_DEFAULT,
+                    help="Path to a local clone of OpenSenseNova/SenseNova-Skills")
     args = ap.parse_args()
 
     if not args.repo.exists():
@@ -226,6 +339,13 @@ def main() -> None:
     print("[build] infographic")
     entries.extend(build_infographic(args.repo))
     print(f"  → {len(entries)} entries")
+    print("[build] skills-infographic")
+    pre = len(entries)
+    if args.skills_repo.exists():
+        entries.extend(build_skills_examples(args.skills_repo))
+        print(f"  → +{len(entries) - pre} entries")
+    else:
+        print(f"  → skip (no skills repo at {args.skills_repo})")
     print("[build] reasoning")
     pre = len(entries)
     entries.extend(build_reasoning(args.repo))
