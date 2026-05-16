@@ -63,6 +63,18 @@ def derive_title(prompt: str, max_len: int = 60) -> str:
     return window.strip() + "…"
 
 
+# SenseNova-U1's patchify expects width AND height to be multiples of
+# patch_size × merge_size = 32. Non-aligned dims crash the model at the
+# reshape step (see modeling_neo_chat.py:381). Floor-snap to avoid
+# exceeding the model's max-dim cap (2720).
+_SENSENOVA_DIM_ALIGN = 32
+
+
+def snap_dim(value: int, align: int = _SENSENOVA_DIM_ALIGN) -> int:
+    """Floor-snap a dimension to the alignment, with a minimum of one unit."""
+    return max(align, (value // align) * align)
+
+
 _BR_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
 
 
@@ -170,7 +182,14 @@ def build_skills_examples(skills_repo: Path) -> list[dict]:
         shutil.copy2(src_img, target)
 
         with Image.open(target) as im:
-            w, h = im.size
+            raw_w, raw_h = im.size
+
+        # Skills webps are exported at arbitrary aspect ratios (1280×714,
+        # 1200×670 …). SenseNova-U1 needs /32 alignment or t2i_generate
+        # crashes at patchify. Floor-snap so the pre-filled editor values
+        # are valid by construction.
+        w = snap_dim(raw_w)
+        h = snap_dim(raw_h)
 
         prompt = clean_prompt_html(raw_prompt)
         # Title derived from the prompt (same pipeline as U1 entries).

@@ -26,7 +26,7 @@ from backends import registry
 from backends import sensenova as _sensenova
 from backends.sensenova import ASPECT_BUCKETS as _SENSENOVA_ASPECTS
 from job_queue import JobQueue
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Literal, Optional
 from studio import worker_lifecycle as _wl
 from studio.infographic_expander import expand, ExpansionResult
@@ -4411,11 +4411,29 @@ async def _cancel_in_flight(job_id: str) -> None:
 # -----------------------------------------------------------------------------
 
 
+# SenseNova-U1's patchify (modeling_neo_chat.py:381) expects width AND
+# height to be exact multiples of patch_size × merge_size = 32. A
+# non-aligned dim crashes the model deep inside t2i_generate (reshape
+# size mismatch). Floor-snap at the API boundary so every render path
+# is safe — corpus pre-fill, manual override, /render alias, anything.
+_SENSENOVA_DIM_ALIGN = 32
+
+
+def _snap_sensenova_dim(value: int) -> int:
+    """Floor-snap a SenseNova render dim to the model's patch alignment."""
+    return max(_SENSENOVA_DIM_ALIGN, (value // _SENSENOVA_DIM_ALIGN) * _SENSENOVA_DIM_ALIGN)
+
+
 class _SenseNovaRenderBody(BaseModel):
     prompt: str = Field(min_length=1)
     width: int = Field(ge=512, le=2720)
     height: int = Field(ge=512, le=2720)
     seed: int = Field(default=42, ge=0)
+
+    @field_validator("width", "height")
+    @classmethod
+    def _align_to_patch(cls, v: int) -> int:
+        return _snap_sensenova_dim(v)
     cfg_scale: float = Field(default=4.0, ge=0.5, le=10.0)
     num_steps: int = Field(default=50, ge=4, le=100)
     # 2026-05-13: infographic flow can now route to HiDream-O1 instead of
