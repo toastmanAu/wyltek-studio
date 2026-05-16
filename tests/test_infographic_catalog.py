@@ -172,3 +172,43 @@ def test_read_markdown_rejects_unknown_kind(catalog_dir):
 def test_expander_system_prompt(catalog_dir):
     cat = InfographicCatalog(catalog_dir)
     assert cat.expander_system_prompt() == "expander system prompt"
+
+
+def test_version(catalog_dir):
+    cat = InfographicCatalog(catalog_dir)
+    assert cat.version() == "1"
+
+
+def test_is_known_layout(catalog_dir):
+    cat = InfographicCatalog(catalog_dir)
+    assert cat.is_known_layout("bento") is True
+    assert cat.is_known_layout("does-not-exist") is False
+
+
+def test_is_known_style(catalog_dir):
+    cat = InfographicCatalog(catalog_dir)
+    assert cat.is_known_style("memphis") is True
+    assert cat.is_known_style("does-not-exist") is False
+
+
+def test_classify_unknown_name_returns_fallback(catalog_dir):
+    """When `lock`+`current` provides a layout name that doesn't exist in
+    the catalog at all (e.g., a stale dropdown value), classify should
+    return 'fallback', not 'outsider'."""
+    cat = InfographicCatalog(catalog_dir)
+    (layout, style), label = cat.sample_with_label(
+        "overview", "Business", seed=0,
+        lock="layout", current=("not-in-catalog", "memphis"),
+    )
+    assert layout == "not-in-catalog"  # lock preserves caller's value
+    assert label["layout"] == "fallback"
+
+
+def test_classify_unknown_style_name_returns_fallback(catalog_dir):
+    cat = InfographicCatalog(catalog_dir)
+    (layout, style), label = cat.sample_with_label(
+        "overview", "Business", seed=0,
+        lock="style", current=("bento", "not-in-catalog"),
+    )
+    assert style == "not-in-catalog"
+    assert label["style"] == "fallback"

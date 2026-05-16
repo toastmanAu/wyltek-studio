@@ -32,17 +32,17 @@ class InfographicCatalog:
     """
 
     def __init__(self, catalog_dir: Path) -> None:
-        self.dir = Path(catalog_dir)
-        index_path = self.dir / "index.json"
-        self.index = json.loads(index_path.read_text())
+        self._dir = Path(catalog_dir)
+        index_path = self._dir / "index.json"
+        self._index = json.loads(index_path.read_text())
 
-        self._data_type_map = {dt["key"]: dt for dt in self.index["data_types"]}
-        self._context_map = {ctx["key"]: ctx for ctx in self.index["contexts"]}
-        self._all_layouts: list[str] = list(self.index["all_layouts"])
-        self._all_styles: list[str] = list(self.index["all_styles"])
+        self._data_type_map = {dt["key"]: dt for dt in self._index["data_types"]}
+        self._context_map = {ctx["key"]: ctx for ctx in self._index["contexts"]}
+        self._all_layouts: list[str] = list(self._index["all_layouts"])
+        self._all_styles: list[str] = list(self._index["all_styles"])
         self._layout_set = set(self._all_layouts)
         self._style_set = set(self._all_styles)
-        self._fallback = self.index["fallback"]
+        self._fallback = self._index["fallback"]
         log.info(
             "infographic_catalog loaded: %d data_types, %d contexts, %d layouts, %d styles",
             len(self._data_type_map), len(self._context_map),
@@ -59,6 +59,15 @@ class InfographicCatalog:
 
     def counts(self) -> dict[str, int]:
         return {"layouts": len(self._all_layouts), "styles": len(self._all_styles)}
+
+    def version(self) -> str:
+        return self._index.get("version", "1")
+
+    def is_known_layout(self, name: str) -> bool:
+        return name in self._layout_set
+
+    def is_known_style(self, name: str) -> bool:
+        return name in self._style_set
 
     # ── Sampling ────────────────────────────────────────────────────────────
 
@@ -139,7 +148,9 @@ class InfographicCatalog:
             return "primary"
         if name in entry["alternatives"]:
             return "alternative"
-        return "outsider"
+        if name in self._layout_set:
+            return "outsider"
+        return "fallback"
 
     def _classify_style(self, context: str, name: str) -> PoolKind:
         entry = self._context_map.get(context)
@@ -149,7 +160,9 @@ class InfographicCatalog:
             return "primary"
         if name in entry["alternatives"]:
             return "alternative"
-        return "outsider"
+        if name in self._style_set:
+            return "outsider"
+        return "fallback"
 
     # ── Markdown reads ──────────────────────────────────────────────────────
 
@@ -162,7 +175,7 @@ class InfographicCatalog:
             raise ValueError(f"unknown kind {kind!r} — expected 'layouts' or 'styles'")
         if name not in valid:
             raise KeyError(f"unknown {kind[:-1]} {name!r}")
-        return (self.dir / kind / f"{name}.md").read_text()
+        return (self._dir / kind / f"{name}.md").read_text()
 
     def expander_system_prompt(self) -> str:
-        return (self.dir / "prompts-expand-system.md").read_text()
+        return (self._dir / "prompts-expand-system.md").read_text()
