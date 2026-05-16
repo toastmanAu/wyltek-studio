@@ -109,11 +109,32 @@ def test_build_catalog_idempotent(upstream, tmp_path):
     assert idx1 == idx2
 
 
-def test_build_catalog_fallback_uses_first_data_type_primary(upstream, tmp_path):
+def test_build_catalog_fallback_uses_canonical_when_present(upstream, tmp_path):
     out = tmp_path / "out"
     build_catalog(upstream, out)
     index = json.loads((out / "index.json").read_text())
     assert index["fallback"] == {"layout": "hub-spoke", "style": "corporate-memphis"}
+
+
+def test_build_catalog_fallback_uses_first_primary_when_canonical_missing(
+    upstream, tmp_path
+):
+    """When the canonical fallback layout (hub-spoke) is absent from the
+    upstream tree, fallback.layout must drop to the first data_type row's
+    primary (bento-grid in the fixture). Also drop hub-spoke from the
+    selection table so cross-ref validation still passes."""
+    (upstream / "layouts" / "hub-spoke.md").unlink()
+    sel = upstream / "layout-style-selection.md"
+    sel.write_text(
+        sel.read_text()
+        .replace("hub-spoke, timeline", "timeline")
+        .replace("| process / tutorial  | hub-spoke  | timeline, bento-grid   |",
+                 "| process / tutorial  | timeline   | bento-grid             |")
+    )
+    out = tmp_path / "out"
+    build_catalog(upstream, out)
+    index = json.loads((out / "index.json").read_text())
+    assert index["fallback"]["layout"] == "bento-grid"
 
 
 def test_build_catalog_strips_backticks_from_table_cells(upstream, tmp_path):

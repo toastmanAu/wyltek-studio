@@ -39,6 +39,9 @@ def build_catalog(refs_dir: Path, out_dir: Path) -> None:
     refs_dir = Path(refs_dir)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    for sub in ("layouts", "styles"):
+        if (out_dir / sub).exists():
+            shutil.rmtree(out_dir / sub)
     (out_dir / "layouts").mkdir(exist_ok=True)
     (out_dir / "styles").mkdir(exist_ok=True)
 
@@ -52,9 +55,13 @@ def build_catalog(refs_dir: Path, out_dir: Path) -> None:
     layouts = sorted(p.stem for p in (out_dir / "layouts").glob("*.md"))
     styles = sorted(p.stem for p in (out_dir / "styles").glob("*.md"))
 
-    data_types, contexts = _parse_selection_tables(
-        (out_dir / "layout-style-selection.md").read_text()
-    )
+    sel_file = out_dir / "layout-style-selection.md"
+    if not sel_file.exists():
+        raise FileNotFoundError(
+            f"layout-style-selection.md not found in {refs_dir}. "
+            "Is this the correct upstream references/ directory?"
+        )
+    data_types, contexts = _parse_selection_tables(sel_file.read_text())
 
     layout_set, style_set = set(layouts), set(styles)
     for dt in data_types:
@@ -125,6 +132,7 @@ def _parse_selection_tables(md_text: str) -> tuple[list[dict], list[dict]]:
         # Upstream wraps layout / style names in markdown inline-code
         # backticks (e.g. `linear-progression`). Strip them so cross-ref
         # validation against the .md filename set works.
+        # col2 is a single backticked token; col3 is a comma-separated list of them.
         col2 = col2.strip("`").strip()
         col3 = col3.replace("`", "")
         if "data_type" in col1_lower or "data type" in col1_lower:
