@@ -29,6 +29,7 @@ from job_queue import JobQueue
 from pydantic import BaseModel, Field
 from typing import Literal, Optional
 from studio import worker_lifecycle as _wl
+from studio.infographic_expander import expand, ExpansionResult
 
 # Global state
 config = {}
@@ -5375,6 +5376,79 @@ async def infographic_pick(body: _InfographicPickBody):
     print(f"[infographic_pick] data_type={body.data_type!r} tone={body.tone!r} "
           f"layout={layout} style={style} lock={body.lock} from_pool={from_pool}")
     return {"layout": layout, "style": style, "from_pool": from_pool}
+
+
+class _InfographicRenderBody(BaseModel):
+    user_prompt: str = Field(min_length=1)
+    data_type: str = Field(min_length=1)
+    tone: str = Field(min_length=1)
+    layout: str = Field(min_length=1)
+    style: str = Field(min_length=1)
+    # Render params — same defaults as /api/sensenova/render's body.
+    backend: str = Field(default="sensenova", pattern="^(sensenova|hidream)$")
+    width: int = Field(default=1024, ge=512, le=2720)
+    height: int = Field(default=1820, ge=512, le=2720)
+    seed: int = Field(default=42, ge=0)
+    cfg_scale: float = Field(default=4.0, ge=0.5, le=10.0)
+    num_steps: int = Field(default=50, ge=4, le=100)
+    use_prompt_agent: bool = Field(default=True)
+    reserve_logo_slots: int = Field(default=0, ge=0, le=10)
+
+
+@app.post("/api/infographic/render", status_code=202)
+async def infographic_render(body: _InfographicRenderBody):
+    """Two-stage: inline expand() (~2s) → JobQueue render (~80s).
+
+    Returns the job_id immediately along with the expanded prompt and the
+    expansion metadata so the UI can show what was sent to the renderer
+    and chip "fallback used" when Ollama wasn't reachable.
+    """
+    cat = _get_infographic_catalog()
+    if cat is None:
+        raise HTTPException(status_code=503, detail="catalog_not_built")
+    if not cat.is_known_layout(body.layout):
+        raise HTTPException(status_code=400, detail=f"unknown_layout: {body.layout!r}")
+    if not cat.is_known_style(body.style):
+        raise HTTPException(status_code=400, detail=f"unknown_style: {body.style!r}")
+
+    expansion = expand(body.user_prompt, body.layout, body.style, catalog=cat)
+
+    job_id = uuid.uuid4().hex[:12]
+    params = {
+        "prompt": expansion.prompt,
+        "width": body.width,
+        "height": body.height,
+        "seed": body.seed,
+        "cfg_scale": body.cfg_scale,
+        "num_steps": body.num_steps,
+        "backend": body.backend,
+        "use_prompt_agent": body.use_prompt_agent,
+        "reserve_logo_slots": body.reserve_logo_slots,
+    }
+    jobs[job_id] = {"status": "queued", "params": params, "progress": 0}
+    runner = (
+        _run_hidream_render_job
+        if body.backend == "hidream"
+        else _run_sensenova_render_job
+    )
+    job_queue.submit_background(
+        runner(job_id, params),
+        lane="gpu",
+        job_id=job_id,
+        timeout=1800,
+    )
+    print(f"[infographic_render] job_id={job_id} backend={body.backend} "
+          f"layout={body.layout} style={body.style} "
+          f"fallback={expansion.fallback_used} model={expansion.model}")
+    return {
+        "job_id": job_id,
+        "expanded_prompt": expansion.prompt,
+        "expansion": {
+            "elapsed_s": expansion.elapsed_s,
+            "model": expansion.model,
+            "fallback_used": expansion.fallback_used,
+        },
+    }
 
 
 # ===== Worker lifecycle controls (UI-driven; no terminal access needed) =====

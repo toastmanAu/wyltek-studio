@@ -163,3 +163,84 @@ def test_post_pick_returns_503_when_not_built(client_no_catalog):
         json={"data_type": "anything", "tone": "anything"},
     )
     assert r.status_code == 503
+
+
+# ── /api/infographic/render ────────────────────────────────────────────────
+
+
+def test_post_render_expansion_inline_then_enqueues(client, monkeypatch):
+    """Render path: expand() runs inline, then a JobQueue submission happens.
+    We mock both — JobQueue.submit_background to capture the call, and
+    expand() to short-circuit Ollama."""
+    import server
+    from studio.infographic_expander import ExpansionResult
+
+    captured = {}
+    def fake_submit(coro, *, lane, job_id, timeout):
+        captured["lane"] = lane
+        captured["job_id"] = job_id
+        captured["timeout"] = timeout
+        coro.close()  # we never run the actual render
+
+    def fake_expand(user_prompt, layout, style, *, catalog):
+        return ExpansionResult(
+            prompt=f"EXPANDED({user_prompt}) layout={layout} style={style}",
+            fallback_used=False, elapsed_s=1.5, model="gpt-oss:20b",
+        )
+
+    monkeypatch.setattr(server.job_queue, "submit_background", fake_submit)
+    monkeypatch.setattr("server.expand", fake_expand)
+
+    r = client.post("/api/infographic/render", json={
+        "user_prompt": "Q4 capability matrix",
+        "data_type": "overview",
+        "tone": "Business",
+        "layout": "bento",
+        "style": "memphis",
+        "backend": "sensenova",
+        "width": 1024,
+        "height": 1820,
+        "seed": 42,
+        "num_steps": 50,
+    })
+    assert r.status_code == 202, r.text
+    data = r.json()
+    assert data["job_id"]
+    assert "EXPANDED(Q4 capability matrix)" in data["expanded_prompt"]
+    assert data["expansion"]["fallback_used"] is False
+    assert data["expansion"]["model"] == "gpt-oss:20b"
+    assert captured["lane"] == "gpu"
+    assert captured["job_id"] == data["job_id"]
+
+
+def test_post_render_propagates_fallback_used(client, monkeypatch):
+    import server
+    from studio.infographic_expander import ExpansionResult
+
+    monkeypatch.setattr(server.job_queue, "submit_background", lambda c, **kw: c.close())
+    monkeypatch.setattr("server.expand", lambda *a, **kw: ExpansionResult(
+        prompt="template prompt", fallback_used=True, elapsed_s=0.0, model="gpt-oss:20b",
+    ))
+    r = client.post("/api/infographic/render", json={
+        "user_prompt": "p", "data_type": "overview", "tone": "Business",
+        "layout": "bento", "style": "memphis",
+    })
+    assert r.status_code == 202
+    assert r.json()["expansion"]["fallback_used"] is True
+
+
+def test_post_render_unknown_layout_returns_400(client):
+    r = client.post("/api/infographic/render", json={
+        "user_prompt": "p", "data_type": "overview", "tone": "Business",
+        "layout": "no-such-layout", "style": "memphis",
+    })
+    assert r.status_code == 400
+    assert "layout" in r.json()["detail"]
+
+
+def test_post_render_unknown_style_returns_400(client):
+    r = client.post("/api/infographic/render", json={
+        "user_prompt": "p", "data_type": "overview", "tone": "Business",
+        "layout": "bento", "style": "no-such-style",
+    })
+    assert r.status_code == 400
