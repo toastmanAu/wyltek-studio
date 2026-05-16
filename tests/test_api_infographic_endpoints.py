@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -140,3 +139,27 @@ def test_post_pick_lock_with_unknown_current_returns_400(client):
         "current": {"layout": "not-a-real-layout", "style": "memphis"},
     })
     assert r.status_code == 400
+
+
+@pytest.fixture
+def client_no_catalog(monkeypatch) -> TestClient:
+    """Point the singleton at a non-existent dir to exercise the 503 path."""
+    monkeypatch.setenv("INFOGRAPHIC_CATALOG_DIR", "/tmp/wyltek-does-not-exist-xyz")
+    import importlib
+    import server
+    importlib.reload(server)
+    return TestClient(server.app)
+
+
+def test_get_catalog_returns_503_when_not_built(client_no_catalog):
+    r = client_no_catalog.get("/api/infographic/catalog")
+    assert r.status_code == 503
+    assert "catalog_not_built" in r.json()["detail"]
+
+
+def test_post_pick_returns_503_when_not_built(client_no_catalog):
+    r = client_no_catalog.post(
+        "/api/infographic/pick",
+        json={"data_type": "anything", "tone": "anything"},
+    )
+    assert r.status_code == 503

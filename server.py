@@ -5332,11 +5332,16 @@ async def infographic_catalog():
     }
 
 
+class _CurrentSelection(BaseModel):
+    layout: str = Field(min_length=1)
+    style: str = Field(min_length=1)
+
+
 class _InfographicPickBody(BaseModel):
     data_type: str = Field(min_length=1)
     tone: str = Field(min_length=1)
     lock: Optional[Literal["layout", "style"]] = None
-    current: Optional[dict] = None  # {"layout": str, "style": str}
+    current: Optional[_CurrentSelection] = None
     seed: Optional[int] = None
 
 
@@ -5348,13 +5353,13 @@ async def infographic_pick(body: _InfographicPickBody):
 
     current_tuple: Optional[tuple[str, str]] = None
     if body.lock is not None:
-        if not body.current or "layout" not in body.current or "style" not in body.current:
+        if body.current is None:
             raise HTTPException(
                 status_code=400,
                 detail="invalid_lock — lock requires current.layout and current.style",
             )
-        layout_name = body.current["layout"]
-        style_name = body.current["style"]
+        layout_name = body.current.layout
+        style_name = body.current.style
         if not cat.is_known_layout(layout_name):
             raise HTTPException(status_code=400,
                                 detail=f"invalid_lock — unknown current.layout {layout_name!r}")
